@@ -1627,6 +1627,8 @@ function TTSEngine.androidEngineLabelForPackage(pkg)
     if pkg == "pending" then return _("Detecting…") end
     if pkg == "not_ready" or pkg == "unknown" then return _("Not detected") end
     local p = pkg:lower()
+    -- MyTTS (com.davnozdu.supertonic.tts.fork): the last segment "fork" says nothing.
+    if p:find("davnozdu.supertonic", 1, true) then return _("MyTTS") end
     -- VoxSherpa contains "sherpa"; match it before the generic SherpaTTS apps.
     if p:find("woheller69", 1, true) then return _("SherpaTTS") end
     if p:find("voxsherpa", 1, true) or p:find("codebysonu", 1, true) then
