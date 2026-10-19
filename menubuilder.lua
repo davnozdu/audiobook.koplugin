@@ -1950,41 +1950,12 @@ function MenuBuilder._androidVoicePickerItems(plugin)
         current_idx = #items
     end
 
-    table.insert(items, {
-        text = "- " .. _("Languages") .. " -",
-        enabled = false,
-    })
-
+    -- Installed voices first: an engine's own voices (MyTTS «Мультиголос» / «Один голос») were
+    -- listed after every language and took many pages to reach.
     local book_lang
     if plugin.tts_engine and plugin.tts_engine._androidBookLanguage then
         book_lang = plugin.tts_engine:_androidBookLanguage()
     end
-    local langs = MenuBuilder.huggingfaceLanguageChoices()
-    -- Book language first so a French EPUB surfaces French immediately.
-    table.sort(langs, function(a, b)
-        local function rank(c)
-            if book_lang and (c.id:lower() == book_lang:lower()
-                or _localePrefix(c.id) == _localePrefix(book_lang)) then
-                return 0
-            end
-            return 1
-        end
-        local ra, rb = rank(a), rank(b)
-        if ra ~= rb then return ra < rb end
-        return a.label < b.label
-    end)
-    for _, choice in ipairs(langs) do
-        table.insert(items, {
-            text = choice.label,
-            callback = function()
-                MenuBuilder.applyTtsLanguage(plugin, choice.id, choice.label)
-            end,
-        })
-        if current_voice == "" and current_lang:lower() == choice.id:lower() then
-            current_idx = #items
-        end
-    end
-
     local voices = {}
     if plugin.tts_engine and plugin.tts_engine.listAndroidVoices then
         voices = plugin.tts_engine:listAndroidVoices() or {}
@@ -2021,6 +1992,37 @@ function MenuBuilder._androidVoicePickerItems(plugin)
             if current_voice ~= "" and current_voice == voice.name then
                 current_idx = #items
             end
+        end
+    end
+
+    table.insert(items, {
+        text = "- " .. _("Languages") .. " -",
+        enabled = false,
+    })
+
+    local langs = MenuBuilder.huggingfaceLanguageChoices()
+    -- Book language first so a French EPUB surfaces French immediately.
+    table.sort(langs, function(a, b)
+        local function rank(c)
+            if book_lang and (c.id:lower() == book_lang:lower()
+                or _localePrefix(c.id) == _localePrefix(book_lang)) then
+                return 0
+            end
+            return 1
+        end
+        local ra, rb = rank(a), rank(b)
+        if ra ~= rb then return ra < rb end
+        return a.label < b.label
+    end)
+    for _, choice in ipairs(langs) do
+        table.insert(items, {
+            text = choice.label,
+            callback = function()
+                MenuBuilder.applyTtsLanguage(plugin, choice.id, choice.label)
+            end,
+        })
+        if current_voice == "" and current_lang:lower() == choice.id:lower() then
+            current_idx = #items
         end
     end
 
