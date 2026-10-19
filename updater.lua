@@ -54,7 +54,7 @@ local function verifyPluginDir(plugin_dir)
     return true
 end
 
-local REPO = "stradichenko/audiobook.koplugin"
+local REPO = "davnozdu/audiobook.koplugin"
 local API_URL = "https://api.github.com/repos/" .. REPO .. "/releases/latest"
 
 -- Resolve the plugin directory from this file's location.

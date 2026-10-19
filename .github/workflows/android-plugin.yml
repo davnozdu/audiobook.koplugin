@@ -1,0 +1,54 @@
+name: Android plugin build
+
+# Lightweight build for Android users: compiles the Java helpers into .dex
+# and packages a plugin zip with the Lua sources.  Android playback uses the
+# system MediaPlayer / TTS via JNI, so none of the cross-compiled Kobo/Kindle
+# binaries from the full release build are needed here.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android build tools
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "Using SDK at $SDK"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "build-tools;34.0.0" "platforms;android-34" > /dev/null
+
+      - name: Build .dex helpers
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          cd android && bash build-dex.sh
+
+      - name: Package plugin
+        run: |
+          mkdir -p dist/audiobook.koplugin/android
+          cp *.lua voices.json new_audio_logo.svg LICENSE README.md dist/audiobook.koplugin/
+          cp -r l10n dist/audiobook.koplugin/
+          cp android/*.dex android/*.java dist/audiobook.koplugin/android/
+          cd dist && zip -qr audiobook-koplugin-android.zip audiobook.koplugin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audiobook-koplugin-android
+          path: |
+            dist/audiobook-koplugin-android.zip
+            android/*.dex
