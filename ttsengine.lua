@@ -1649,6 +1649,19 @@ function TTSEngine.androidEngineLabelForPackage(pkg)
     return T(_("Unknown (%1)"), short)
 end
 
+--- Background lookahead is on by default for MyTTS: its neural models need a
+--- second or more per sentence, which would otherwise be a pause between
+--- sentences.  Other engines keep the upstream default (off).
+function TTSEngine:androidPrefetchDefault()
+    local pkg = self:_androidEnginePackage()
+    return pkg ~= nil and pkg:lower():find("davnozdu.supertonic", 1, true) ~= nil
+end
+
+function TTSEngine:androidPrefetchEnabled()
+    if not self.plugin then return false end
+    return self.plugin:getSetting("android_prefetch", self:androidPrefetchDefault())
+end
+
 --[[--
 Android's preferred TTS engine, as shown in TTS toasts and menus.
 Returns nil when the helper is not initialized yet.
@@ -2171,7 +2184,7 @@ function TTSEngine:prefetchAndroid(text)
     if self._android_prefetch_session_disabled then
         return false
     end
-    if not self.plugin or not self.plugin:getSetting("android_prefetch", false) then
+    if not self:androidPrefetchEnabled() then
         return false
     end
     local atts = self._android_tts
