@@ -2598,12 +2598,22 @@ function SyncController:refocusToReading()
         end
     end)
     logger.warn("SyncController: Refocus to reading position, moved=", moved)
+    -- The view the sentence was read on is restored exactly; repaint its
+    -- highlight once CRe has re-rendered (retry while the page is settling).
     local sentence = self.current_sentence
-    if sentence and (self.state == self.STATE.PLAYING or self.state == self.STATE.PAUSED) then
-        UIManager:scheduleIn(0.3, function()
-            pcall(self.highlightCurrentSentence, self, sentence)
-        end)
+    if not sentence then return end
+    local tries = 0
+    local function paint()
+        if self.current_sentence ~= sentence then return end
+        if self.state ~= self.STATE.PLAYING and self.state ~= self.STATE.PAUSED then return end
+        tries = tries + 1
+        pcall(self.highlightCurrentSentence, self, sentence)
+        local shown = self.highlight_manager and self.highlight_manager:hasHighlights()
+        if not shown and tries < 5 then
+            UIManager:scheduleIn(0.3, paint)
+        end
     end
+    UIManager:scheduleIn(0.3, paint)
 end
 
 function SyncController:highlightCurrentSentence(sentence)
