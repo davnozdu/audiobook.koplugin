@@ -3821,6 +3821,24 @@ function Audiobook:onMediaPlay()
     return true
 end
 
+--- After a phone call / audio-focus loss: nobody browsed the book meanwhile,
+--- so drop any "browsing away" state, re-check the clock against MediaPlayer
+--- and bring the page back to the sentence being heard.
+function Audiobook:_afterInterruptionResume()
+    local ms = self.media_sync
+    if not (ms and ms.overlay_mode and ms.state == ms.STATE.PLAYING) then return end
+    self._readaloud_browsing_away = false
+    self:_hideReturnToReadAloudButton()
+    UIManager:scheduleIn(1.5, function()
+        if ms.state ~= ms.STATE.PLAYING then return end
+        pcall(function() ms:_resyncAndroidClock() end)
+        self._readaloud_browsing_away = false
+        self:_hideReturnToReadAloudButton()
+        dlog("interrupt refocus sent", ms._current_sentence_idx)
+        pcall(function() ms:refocusToCurrentSentence() end)
+    end)
+end
+
 function Audiobook:onMediaPause()
     if not self._init_ok then return true end
     self:pauseReadAlong()
@@ -3972,6 +3990,13 @@ function Audiobook:_handlePageTurnFollow()
     end
     -- Ignore page events caused by MediaSync's own auto-follow.
     if (self._media_sync_page_follow_count or 0) > 0 then return end
+    -- Ignore relayout/repaint while KOReader is in the background or has
+    -- just come back (phone call, app switch).
+    if self._app_in_background then return end
+    if self._page_follow_ignore_until and Time then
+        if Time.now() < self._page_follow_ignore_until then return end
+        self._page_follow_ignore_until = nil
+    end
     -- Re-entry / rapid-repeat guard.
     if self._in_handle_page_turn_follow then return end
     if Time then
@@ -4161,6 +4186,7 @@ function Audiobook:onSuspend()
         logger.warn("Audiobook: Suspend on Android — keeping playback running")
         dlog("app suspend", self.media_sync and self.media_sync.state,
             "sent", self.media_sync and self.media_sync._current_sentence_idx)
+        self._app_in_background = true
         return
     end
     -- Handle media playback suspend
@@ -4195,6 +4221,14 @@ function Audiobook:onResume()
     dlog("app resume", self.media_sync and self.media_sync.state,
         "sent", self.media_sync and self.media_sync._current_sentence_idx,
         "browsing_away", self._readaloud_browsing_away)
+    if Device:isAndroid() and self._app_in_background then
+        self._app_in_background = nil
+        -- Coming back from the dialer/another app relays out and repaints
+        -- the page; those page events are not the user browsing away.
+        if Time then
+            self._page_follow_ignore_until = Time.now() + Time.s(3)
+        end
+    end
     if not self._paused_by_suspend then return end
     self._paused_by_suspend = false
 

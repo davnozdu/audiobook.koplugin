@@ -1887,6 +1887,23 @@ function MediaSync:_startSyncLoop(gen)
     self._sync_timer = UIManager:scheduleIn(0.05, tick)
 end
 
+--- Android position is a wall clock locked once at playback start.  After an
+--- interruption, re-lock it to MediaPlayer if the two disagree noticeably.
+function MediaSync:_resyncAndroidClock()
+    local eng = self.media_engine
+    local ap = eng and eng._android_player
+    if not (ap and ap._queryMpPositionMs and ap._wallPositionMs) or ap._paused then
+        return
+    end
+    local mp = ap:_queryMpPositionMs()
+    local wall = ap:_wallPositionMs()
+    dlog("clock resync wall", wall and wall / 1000, "mp", mp and mp / 1000)
+    if not mp or mp <= 0 or not wall or math.abs(mp - wall) < 1500 then return end
+    ap:_reanchorWallToMs(mp)
+    eng._seek_offset = mp / 1000
+    self:_updateHighlightAtTime(mp / 1000)
+end
+
 -- Diagnostics: the Android position is a wall clock; compare it with what
 -- MediaPlayer really plays, every 20 s and right after a resume.
 function MediaSync:_logClockDrift(pos)

@@ -277,6 +277,9 @@ function AndroidMediaSession:startPolling(plugin)
                 pcall(function() p:onMediaPause() end)
             else
                 pcall(function() p:onMediaPlay() end)
+                if p._afterInterruptionResume then
+                    pcall(function() p:_afterInterruptionResume() end)
+                end
             end
         elseif cmd and cmd ~= self.CMD_NONE and self._plugin then
             -- Extra Lua debounce: AVRCP may still deliver a second command on
