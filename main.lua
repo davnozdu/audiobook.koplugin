@@ -3985,6 +3985,10 @@ function Audiobook:_handlePageTurnFollow()
     self._in_handle_page_turn_follow = true
     local ok, err = pcall(function()
         local on_audio_page = self:_currentAudioSentenceVisible()
+        dlog("page-follow manual on_audio_page", on_audio_page,
+            "page", self.ui and self.ui.getCurrentPage and self.ui:getCurrentPage(),
+            "sent", self.media_sync._current_sentence_idx,
+            "state", self.media_sync.state)
 
         -- Manual page turns must NEVER seek/restart audio. Audio keeps
         -- playing; we only pause highlighting and show a return cue
@@ -4155,6 +4159,8 @@ function Audiobook:onSuspend()
     -- MediaSessionHelper instead.
     if Device:isAndroid() then
         logger.warn("Audiobook: Suspend on Android — keeping playback running")
+        dlog("app suspend", self.media_sync and self.media_sync.state,
+            "sent", self.media_sync and self.media_sync._current_sentence_idx)
         return
     end
     -- Handle media playback suspend
@@ -4186,6 +4192,9 @@ end
 
 function Audiobook:onResume()
     if not self._init_ok then return end
+    dlog("app resume", self.media_sync and self.media_sync.state,
+        "sent", self.media_sync and self.media_sync._current_sentence_idx,
+        "browsing_away", self._readaloud_browsing_away)
     if not self._paused_by_suspend then return end
     self._paused_by_suspend = false
 

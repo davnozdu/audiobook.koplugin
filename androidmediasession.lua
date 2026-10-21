@@ -270,6 +270,8 @@ function AndroidMediaSession:startPolling(plugin)
                 and self._plugin then
             -- Not a button press: explicit pause/resume, no debounce/toggle.
             logger.warn("AndroidMediaSession: interruption", cmd)
+            local DL = package.loaded["audiobook_debuglog"]
+            if DL and DL.log then pcall(DL.log, "interrupt", cmd == self.CMD_INTERRUPT_PAUSE and "pause" or "resume") end
             local p = self._plugin
             if cmd == self.CMD_INTERRUPT_PAUSE then
                 pcall(function() p:onMediaPause() end)

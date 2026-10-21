@@ -1321,6 +1321,7 @@ function MediaSync:pause(auto)
     -- stop ticking, so this is the last time update the user sees.
     pcall(function() self:_refreshPlaybackTimeUi() end)
     logger.warn("MediaSync: paused", auto and "(auto)" or "", "at", pos)
+    dlog("ms paused at", pos, "sent", self._current_sentence_idx)
 end
 
 function MediaSync:clearSentenceHighlight()
@@ -1370,6 +1371,8 @@ function MediaSync:resume(auto)
     self:_startSyncLoop(self._chain_generation)
     self:_startPositionPoller(self._chain_generation)
     logger.warn("MediaSync: resumed", auto and "(auto)" or "", "at", resume_pos)
+    self._drift_logged_at = nil
+    dlog("ms resumed at", resume_pos, "sent", self._current_sentence_idx)
 end
 
 function MediaSync:isPlaying()
@@ -1873,6 +1876,7 @@ function MediaSync:_startSyncLoop(gen)
             off = (self.plugin:getSetting("smil_sync_offset_ms", 0) or 0) / 1000
         end
         self:_updateHighlightAtTime(math.max(0, pos - lat - off))
+        self:_logClockDrift(pos)
 
         -- Check for sentence/chapter boundary advancement
         self:_checkAutoAdvance(pos)
@@ -1881,6 +1885,26 @@ function MediaSync:_startSyncLoop(gen)
     end
 
     self._sync_timer = UIManager:scheduleIn(0.05, tick)
+end
+
+-- Diagnostics: the Android position is a wall clock; compare it with what
+-- MediaPlayer really plays, every 20 s and right after a resume.
+function MediaSync:_logClockDrift(pos)
+    local now = UIManager:getTime()
+    if self._drift_logged_at and time.to_ms(now - self._drift_logged_at) < 20000 then
+        return
+    end
+    self._drift_logged_at = now
+    local ap = self.media_engine and self.media_engine._android_player
+    local mp
+    if ap and ap._queryMpPositionMs then
+        pcall(function() mp = ap:_queryMpPositionMs() end)
+    end
+    dlog("clock wall", pos, "mp", mp and mp / 1000,
+        "sent", self._current_sentence_idx,
+        "browsing_away", self.plugin and self.plugin._readaloud_browsing_away,
+        "page", self.plugin and self.plugin.ui and self.plugin.ui.getCurrentPage
+            and self.plugin.ui:getCurrentPage())
 end
 
 function MediaSync:_updateHighlightAtTime(pos)
@@ -2914,6 +2938,11 @@ function MediaSync:refocusToCurrentSentence()
     end
     self._current_sentence_idx = sent_idx
     logger.warn("MediaSync: refocusing to sentence", sent_idx, sentence.text_doc, sentence.fragment_id)
+    local rpos
+    pcall(function() rpos = self.media_engine:getPosition() end)
+    dlog("refocus sent", sent_idx, "at", sentence.start_time, "pos", rpos,
+        "doc", sentence.text_doc, "frag", sentence.fragment_id,
+        "page_before", ui.getCurrentPage and ui:getCurrentPage())
 
     local text_doc = sentence.text_doc or ""
     local xp = (text_doc ~= "" and text_doc .. "#" .. sentence.fragment_id)
@@ -2929,6 +2958,7 @@ function MediaSync:refocusToCurrentSentence()
     end
     UIManager:scheduleIn(1.5, function()
         ms:_clearPageFollowAuto()
+        dlog("refocus done page", ui.getCurrentPage and ui:getCurrentPage())
     end)
 
     -- Re-highlight the current sentence after the page settles. A grouped
