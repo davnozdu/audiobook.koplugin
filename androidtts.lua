@@ -596,6 +596,36 @@ function AndroidTts:pausePlayback()
     end)
 end
 
+--- Tell the TTS engine to stop (TextToSpeech.stop() on the helper's engine
+--- connection).  Pausing only pauses this app's MediaPlayer, so an engine
+--- that plays something alongside the speech (MyTTS's background music)
+--- never learned about the pause.  Reached through JNI field access, so the
+--- prebuilt helper .dex needs no new method.
+function AndroidTts:engineStop()
+    if not self._initialized or not self._helper_ref then return end
+    local android = self._android
+    pcall(function()
+        android.jni:context(android.app.activity.vm, function(jni)
+            local env = jni.env
+            local cls = env[0].GetObjectClass(env, self._helper_ref)
+            local fid = env[0].GetFieldID(env, cls, "tts", "Landroid/speech/tts/TextToSpeech;")
+            if checkException(env) or fid == nil then env[0].DeleteLocalRef(env, cls) return end
+            local tts = env[0].GetObjectField(env, self._helper_ref, fid)
+            if tts ~= nil and tonumber(ffi.cast("intptr_t", tts)) ~= 0 then
+                local tts_cls = env[0].GetObjectClass(env, tts)
+                local stop = getMethod(env, tts_cls, "stop", "()I")
+                if stop then
+                    env[0].CallIntMethod(env, tts, stop)
+                    checkException(env)
+                end
+                env[0].DeleteLocalRef(env, tts_cls)
+                env[0].DeleteLocalRef(env, tts)
+            end
+            env[0].DeleteLocalRef(env, cls)
+        end)
+    end)
+end
+
 --[[--
 Resume audio playback.
 --]]

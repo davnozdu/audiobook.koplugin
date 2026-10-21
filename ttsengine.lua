@@ -6803,6 +6803,11 @@ function TTSEngine:pause()
         -- Android: pause via MediaPlayer API
         if self.audio_player_type == "android" and self._android_tts then
             self._android_tts:pausePlayback()
+            -- The engine never sees the app's MediaPlayer pause; a stop lets it
+            -- silence what it plays itself (MyTTS background music).  It also
+            -- drops an in-flight lookahead, which is redone on resume.
+            self._android_tts:engineStop()
+            self:_androidPrefetchInvalidate()
         -- PocketBook InkView: no direct pause API; audio plays to natural
         -- end but word-highlighting and sentence advance are suspended.
         elseif self.audio_player_type == "pb-inkview" then
