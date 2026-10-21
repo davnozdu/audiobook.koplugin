@@ -138,6 +138,7 @@ function SyncController:start(text, opts)
 
     self.state = self.STATE.LOADING
     logger.dbg("SyncController: Starting read-along with", #text, "characters")
+    self:_rememberReadingPosition()
 
     -- Log rotation baseline for diagnostics
     local Screen = require("device").screen
@@ -1925,10 +1926,11 @@ function SyncController:showPlaybackBar()
                 plugin:_cancelSleepTimer()
             end
         end,
-        -- No on_refocus: TTS read-along always follows the sentence, so the
-        -- view cannot be browsed away from the highlight and there is nothing
-        -- to re-align to.  Audiobook overlay playback keeps its refocus button
-        -- (see mediasync.lua), where manual page turns are allowed.
+        -- «○»: back to the page being read and its highlighted sentence after
+        -- browsing away (a manual page turn does not move read-aloud).
+        on_refocus = function()
+            controller:refocusToReading()
+        end,
         on_tts_settings = function()
             local MenuBuilder = dofile(PLUGIN_PATH .. "menubuilder.lua")
             if MenuBuilder and MenuBuilder.showTtsSettingsPicker then
@@ -2568,6 +2570,42 @@ end
 Highlight the current sentence.
 @param sentence table Sentence object
 --]]
+--- Where the page being read starts: an xpointer for reflowable books, a
+--- page number for fixed-layout ones.  Recorded on every start() (page turns
+--- included), used by the «○» button.
+function SyncController:_rememberReadingPosition()
+    self._reading_xp, self._reading_page = nil, nil
+    local ui = self.plugin and self.plugin.ui
+    if not (ui and ui.document) then return end
+    pcall(function()
+        if ui.rolling and ui.document.getXPointer then
+            self._reading_xp = ui.document:getXPointer()
+        elseif ui.getCurrentPage then
+            self._reading_page = ui:getCurrentPage()
+        end
+    end)
+end
+
+--- Bring the view back to the page being read and repaint the sentence.
+function SyncController:refocusToReading()
+    local ui = self.plugin and self.plugin.ui
+    if not ui then return end
+    local moved = pcall(function()
+        if self._reading_xp and ui.rolling then
+            ui.rolling:onGotoXPointer(self._reading_xp, self._reading_xp)
+        elseif self._reading_page then
+            ui:handleEvent(Event:new("GotoPage", self._reading_page))
+        end
+    end)
+    logger.warn("SyncController: Refocus to reading position, moved=", moved)
+    local sentence = self.current_sentence
+    if sentence and (self.state == self.STATE.PLAYING or self.state == self.STATE.PAUSED) then
+        UIManager:scheduleIn(0.3, function()
+            pcall(self.highlightCurrentSentence, self, sentence)
+        end)
+    end
+end
+
 function SyncController:highlightCurrentSentence(sentence)
     if not sentence then
         return
