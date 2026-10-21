@@ -2191,23 +2191,33 @@ function TTSEngine:prefetchAndroid(text)
     if self.backend ~= self.BACKENDS.ANDROID or not text or text == "" then
         return false
     end
+    -- Why a lookahead was skipped, logged once per change of reason: a silent
+    -- skip looks exactly like a slow engine in the reader's pauses.
+    local engine_self = self
+    local function skip(reason)
+        if engine_self._android_prefetch_skip ~= reason then
+            engine_self._android_prefetch_skip = reason
+            logger.warn("TTSEngine: Android prefetch skipped:", reason)
+        end
+        return false
+    end
     if self._android_prefetch_session_disabled then
         -- A dead player twice (a call, a paused route) used to switch the
         -- lookahead off until KOReader restarted, and with a neural engine
         -- every later sentence then waited for its synthesis.  Retry later.
         if os.time() - (self._android_prefetch_disabled_at or 0) < 300 then
-            return false
+            return skip("disabled after dead clips")
         end
         logger.warn("TTSEngine: Android lookahead re-enabled after the cool-down")
         self._android_prefetch_session_disabled = nil
         self._android_slot_fail_count = 0
     end
     if not self:androidPrefetchEnabled() then
-        return false
+        return skip("setting off")
     end
     local atts = self._android_tts
     if not atts then
-        return false  -- not initialized yet; the on-demand path lazy-inits
+        return skip("helper not initialized")  -- the on-demand path lazy-inits
     end
     -- Already holding this text (pending or ready)?  Nothing to do.
     if self._prefetch_file and self._prefetch_text == text then
@@ -2216,7 +2226,7 @@ function TTSEngine:prefetchAndroid(text)
     -- A background synthesis is already running: Java handles one utterance
     -- at a time, so a second dispatch now would invalidate the first.
     if self._android_prefetch_inflight then
-        return false
+        return skip("another prefetch in flight")
     end
     -- Only dispatch while the current sentence is already playing (1) or
     -- done (2); see the safety rules above for status 0.
@@ -2235,8 +2245,7 @@ function TTSEngine:prefetchAndroid(text)
                 end
             end)
         end
-        logger.dbg("TTSEngine: Android prefetch deferred, pipeline still synthesizing")
-        return false
+        return skip("pipeline still synthesizing (status 0)")
     end
     self._android_prefetch_retries = 0
     -- Drop a stale slot from an earlier sentence before filling anew.
@@ -2258,10 +2267,11 @@ function TTSEngine:prefetchAndroid(text)
         end
     end
     if dispatch ~= 0 then
-        logger.dbg("TTSEngine: Android prefetch dispatch failed, code:", dispatch)
         os.remove(slot_path)
-        return false
+        return skip("dispatch failed, code " .. tostring(dispatch))
     end
+    self._android_prefetch_skip = nil
+    logger.warn("TTSEngine: Android prefetch dispatched for:", text:sub(1, 40))
     self._android_prefetch_inflight = slot_path
     self._android_prefetch_inflight_text = text
     -- keeps its own callbacks).  A real synthesis dispatch or stop()
