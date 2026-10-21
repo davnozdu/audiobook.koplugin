@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Extract _("...") / _([[...]]) strings and write koreader.pot + the fr/es/sk/cs .po files."""
+"""Extract _("...") / _([[...]]) strings and write koreader.pot + the fr/es/sk/cs/ru .po files."""
 
 from __future__ import annotations
 
@@ -334,6 +334,7 @@ def main() -> int:
     from translations import TRANSLATIONS_FR, TRANSLATIONS_ES  # noqa: WPS433
     from translations_sk import TRANSLATIONS_SK  # noqa: WPS433
     from translations_cs import TRANSLATIONS_CS  # noqa: WPS433
+    from translations_ru import TRANSLATIONS_RU  # noqa: WPS433
 
     # Every catalog is written even when some strings are untranslated
     # (empty msgstr falls back to English in the loader).  Missing strings
@@ -345,6 +346,7 @@ def main() -> int:
         ("es", "nplurals=2; plural=(n != 1);", TRANSLATIONS_ES),
         ("sk", "nplurals=3; plural=(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2;", TRANSLATIONS_SK),
         ("cs", "nplurals=3; plural=(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2;", TRANSLATIONS_CS),
+        ("ru", "nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);", TRANSLATIONS_RU),
     ]
 
     missing_by_lang = {
