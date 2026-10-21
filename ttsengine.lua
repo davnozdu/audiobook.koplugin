@@ -2426,10 +2426,15 @@ local PIPELINE_RETRY_COOLDOWN_S = 30  -- minimum seconds between retry attempts
 function TTSEngine:_playAndroidSlotClip(atts, my_gen)
     local engine = self
     local file_path = self.current_audio_file
-    local dur_ms = atts:playFile(file_path)
-    if not dur_ms or dur_ms <= 0 then
-        logger.warn("TTSEngine: Android slot clip failed to start (dur=",
-            dur_ms, "ms), falling back to on-demand synthesis")
+    -- playFile() only posts the MediaPlayer start to the helper's worker and
+    -- returns 0 (-1 = refused); it never returns the duration.  Treating that
+    -- 0 as "failed to start" made every prefetched sentence fall back to
+    -- on-demand synthesis and, after two, switched the lookahead off.
+    local dispatched = atts:playFile(file_path)
+    local dur_ms = self:getWavDurationMs(file_path)
+    if not dispatched or dispatched < 0 or not dur_ms or dur_ms <= 0 then
+        logger.warn("TTSEngine: Android slot clip failed to start (dispatch=",
+            dispatched, ", wav=", dur_ms, "ms), falling back to on-demand synthesis")
         return self:_androidSlotClipFailed()
     end
     self._expected_play_duration_ms = dur_ms
@@ -2437,6 +2442,9 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
     self:startTimingLoop()
     local poll_count = 0
     local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
+    -- Until the worker has started the player, isPlaybackDone() still reports
+    -- the previous clip's end: wait for isPlaying() first (2 s at most).
+    local started = false
     local function pollSlotDone()
         if (engine.play_generation or 0) ~= my_gen then return end
         if not engine.is_speaking then return end
@@ -2445,6 +2453,17 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
             return
         end
         poll_count = poll_count + 1
+        if not started then
+            if atts:isPlaying() then
+                started = true
+                engine._audio_launched_at = UIManager:getTime()
+            elseif poll_count <= 20 then
+                UIManager:scheduleIn(0.1, pollSlotDone)
+                return
+            else
+                started = true  -- never seen playing: let the checks below decide
+            end
+        end
         if atts:isPlaybackDone() then
             local elapsed_ms = engine._audio_launched_at
                 and time.to_ms(UIManager:getTime() - engine._audio_launched_at) or dur_ms
