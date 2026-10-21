@@ -1730,6 +1730,25 @@ function TTSEngine:_ensureAndroidTts()
     return atts
 end
 
+--- Drop the Android TTS connection and bind again.  When the engine's process
+--- dies (an app update, or Android reclaiming its memory) the old helper
+--- stays marked unavailable for good; a fresh TextToSpeech binds to the
+--- restarted engine.  The voice and language are re-sent on the next use.
+--- @return boolean true when the new helper is ready
+function TTSEngine:reconnectAndroidTts()
+    local old = self._android_tts
+    self._android_tts = nil
+    self._android_tts_failed = nil
+    self._android_tts_voice = nil
+    self._android_tts_lang = nil
+    self:_androidPrefetchInvalidate()
+    self:_cleanPrefetch()
+    if old then pcall(function() old:shutdown() end) end
+    local atts = self:_ensureAndroidTts()
+    logger.warn("TTSEngine: Android TTS reconnected, ready=", atts ~= nil)
+    return atts ~= nil
+end
+
 --- Resolve the TTS voice/language for `text` and cross JNI only on a change.
 --- Shared by the playback dispatch (synthesizeAndroid) and the background
 --- prefetch filler (prefetchAndroid), so a prefetched sentence is synthesized

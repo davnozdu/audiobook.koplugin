@@ -729,6 +729,7 @@ function SyncController:readNextSentence()
                         return
                     end
                     controller._android_tts_fail_count = 0
+                    controller._android_reconnects = 0
                     controller:applySentenceTiming(sentence, timing_data)
                     controller:beginSentencePlayback(sentence)
                 end)
@@ -1066,6 +1067,7 @@ function SyncController:readNextSentence()
         end
 
         controller._android_tts_fail_count = 0
+        controller._android_reconnects = 0
 
         -- Apply timing data to this sentence's words
         controller:applySentenceTiming(sentence, timing_data)
@@ -2922,7 +2924,16 @@ function SyncController:_onAndroidSynthFailed(reason)
         self:stop()
         return
     end
-    if self._android_tts_fail_count >= 4 then
+    -- The engine process restarted (app update, memory reclaim): the old
+    -- connection never recovers, so bind again before giving up.  At most
+    -- twice per failure streak; a success resets both counters.
+    if self._android_tts_fail_count >= 2 and (self._android_reconnects or 0) < 2
+            and self.tts_engine and self.tts_engine.reconnectAndroidTts then
+        self._android_reconnects = (self._android_reconnects or 0) + 1
+        self._android_tts_fail_count = 0
+        local ok = self.tts_engine:reconnectAndroidTts()
+        logger.warn("SyncController: Android TTS reconnect", self._android_reconnects, "ok=", ok)
+    elseif self._android_tts_fail_count >= 4 then
         UIManager:show(InfoMessage:new{
             text = _("The Android TTS engine stopped. Neural voices can be killed for memory; open the TTS app once, then start read-aloud again."),
             timeout = 10,
