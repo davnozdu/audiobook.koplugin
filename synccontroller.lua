@@ -648,8 +648,10 @@ function SyncController:readNextSentence()
     end
 
     local sentence = self.parsed_data.sentences[self.reading_sentence_idx]
-    if not sentence or not sentence.text or sentence.text == "" then
-        -- Skip empty sentence
+    if not sentence or not sentence.text or not SyncController.speakable(sentence.text) then
+        -- Skip an empty sentence, or one of punctuation only («).» split off
+        -- after a bracket): an engine has nothing to say for it, and its empty
+        -- audio was retried until the engine was reported as stopped.
         self:readNextSentence()
         return
     end
@@ -1650,6 +1652,12 @@ finishes, the next one's WAV is already on disk.
 @param explicit_idx number|nil  If provided, prefetch this sentence index
                                 instead of reading_sentence_idx + 1.
 --]]
+--- True when [text] has something to say: a letter or a digit (Latin, Latin-1
+--- or Cyrillic lead byte), not just punctuation.
+function SyncController.speakable(text)
+    return text ~= nil and text:find("[%w\195\208\209]") ~= nil
+end
+
 function SyncController:_prefetchNextSentence(explicit_idx)
     local next_idx = explicit_idx or (self.reading_sentence_idx + 1)
     if not self.parsed_data then
@@ -1667,6 +1675,13 @@ function SyncController:_prefetchNextSentence(explicit_idx)
     end
     local next_sentence = self.parsed_data.sentences[next_idx]
     if not next_sentence or not next_sentence.text or next_sentence.text == "" then
+        return
+    end
+    if not SyncController.speakable(next_sentence.text) then
+        -- Punctuation only is skipped when read; look ahead past it.
+        if not explicit_idx or explicit_idx == next_idx then
+            return self:_prefetchNextSentence(next_idx + 1)
+        end
         return
     end
     -- Defer prefetch so it doesn't block the UI thread.
