@@ -325,14 +325,14 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         or plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.ANDROID then
         table.insert(menu, {
             text_func = function()
-                return T(_("Sentence pause (. ? !): %1s"), plugin:getSetting("sentence_pause", 0.1))
+                return T(_("Sentence pause (. ? !): %1s"), plugin:getSetting("sentence_pause", plugin.tts_engine:pauseDefault("sentence_pause")))
             end,
             sub_item_table = MenuBuilder.buildSentencePauseMenu(plugin),
         })
 
         table.insert(menu, {
             text_func = function()
-                return T(_("Paragraph pause (newlines): %1s"), plugin:getSetting("paragraph_pause", 0.8))
+                return T(_("Paragraph pause (newlines): %1s"), plugin:getSetting("paragraph_pause", plugin.tts_engine:pauseDefault("paragraph_pause")))
             end,
             sub_item_table = MenuBuilder.buildParagraphPauseMenu(plugin),
         })
@@ -604,11 +604,11 @@ function MenuBuilder.buildSentencePauseMenu(plugin)
     local menu = {}
     for _i, v in ipairs(values) do
         local label = string.format("%.2fs", v)
-        if v == 0.1 then label = label .. _(" (default)") end
+        if v == plugin.tts_engine:pauseDefault("sentence_pause") then label = label .. _(" (default)") end
         table.insert(menu, {
             text = label,
             checked_func = function()
-                return plugin:getSetting("sentence_pause", 0.1) == v
+                return plugin:getSetting("sentence_pause", plugin.tts_engine:pauseDefault("sentence_pause")) == v
             end,
             callback = function()
                 plugin:setSetting("sentence_pause", v)
@@ -624,11 +624,11 @@ function MenuBuilder.buildParagraphPauseMenu(plugin)
     local menu = {}
     for _i, v in ipairs(values) do
         local label = string.format("%.1fs", v)
-        if v == 0.8 then label = label .. _(" (default)") end
+        if v == plugin.tts_engine:pauseDefault("paragraph_pause") then label = label .. _(" (default)") end
         table.insert(menu, {
             text = label,
             checked_func = function()
-                return plugin:getSetting("paragraph_pause", 0.8) == v
+                return plugin:getSetting("paragraph_pause", plugin.tts_engine:pauseDefault("paragraph_pause")) == v
             end,
             callback = function()
                 plugin:setSetting("paragraph_pause", v)
@@ -2321,10 +2321,10 @@ function MenuBuilder.showTtsSettingsPicker(plugin)
         })
     else
         table.insert(items, {
-            text = T(_("Sentence pause (. ? !): %1s"), plugin:getSetting("sentence_pause", 0.1)),
+            text = T(_("Sentence pause (. ? !): %1s"), plugin:getSetting("sentence_pause", plugin.tts_engine:pauseDefault("sentence_pause"))),
             callback = function()
                 _valuePicker(_("Sentence pause"), {0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.8, 1.0},
-                    plugin:getSetting("sentence_pause", 0.1),
+                    plugin:getSetting("sentence_pause", plugin.tts_engine:pauseDefault("sentence_pause")),
                     function(v) return string.format("%.2fs", v) end,
                     function(v)
                         plugin:setSetting("sentence_pause", v)
@@ -2336,10 +2336,10 @@ function MenuBuilder.showTtsSettingsPicker(plugin)
             end,
         })
         table.insert(items, {
-            text = T(_("Paragraph pause (newlines): %1s"), plugin:getSetting("paragraph_pause", 0.8)),
+            text = T(_("Paragraph pause (newlines): %1s"), plugin:getSetting("paragraph_pause", plugin.tts_engine:pauseDefault("paragraph_pause"))),
             callback = function()
                 _valuePicker(_("Paragraph pause"), {0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0, 3.0},
-                    plugin:getSetting("paragraph_pause", 0.8),
+                    plugin:getSetting("paragraph_pause", plugin.tts_engine:pauseDefault("paragraph_pause")),
                     function(v) return string.format("%.1fs", v) end,
                     function(v)
                         plugin:setSetting("paragraph_pause", v)

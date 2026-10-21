@@ -1224,8 +1224,8 @@ function SyncController:beginSentencePlayback(sentence)
             sent_pause_s = (self.plugin and self.plugin:getSetting("piper_sentence_gap", 0.3)) or 0.3
             para_pause_s = (self.plugin and self.plugin:getSetting("piper_paragraph_gap", 1.0)) or 1.0
         else
-            sent_pause_s = (self.plugin and self.plugin:getSetting("sentence_pause", 0.1)) or 0.1
-            para_pause_s = (self.plugin and self.plugin:getSetting("paragraph_pause", 0.8)) or 0.8
+            sent_pause_s = (self.plugin and self.plugin:getSetting("sentence_pause", self.tts_engine:pauseDefault("sentence_pause"))) or 0.1
+            para_pause_s = (self.plugin and self.plugin:getSetting("paragraph_pause", self.tts_engine:pauseDefault("paragraph_pause"))) or 0.8
         end
         local sent_pause_ms = math.floor(sent_pause_s * 1000)
         local para_pause_ms = math.floor(para_pause_s * 1000)
@@ -1496,9 +1496,9 @@ function SyncController:beginSentencePlayback(sentence)
                 delay = 0.05
                 logger.warn("SyncController: Piper gap padded in audio (", last_sent.end_type, "), delay=0.05s")
             elseif last_sent.end_type == "paragraph" then
-                delay = (controller.plugin and controller.plugin:getSetting("paragraph_pause", 0.8)) or 0.8
+                delay = (controller.plugin and controller.plugin:getSetting("paragraph_pause", controller.tts_engine:pauseDefault("paragraph_pause"))) or 0.8
             else
-                delay = (controller.plugin and controller.plugin:getSetting("sentence_pause", 0.1)) or 0.1
+                delay = (controller.plugin and controller.plugin:getSetting("sentence_pause", controller.tts_engine:pauseDefault("sentence_pause"))) or 0.1
             end
             logger.warn("SyncController: Scheduling next sentence in", delay, "s",
                 "from sentence=", last_sent.index, "state=", controller.state)
@@ -1649,8 +1649,18 @@ finishes, the next one's WAV is already on disk.
 --]]
 function SyncController:_prefetchNextSentence(explicit_idx)
     local next_idx = explicit_idx or (self.reading_sentence_idx + 1)
-    if not self.parsed_data or next_idx > self.total_sentences then
+    if not self.parsed_data then
         return -- nothing to prefetch
+    end
+    if next_idx > self.total_sentences then
+        -- Last sentence of the page on Android: synthesize the next page's
+        -- first sentence now, so the page turn does not wait for it too.
+        if self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
+                and self.tts_engine:androidPrefetchEnabled()
+                and self.plugin and self.plugin:getSetting("auto_advance", true) then
+            self:_prefetchNextPage()
+        end
+        return
     end
     local next_sentence = self.parsed_data.sentences[next_idx]
     if not next_sentence or not next_sentence.text or next_sentence.text == "" then

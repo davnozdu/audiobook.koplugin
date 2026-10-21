@@ -1657,6 +1657,16 @@ function TTSEngine:androidPrefetchDefault()
     return pkg ~= nil and pkg:lower():find("davnozdu.supertonic", 1, true) ~= nil
 end
 
+--- Default sentence/paragraph pauses.  MyTTS already ends each sentence with
+--- its own pause (its «Точка, вопрос и восклицание» setting), so a second
+--- pause from the plugin only stretched the gaps between sentences.
+function TTSEngine:pauseDefault(key)
+    if self.backend == self.BACKENDS.ANDROID and self:androidPrefetchDefault() then
+        return key == "paragraph_pause" and 0.4 or 0
+    end
+    return key == "paragraph_pause" and 0.8 or 0.1
+end
+
 function TTSEngine:androidPrefetchEnabled()
     if not self.plugin then return false end
     return self.plugin:getSetting("android_prefetch", self:androidPrefetchDefault())
