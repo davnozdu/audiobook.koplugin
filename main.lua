@@ -845,6 +845,16 @@ function Audiobook:addToMainMenu(menu_items)
                         help_text = _("When enabled (default), read-aloud pauses while a KOReader menu or dialog is open and resumes when it closes. When disabled, narration keeps playing while you browse menus; only the sentence highlighting pauses."),
                     },
                     {
+                        text = _("Resume from the start of the sentence"),
+                        checked_func = function()
+                            return self:getSetting("resume_sentence_start", true)
+                        end,
+                        callback = function()
+                            self:toggleSetting("resume_sentence_start", true)
+                        end,
+                        help_text = _("When enabled (default), read-aloud resumed after a pause starts the interrupted sentence again from its beginning, so you hear it whole. Applies to Android system TTS. When disabled, playback continues from the exact point where it was paused."),
+                    },
+                    {
                         text = _("Hide control bar while playing (experimental)"),
                         enabled_func = function() return (self.ui and self.ui.document) or false end,
                         checked_func = function()

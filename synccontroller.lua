@@ -2714,6 +2714,29 @@ function SyncController:resume(auto)
         -- Clear the user-paused flag on any successful resume
         self._user_paused = false
 
+        -- Android TTS: start the interrupted sentence again from its first
+        -- word (setting "resume_sentence_start", default on).  The engine
+        -- usually still holds that sentence's audio, so it starts at once.
+        local sentence = self.current_sentence
+        if sentence and sentence.index
+                and self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
+                and not self._concat_sentences
+                and (not self.plugin or self.plugin:getSetting("resume_sentence_start", true)) then
+            logger.warn("SyncController: Resuming sentence", sentence.index, "from its start")
+            self._chain_generation = (self._chain_generation or 0) + 1
+            pcall(function() self.tts_engine:stop() end)
+            pcall(function() self.highlight_manager:clearHighlights() end)
+            self.reading_sentence_idx = sentence.index - 1
+            self._highest_dispatched_idx = sentence.index - 1
+            self:_ttsMarkPlay()
+            if self.playback_bar then
+                self.playback_bar:updatePlayState(true)
+            end
+            self:_applyBarVisibility()
+            self:readNextSentence()
+            return
+        end
+
         -- Adjust sentence sync start to account for pause duration
         if self.sentence_sync_start and self.pause_time then
             local pause_duration = UIManager:getTime() - self.pause_time

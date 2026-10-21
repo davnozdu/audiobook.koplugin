@@ -687,4 +687,6 @@ TRANSLATIONS_RU = {
     "Updated to v%1.\n\nRestart KOReader to apply the update.": "Обновлено до v%1.\n\nПерезапустите KOReader, чтобы применить обновление.",
     "Restart now": "Перезапустить сейчас",
     "Later": "Позже",
+    "Resume from the start of the sentence": "Продолжать с начала предложения",
+    "When enabled (default), read-aloud resumed after a pause starts the interrupted sentence again from its beginning, so you hear it whole. Applies to Android system TTS. When disabled, playback continues from the exact point where it was paused.": "Если включено (по умолчанию), после паузы чтение вслух начинает прерванное предложение заново с начала, чтобы вы услышали его целиком. Действует для системного TTS Android. Если выключено, чтение продолжается с того места, где было поставлено на паузу.",
 }

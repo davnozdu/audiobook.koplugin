@@ -118,7 +118,7 @@ msgstr "http://192.168.1.100:13378"
 msgid "Enter the URL of your Audiobookshelf server."
 msgstr "Introduce la URL de tu servidor Audiobookshelf."
 
-#: absbrowse.lua:253 absbrowse.lua:331 absbrowse.lua:814 audiobookplayer.lua:1270 btui.lua:345 main.lua:1450 main.lua:1581 main.lua:2268
+#: absbrowse.lua:253 absbrowse.lua:331 absbrowse.lua:814 audiobookplayer.lua:1270 btui.lua:345 main.lua:1460 main.lua:1591 main.lua:2278
 msgid "Cancel"
 msgstr "Cancelar"
 
@@ -270,7 +270,7 @@ msgstr "← Volver a la biblioteca"
 msgid "Search: %1 (%2)"
 msgstr "Búsqueda: %1 (%2)"
 
-#: absbrowse.lua:961 main.lua:1580
+#: absbrowse.lua:961 main.lua:1590
 msgid "Play"
 msgstr "Reproducir"
 
@@ -532,7 +532,7 @@ msgstr ""
 msgid "Keep"
 msgstr "Conservar"
 
-#: audiobookplayer.lua:1293 main.lua:1002 main.lua:2786 menubuilder.lua:2265
+#: audiobookplayer.lua:1293 main.lua:1012 main.lua:2796 menubuilder.lua:2265
 msgid "Sleep timer"
 msgstr "Temporizador de sueño"
 
@@ -540,7 +540,7 @@ msgstr "Temporizador de sueño"
 msgid "Select minutes."
 msgstr "Seleccione minutos."
 
-#: audiobookplayer.lua:1300 main.lua:1122 main.lua:2796 main.lua:2841
+#: audiobookplayer.lua:1300 main.lua:1132 main.lua:2806 main.lua:2851
 msgid "Set"
 msgstr "Establecer"
 
@@ -548,7 +548,7 @@ msgstr "Establecer"
 msgid "Return to read-aloud"
 msgstr "Volver a la lectura en voz alta"
 
-#: audiobookplayer.lua:1759 menubuilder.lua:43 synccontroller.lua:2784
+#: audiobookplayer.lua:1759 menubuilder.lua:43 synccontroller.lua:2807
 msgid "System TTS"
 msgstr "TTS del sistema"
 
@@ -641,7 +641,7 @@ msgstr ""
 msgid "Restoring Bluetooth connection…"
 msgstr ""
 
-#: btui.lua:24 main.lua:1005
+#: btui.lua:24 main.lua:1015
 msgid "Off"
 msgstr "Desactivado"
 
@@ -1017,23 +1017,23 @@ msgstr "Voz MBROLA desconocida."
 msgid "Invert (best for e-ink)"
 msgstr "Invertir (ideal para tinta electrónica)"
 
-#: highlightmanager.lua:1106 main.lua:886 menubuilder.lua:895
+#: highlightmanager.lua:1106 main.lua:896 menubuilder.lua:895
 msgid "Underline"
 msgstr "Subrayado"
 
-#: highlightmanager.lua:1107 main.lua:887
+#: highlightmanager.lua:1107 main.lua:897
 msgid "Box"
 msgstr "Cuadro"
 
-#: highlightmanager.lua:1108 main.lua:885 main.lua:890
+#: highlightmanager.lua:1108 main.lua:895 main.lua:900
 msgid "Background"
 msgstr "Fondo"
 
-#: main.lua:184 main.lua:252 main.lua:1276
+#: main.lua:184 main.lua:252 main.lua:1286
 msgid "Read aloud from here"
 msgstr "Leer en voz alta desde aquí"
 
-#: main.lua:212 main.lua:288 main.lua:1306
+#: main.lua:212 main.lua:288 main.lua:1316
 msgid "Play aligned audiobook from here"
 msgstr "Reproducir audiolibro alineado desde aquí"
 
@@ -1059,7 +1059,7 @@ msgstr "Audiolibro sincronizado (error)"
 msgid "Plugin failed to load"
 msgstr "El complemento no se pudo cargar"
 
-#: main.lua:538 main.lua:1158
+#: main.lua:538 main.lua:1168
 msgid "Generate bug report"
 msgstr "Generar informe de error"
 
@@ -1077,7 +1077,7 @@ msgstr ""
 msgid "Start Text-to-Speech from current page"
 msgstr "Iniciar texto a voz en la página actual"
 
-#: main.lua:571 main.lua:1712 main.lua:1730
+#: main.lua:571 main.lua:1722 main.lua:1740
 msgid "Play aligned/enriched audiobook"
 msgstr "Reproducir audiolibro alineado/enriquecido"
 
@@ -1256,206 +1256,214 @@ msgid "When enabled (default), read-aloud pauses while a KOReader menu or dialog
 msgstr "Cuando está activada (predeterminado), la lectura en voz alta se pausa mientras haya un menú o diálogo de KOReader abierto y se reanuda al cerrarlo. Cuando está desactivada, la narración sigue mientras navegas por los menús; solo se pausa el resaltado de frases."
 
 #: main.lua:848
+msgid "Resume from the start of the sentence"
+msgstr ""
+
+#: main.lua:855
+msgid "When enabled (default), read-aloud resumed after a pause starts the interrupted sentence again from its beginning, so you hear it whole. Applies to Android system TTS. When disabled, playback continues from the exact point where it was paused."
+msgstr ""
+
+#: main.lua:858
 msgid "Hide control bar while playing (experimental)"
 msgstr "Ocultar barra de control durante la reproducción (experimental)"
 
-#: main.lua:861
+#: main.lua:871
 msgid "Experimental: when enabled, the playback control bar disappears while TTS is playing so the bottom of the page is fully visible for read-along. Pause playback (via tap-to-pause overlay or BT headset button) to bring the bar back."
 msgstr "Experimental: cuando está habilitado, la barra de control de reproducción desaparece mientras se reproduce TTS, por lo que la parte inferior de la página es completamente visible para la lectura. Pause la reproducción (mediante la superposición de tocar para pausar o el botón del auricular BT) para recuperar la barra."
 
-#: main.lua:864
+#: main.lua:874
 msgid "Hide progress bar during read-along"
 msgstr "Ocultar barra de progreso durante la lectura sincronizada"
 
-#: main.lua:880
+#: main.lua:890
 msgid "When enabled, the progress bar row is left out of the control bar during TTS read-along, making the bar one row shorter and leaving more of the page visible. The sentence highlight already shows how far along the page you are. The progress bar is always shown for audiobook playback, where it doubles as the seek control."
 msgstr "Cuando está habilitado, la fila de la barra de progreso queda fuera de la barra de control durante la lectura simultánea de TTS, lo que hace que la barra sea una fila más corta y deja más parte de la página visible. La oración resaltada ya muestra qué tan avanzado estás en la página. La barra de progreso siempre se muestra para la reproducción de audiolibros, donde también funciona como control de búsqueda."
 
-#: main.lua:888
+#: main.lua:898
 msgid "Invert"
 msgstr "Invertir"
 
-#: main.lua:890
+#: main.lua:900
 msgid "Highlight style: %1"
 msgstr "Estilo de resaltado: %1"
 
-#: main.lua:898
+#: main.lua:908
 msgid "Auto-advance pages"
 msgstr "Avance automático de páginas"
 
-#: main.lua:908
+#: main.lua:918
 msgid "Highlight sentences"
 msgstr "Resaltar oraciones"
 
-#: main.lua:918
+#: main.lua:928
 msgid "Group short cues (e-ink)"
 msgstr "Agrupar señales cortas (e-ink)"
 
-#: main.lua:926
+#: main.lua:936
 msgid "For EPUB Media Overlay read-aloud books: merge consecutive short phrases into one highlight that stays on screen at least half a second, so slow e-ink refreshes are not skipped between words. Audio is unaffected. Takes effect on the next audio part or after restarting read-aloud."
 msgstr "Para libros EPUB Media Overlay leídos en voz alta: combina frases cortas consecutivas en un solo resaltado que permanece en pantalla al menos medio segundo, para que las actualizaciones lentas de la tinta electrónica no se salten entre palabras. El audio no se ve afectado. Surte efecto en la siguiente parte de audio o tras reiniciar la lectura en voz alta."
 
-#: main.lua:929
+#: main.lua:939
 msgid "Follow narration page (aligned)"
 msgstr "Seguir la página de narración (alineado)"
 
-#: main.lua:937
+#: main.lua:947
 msgid "When enabled (default), the book view auto-turns to keep the current narration sentence on screen while you stay with the read-aloud. Manually turning a page never seeks or restarts audio: highlighting pauses and a “Return to read-aloud” cue appears until you jump back or the narration catches up."
 msgstr "Cuando está habilitada (predeterminada), la vista del libro cambia automáticamente para mantener la oración de la narración actual en la pantalla mientras usted permanece leyendo en voz alta. Al pasar una página manualmente nunca se busca ni se reinicia el audio: el resaltado se detiene y aparece una señal de \"Volver a leer en voz alta\" hasta que saltas hacia atrás o la narración se pone al día."
 
-#: main.lua:940
+#: main.lua:950
 msgid "Keep the audiobook bar"
 msgstr "Conservar la barra del audiolibro"
 
-#: main.lua:964
+#: main.lua:974
 msgid "When enabled, the mini audiobook bar stays on screen after you stop narration. When disabled (default), the bar hides when idle."
 msgstr "Cuando está activada, la minibarra del audiolibro permanece en pantalla tras detener la narración. Cuando está desactivada (predeterminado), la barra se oculta en reposo."
 
-#: main.lua:967
+#: main.lua:977
 msgid "Lock KOReader page margins"
 msgstr "Bloquear los márgenes de página de KOReader"
 
-#: main.lua:988
+#: main.lua:998
 msgid "When enabled, the plugin writes this book’s bottom page margin into KOReader’s own settings before CRE typesets. The next open rebuilds the layout once (text stays above the audiobook bar); after that, KOReader reuses that layout. Disable to restore your original margins and edit them with KOReader’s usual controls."
 msgstr "Cuando está activado, el plugin escribe el margen de página inferior de este libro en los propios ajustes de KOReader antes de la maquetación de CRE. La próxima apertura reconstruye la maquetación una vez (el texto queda por encima de la barra del audiolibro); después, KOReader reutiliza esa maquetación. Desactívelo para restaurar sus márgenes originales y editarlos con los controles habituales de KOReader."
 
-#: main.lua:991
+#: main.lua:1001
 msgid "Keep status bars during read-aloud"
 msgstr "Conservar barras de estado durante la lectura en voz alta"
 
-#: main.lua:999
+#: main.lua:1009
 msgid "When enabled, the minimized read-aloud mini player sits above KOReader’s bottom status bar / progress bar (alt status bar at the top is unchanged). The page always reflows so book text ends above the mini player — the player never covers readable text. When disabled (default), the mini player sits at the bottom of the screen (may cover the status bar) but text is still reflowed above it."
 msgstr "Cuando está habilitado, el minirreproductor de lectura en voz alta minimizado se encuentra encima de la barra de estado/barra de progreso inferior de KOReader (la barra de estado alternativa en la parte superior no cambia). La página siempre vuelve a fluir de modo que el texto del libro termina encima del minirreproductor; el reproductor nunca cubre el texto legible. Cuando está deshabilitado (predeterminado), el minirreproductor se ubica en la parte inferior de la pantalla (puede cubrir la barra de estado), pero el texto aún se redistribuye encima de él."
 
-#: main.lua:1015
+#: main.lua:1025
 msgid "15 min"
 msgstr "15 min"
 
-#: main.lua:1025
+#: main.lua:1035
 msgid "30 min"
 msgstr "30 min"
 
-#: main.lua:1035
+#: main.lua:1045
 msgid "45 min"
 msgstr "45 min"
 
-#: main.lua:1045
+#: main.lua:1055
 msgid "60 min"
 msgstr "60 min"
 
-#: main.lua:1055
+#: main.lua:1065
 msgid "1 hour"
 msgstr "1 hora"
 
-#: main.lua:1065
+#: main.lua:1075
 msgid "2 hours"
 msgstr "2 horas"
 
-#: main.lua:1075
+#: main.lua:1085
 msgid "3 hours"
 msgstr "3 horas"
 
-#: main.lua:1085
+#: main.lua:1095
 msgid "Custom..."
 msgstr "Personalizado…"
 
-#: main.lua:1092
+#: main.lua:1102
 msgid "Automatically pause playback after the selected time. Useful for listening before sleep."
 msgstr "Pausa automáticamente la reproducción después del tiempo seleccionado. Útil para escuchar antes de dormir."
 
-#: main.lua:1095
+#: main.lua:1105
 msgid "Put device to sleep when timer ends"
 msgstr "Suspender el dispositivo al terminar el temporizador"
 
-#: main.lua:1102
+#: main.lua:1112
 msgid "When enabled, the device will suspend after the sleep timer stops playback."
 msgstr "Cuando está habilitado, el dispositivo se suspenderá después de que el temporizador de apagado detenga la reproducción."
 
-#: main.lua:1107
+#: main.lua:1117
 msgid "Overlay sync offset: %1 s"
 msgstr "Desplazamiento de sincronización de superposición: %1 s"
 
-#: main.lua:1114
+#: main.lua:1124
 msgid "Overlay sync offset"
 msgstr "Desplazamiento de sincronización de superposición"
 
-#: main.lua:1115
+#: main.lua:1125
 msgid "Positive values delay the highlight (use when the highlight runs ahead of the narration); negative values advance it."
 msgstr "Los valores positivos retrasan el resaltado (se utilizan cuando el resaltado se adelanta a la narración); los valores negativos lo hacen avanzar."
 
-#: main.lua:1129
+#: main.lua:1139
 msgid "Shifts EPUB Media Overlay sentence highlighting relative to the audio. Some audiobooks (e.g. with publisher intros) have timing tables offset from the embedded audio."
 msgstr "Cambia el resaltado de oraciones EPUB Media Overlay en relación con el audio. Algunos audiolibros (por ejemplo, con introducciones del editor) tienen tablas de tiempos compensadas con respecto al audio incrustado."
 
-#: main.lua:1137
+#: main.lua:1147
 msgid "Stop session recorder"
 msgstr "Detener grabador de sesión"
 
-#: main.lua:1139
+#: main.lua:1149
 msgid "Start session recorder"
 msgstr "Iniciar grabador de sesión"
 
-#: main.lua:1155
+#: main.lua:1165
 msgid "Records the current audiobook or TTS session. Audio, video/screenshots, and optional touch events are saved to a folder on device storage."
 msgstr "Graba el audiolibro actual o la sesión TTS. El audio, el vídeo/capturas de pantalla y los eventos táctiles opcionales se guardan en una carpeta en el almacenamiento del dispositivo."
 
-#: main.lua:1162
+#: main.lua:1172
 msgid "Saves a diagnostic report to your device storage. The report contains device model, TTS engine status, and audio configuration — no personal data or book content. Share it when reporting issues on GitHub."
 msgstr "Guarda un informe de diagnóstico en el almacenamiento de su dispositivo. El informe contiene el modelo del dispositivo, el estado del motor TTS y la configuración de audio, sin datos personales ni contenido del libro. Compártelo cuando informes problemas en GitHub."
 
-#: main.lua:1165
+#: main.lua:1175
 msgid "Run device benchmark"
 msgstr "Ejecutar prueba de rendimiento"
 
-#: main.lua:1175
+#: main.lua:1185
 msgid "Runs a standardized TTS benchmark on test sentences using each available engine (espeak-ng, Piper). Saves a report you can share on GitHub to help document device performance. Piper tests may take several minutes on slow devices."
 msgstr "Ejecuta un punto de referencia TTS estandarizado en oraciones de prueba utilizando cada motor disponible (espeak-ng, Piper). Guarda un informe que puede compartir en GitHub para ayudar a documentar el rendimiento del dispositivo. Las pruebas Piper pueden tardar varios minutos en dispositivos lentos."
 
-#: main.lua:1178
+#: main.lua:1188
 msgid "Check for updates"
 msgstr "Buscar actualizaciones"
 
-#: main.lua:1189
+#: main.lua:1199
 msgid "Could not load updater module."
 msgstr "No se pudo cargar el módulo de actualización."
 
-#: main.lua:1197
+#: main.lua:1207
 msgid "Checks GitHub for a newer release. If an update is available, downloads and installs it. Requires Wi-Fi."
 msgstr "Comprueba GitHub para ver si hay una versión más reciente. Si hay una actualización disponible, la descarga e instala. Requiere Wi-Fi."
 
-#: main.lua:1200
+#: main.lua:1210
 msgid "About / Debug info"
 msgstr "Acerca de / Información de depuración"
 
-#: main.lua:1206
+#: main.lua:1216
 msgid "Plugin: Audiobook Read-Along %1"
 msgstr "Complemento: Audiolibro sincronizado %1"
 
-#: main.lua:1220
+#: main.lua:1230
 msgid "KOReader: %1"
 msgstr "KOReader: %1"
 
-#: main.lua:1226
+#: main.lua:1236
 msgid "Device: %1 (%2)"
 msgstr "Dispositivo: %1 (%2)"
 
-#: main.lua:1239
+#: main.lua:1249
 msgid "TTS backend: %1"
 msgstr "TTS motor: %1"
 
-#: main.lua:1246
+#: main.lua:1256
 msgid "Audio player: %1"
 msgstr "Reproductor de audio: %1"
 
-#: main.lua:1249
+#: main.lua:1259
 msgid "Plugin path: %1"
 msgstr "Ruta del complemento: %1"
 
-#: main.lua:1255
+#: main.lua:1265
 msgid "Shows plugin version, KOReader version, device model, active TTS backend, and audio player. Useful when reporting issues."
 msgstr "Muestra la versión del complemento, la versión KOReader, el modelo del dispositivo, el backend TTS activo y el reproductor de audio. Útil para informar problemas."
 
-#: main.lua:1327
+#: main.lua:1337
 msgid ""
 "Could not extract text from this page.\n"
 "\n"
@@ -1465,7 +1473,7 @@ msgstr ""
 "\n"
 "Es posible que el formato del documento no sea totalmente compatible."
 
-#: main.lua:1379
+#: main.lua:1389
 msgid ""
 "No TTS engine found.\n"
 "\n"
@@ -1475,7 +1483,7 @@ msgstr ""
 "\n"
 "Instale espeak-ng."
 
-#: main.lua:1420
+#: main.lua:1430
 msgid ""
 "Piper TTS is selected, but this Kindle model cannot play WAV files.\n"
 "\n"
@@ -1485,7 +1493,7 @@ msgstr ""
 "\n"
 "El audio utilizará la voz Kindle incorporada. El resaltado de palabras puede ser un poco menos preciso."
 
-#: main.lua:1441
+#: main.lua:1451
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -1507,7 +1515,7 @@ msgstr ""
 "\n"
 "Si aún falla, genere un informe de error (Audiolibro > Generar informe de error) y compártalo sobre el problema GitHub."
 
-#: main.lua:1448
+#: main.lua:1458
 msgid ""
 "No audio output device found.\n"
 "\n"
@@ -1517,11 +1525,11 @@ msgstr ""
 "\n"
 "La síntesis TTS se ejecutará pero es posible que el audio no se reproduzca. ¿Empezar de todos modos?"
 
-#: main.lua:1449
+#: main.lua:1459
 msgid "Start"
 msgstr "Iniciar"
 
-#: main.lua:1533
+#: main.lua:1543
 msgid ""
 "No Bluetooth audio device connected.\n"
 "\n"
@@ -1531,11 +1539,11 @@ msgstr ""
 "\n"
 "Reconectando tus auriculares… una vez conectados, inténtalo de nuevo."
 
-#: main.lua:1562 main.lua:3142
+#: main.lua:1572 main.lua:3152
 msgid "No document is currently open."
 msgstr "Actualmente no hay ningún documento abierto."
 
-#: main.lua:1579
+#: main.lua:1589
 msgid ""
 "No embedded narration found for this book.\n"
 "\n"
@@ -1551,7 +1559,7 @@ msgstr ""
 "\n"
 "¿Jugarlo?"
 
-#: main.lua:1591
+#: main.lua:1601
 msgid ""
 "This book has no embedded narration.\n"
 "\n"
@@ -1561,23 +1569,23 @@ msgstr ""
 "\n"
 "Coloque un archivo de audiolibro con el mismo nombre en la misma carpeta o use Reproducir audiolibro no alineado para reproducir un archivo separado."
 
-#: main.lua:1640
+#: main.lua:1650
 msgid "Select a book"
 msgstr "Seleccionar un libro"
 
-#: main.lua:1655
+#: main.lua:1665
 msgid "Unsupported file type for aligned audiobook: %1"
 msgstr "Tipo de archivo no admitido para audiolibro alineado: %1"
 
-#: main.lua:1675
+#: main.lua:1685
 msgid "Could not open the book: %1"
 msgstr "No se pudo abrir el libro: %1"
 
-#: main.lua:1702
+#: main.lua:1712
 msgid "This book has no built-in audiobook. Use Play unaligned audiobook or Start music playlist to play a separate audio file."
 msgstr "Este libro no tiene audiolibro integrado. Use «Reproducir audiolibro no alineado» o «Iniciar lista de reproducción musical» para reproducir un archivo de audio aparte."
 
-#: main.lua:1764
+#: main.lua:1774
 msgid ""
 "Loading the built-in audiobook…\n"
 "%1 / %2"
@@ -1585,31 +1593,31 @@ msgstr ""
 "Cargando el audiolibro integrado…\n"
 "%1 / %2"
 
-#: main.lua:1769
+#: main.lua:1779
 msgid "Built-in audiobook ready"
 msgstr "Audiolibro integrado listo"
 
-#: main.lua:1824 main.lua:3173
+#: main.lua:1834 main.lua:3183
 msgid "Could not load the built-in audiobook."
 msgstr "No se pudo cargar el audiolibro integrado."
 
-#: main.lua:1831 main.lua:3203
+#: main.lua:1841 main.lua:3213
 msgid "Loading the built-in audiobook…"
 msgstr "Cargando el audiolibro integrado…"
 
-#: main.lua:1857 main.lua:3150 main.lua:3225
+#: main.lua:1867 main.lua:3160 main.lua:3235
 msgid "This book has no built-in audiobook."
 msgstr "Este libro no tiene audiolibro integrado."
 
-#: main.lua:1891
+#: main.lua:1901
 msgid "Could not find the built-in audiobook audio."
 msgstr "No se encontró el audio integrado de este libro."
 
-#: main.lua:2153 main.lua:2174
+#: main.lua:2163 main.lua:2184
 msgid "Select audio file"
 msgstr "Seleccionar archivo de audio"
 
-#: main.lua:2210
+#: main.lua:2220
 msgid ""
 "No audio files found in\n"
 "%1"
@@ -1617,35 +1625,35 @@ msgstr ""
 "No se encontraron archivos de audio en\n"
 "%1"
 
-#: main.lua:2246 main.lua:2701 main.lua:4996
+#: main.lua:2256 main.lua:2711 main.lua:5006
 msgid "Unknown book"
 msgstr "Libro desconocido"
 
-#: main.lua:2256 main.lua:4999
+#: main.lua:2266 main.lua:5009
 msgid "Resume from %1?"
 msgstr "¿Continuar desde %1?"
 
-#: main.lua:2258 main.lua:2705 main.lua:5001
+#: main.lua:2268 main.lua:2715 main.lua:5011
 msgid "Book: %1"
 msgstr "Libro: %1"
 
-#: main.lua:2261 main.lua:2708 main.lua:5004
+#: main.lua:2271 main.lua:2718 main.lua:5014
 msgid "Chapter: %1"
 msgstr "Capítulo: %1"
 
-#: main.lua:2264 main.lua:2712 main.lua:5016
+#: main.lua:2274 main.lua:2722 main.lua:5026
 msgid "Last played: %1"
 msgstr "Último jugado: %1"
 
-#: main.lua:2267 main.lua:2726 main.lua:5019
+#: main.lua:2277 main.lua:2736 main.lua:5029
 msgid "Resume"
 msgstr "Continuar"
 
-#: main.lua:2275 main.lua:2741 main.lua:5027
+#: main.lua:2285 main.lua:2751 main.lua:5037
 msgid "From start"
 msgstr "Desde el inicio"
 
-#: main.lua:2303
+#: main.lua:2313
 msgid ""
 "Transcoding to MP3...\n"
 "This may take a minute."
@@ -1653,71 +1661,71 @@ msgstr ""
 "Transcodificando a MP3…\n"
 "Esto puede tardar un minuto."
 
-#: main.lua:2323
+#: main.lua:2333
 msgid "Transcoding failed: "
 msgstr "La transcodificación falló:"
 
-#: main.lua:2418
+#: main.lua:2428
 msgid "Audio playback"
 msgstr "Reproducción de audio"
 
-#: main.lua:2689
+#: main.lua:2699
 msgid "Resumed from %1"
 msgstr "Reanudado desde %1"
 
-#: main.lua:2699
+#: main.lua:2709
 msgid "Start from current page"
 msgstr "Iniciar en la página actual"
 
-#: main.lua:2703
+#: main.lua:2713
 msgid "Continue listening from %1?"
 msgstr "¿Continuar escuchando desde %1?"
 
-#: main.lua:2762
+#: main.lua:2772
 msgid "%1 h"
 msgstr "%1h"
 
-#: main.lua:2764
+#: main.lua:2774
 msgid "%1 h %2 min"
 msgstr "%1h %2min"
 
-#: main.lua:2767
+#: main.lua:2777
 msgid "%1 min"
 msgstr "%1 min"
 
-#: main.lua:2770
+#: main.lua:2780
 msgid "Sleep timer set: %1"
 msgstr "Temporizador de sueño: %1"
 
-#: main.lua:2787
+#: main.lua:2797
 msgid "Select hours and minutes."
 msgstr "Seleccione horas y minutos."
 
-#: main.lua:2824
+#: main.lua:2834
 msgid "Sleep timer: hours"
 msgstr "Temporizador de sueño: horas"
 
-#: main.lua:2825
+#: main.lua:2835
 msgid "Select the number of hours."
 msgstr "Selecciona el número de horas."
 
-#: main.lua:2831 mediasync.lua:3152 menubuilder.lua:1897
+#: main.lua:2841 mediasync.lua:3152 menubuilder.lua:1897
 msgid "Next"
 msgstr "Siguiente"
 
-#: main.lua:2834
+#: main.lua:2844
 msgid "Sleep timer: minutes"
 msgstr "Temporizador de apagado: minutos"
 
-#: main.lua:2835
+#: main.lua:2845
 msgid "Select the number of minutes."
 msgstr "Seleccione la cantidad de minutos."
 
-#: main.lua:2903
+#: main.lua:2913
 msgid "Sleep timer: playback paused."
 msgstr "Temporizador de sueño: reproducción en pausa."
 
-#: main.lua:3267
+#: main.lua:3277
 msgid ""
 "\n"
 "\n"
@@ -1727,11 +1735,11 @@ msgstr ""
 "\n"
 "Este libro tiene una narración incrustada; en su lugar, utilice \"Reproducir audiolibro alineado desde aquí\"."
 
-#: main.lua:3270 menubuilder.lua:2133 menubuilder.lua:2198
+#: main.lua:3280 menubuilder.lua:2133 menubuilder.lua:2198
 msgid "TTS engine is not available."
 msgstr "El motor TTS no está disponible."
 
-#: main.lua:3295
+#: main.lua:3305
 msgid ""
 "\n"
 "\n"
@@ -1741,15 +1749,15 @@ msgstr ""
 "\n"
 "Para esta lectura en voz alta EPUB, utilice \"Reproducir audiolibro alineado desde aquí\"."
 
-#: main.lua:3298
+#: main.lua:3308
 msgid "Could not retrieve page text for TTS."
 msgstr "No se pudo recuperar el texto de la página para TTS."
 
-#: main.lua:4847
+#: main.lua:4857
 msgid "Audiobookshelf modules not available."
 msgstr "Módulos Audiobookshelf no disponibles."
 
-#: main.lua:5012
+#: main.lua:5022
 msgid "File: %1"
 msgstr ""
 
@@ -1787,7 +1795,7 @@ msgstr "Mezcla desactivada."
 msgid "Audio playback failed: "
 msgstr "Error en la reproducción de audio:"
 
-#: mediasync.lua:3069 mediasync.lua:3214 mediasync.lua:3242 mediasync.lua:3254 synccontroller.lua:3509
+#: mediasync.lua:3069 mediasync.lua:3214 mediasync.lua:3242 mediasync.lua:3254 synccontroller.lua:3532
 msgid "No chapters available."
 msgstr "No hay capítulos disponibles."
 
@@ -1799,11 +1807,11 @@ msgstr "Elemento"
 msgid "Prev"
 msgstr "Ant."
 
-#: mediasync.lua:3163 mediasync.lua:3232 mediasync.lua:3287 synccontroller.lua:3536
+#: mediasync.lua:3163 mediasync.lua:3232 mediasync.lua:3287 synccontroller.lua:3559
 msgid "Chapters"
 msgstr "Capítulos"
 
-#: mediasync.lua:3224 mediasync.lua:3278 synccontroller.lua:3523
+#: mediasync.lua:3224 mediasync.lua:3278 synccontroller.lua:3546
 msgid "Chapter"
 msgstr "Capítulo"
 
@@ -1811,7 +1819,7 @@ msgstr "Capítulo"
 msgid "Playlist"
 msgstr "Lista de reproducción"
 
-#: menubuilder.lua:41 synccontroller.lua:2782
+#: menubuilder.lua:41 synccontroller.lua:2805
 msgid "System TTS (%1)"
 msgstr "TTS del sistema (%1)"
 
@@ -2816,7 +2824,7 @@ msgstr ""
 "Piper todavía se está sintetizando.\n"
 "Para una reproducción más rápida, cambie al backend espeak en Herramientas → Audiolibro → TTS Motor."
 
-#: synccontroller.lua:992 synccontroller.lua:2777 ttsengine.lua:1647
+#: synccontroller.lua:992 synccontroller.lua:2800 ttsengine.lua:1647
 msgid "Piper"
 msgstr "Piper"
 
@@ -2824,15 +2832,15 @@ msgstr "Piper"
 msgid "sanoTTS"
 msgstr "sanoTTS"
 
-#: synccontroller.lua:994 synccontroller.lua:2802
+#: synccontroller.lua:994 synccontroller.lua:2825
 msgid "Starting %1, please wait…"
 msgstr "Iniciando %1, espere…"
 
-#: synccontroller.lua:2774 synccontroller.lua:2786
+#: synccontroller.lua:2797 synccontroller.lua:2809
 msgid "TTS"
 msgstr "TTS"
 
-#: synccontroller.lua:2812
+#: synccontroller.lua:2835
 msgid ""
 "Still waiting for %1 after 12 seconds.\n"
 "\n"
@@ -2842,7 +2850,7 @@ msgstr ""
 "\n"
 "Las voces neuronales en el dispositivo (SherpaTTS, VoxSherpa TTS y similares) suelen ir más lentas que el tiempo real en este lector. Si no suena nada, este dispositivo probablemente no sirve para ese motor TTS; prueba otra voz del sistema."
 
-#: synccontroller.lua:2847
+#: synccontroller.lua:2870
 msgid ""
 "No audio from %1 after a long wait.\n"
 "\n"
@@ -2852,19 +2860,19 @@ msgstr ""
 "\n"
 "Este lector probablemente es demasiado lento para ese motor neuronal en el dispositivo. Abre una vez la aplicación de TTS, o cambia a otra voz del sistema."
 
-#: synccontroller.lua:2856
+#: synccontroller.lua:2879
 msgid "The Android TTS engine stopped. Neural voices can be killed for memory; open the TTS app once, then start read-aloud again."
 msgstr "El motor TTS de Android se detuvo. Las voces neuronales pueden eliminarse por memoria; abre una vez la aplicación de TTS y vuelve a iniciar la lectura."
 
-#: synccontroller.lua:2952
+#: synccontroller.lua:2975
 msgid "low-resource mode"
 msgstr "modo de bajos recursos"
 
-#: synccontroller.lua:2953
+#: synccontroller.lua:2976
 msgid "sentence splitting"
 msgstr "división de oraciones"
 
-#: synccontroller.lua:2957
+#: synccontroller.lua:2980
 msgid ""
 "Piper is synthesizing slower than playback (%1x realtime).\n"
 "Applying %2 to compensate (this session only)."
@@ -2872,7 +2880,7 @@ msgstr ""
 "Piper está sintetizando más lento que la reproducción (%1x en tiempo real).\n"
 "Aplicando %2 para compensar (solo esta sesión)."
 
-#: synccontroller.lua:2979
+#: synccontroller.lua:3002
 msgid ""
 "This device is too slow for Piper voices.\n"
 "Switching to espeak for this session.\n"
@@ -2882,15 +2890,15 @@ msgstr ""
 "Cambiando a espeak para esta sesión.\n"
 "Piper se intentará nuevamente la próxima vez que inicie la reproducción."
 
-#: synccontroller.lua:3017
+#: synccontroller.lua:3040
 msgid "it still had not produced any audio after %1 espeak sentences"
 msgstr "aún no había producido audio después de %1 frases de espeak"
 
-#: synccontroller.lua:3022
+#: synccontroller.lua:3045
 msgid "it still had not produced any audio after %1 minutes of espeak fallback"
 msgstr "aún no había producido audio después de %1 minutos del respaldo espeak"
 
-#: synccontroller.lua:3035
+#: synccontroller.lua:3058
 msgid ""
 "Piper neural TTS could not keep up on this device: %1.\n"
 "\n"
@@ -3058,11 +3066,11 @@ msgstr ""
 "Android TTS: no hay voz disponible para %1.\n"
 "Instale los datos de voz correspondientes en la configuración de Texto a voz de Android o elija un idioma diferente en la configuración de Voz."
 
-#: ttsengine.lua:2603
+#: ttsengine.lua:2632
 msgid "No audio file to play."
 msgstr "No hay ningún archivo de audio para reproducir."
 
-#: ttsengine.lua:2626 ttsengine.lua:2725
+#: ttsengine.lua:2655 ttsengine.lua:2754
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3076,7 +3084,7 @@ msgstr ""
 "\n"
 "Por favor, genera un informe de error (Audiobook > Generar informe de error) y compártelo en el issue de GitHub."
 
-#: ttsengine.lua:2628
+#: ttsengine.lua:2657
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3090,7 +3098,7 @@ msgstr ""
 "\n"
 "Genere un informe de error (Audiolibro > Generar informe de error) y compártalo sobre el problema GitHub; ayudará a identificar la ruta de audio correcta para este modelo Kindle."
 
-#: ttsengine.lua:2630
+#: ttsengine.lua:2659
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3110,7 +3118,7 @@ msgstr ""
 "\n"
 "Luego inténtalo de nuevo."
 
-#: ttsengine.lua:2632
+#: ttsengine.lua:2661
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3130,7 +3138,7 @@ msgstr ""
 "\n"
 "Si eso no ayuda, genere un informe de error (Audiolibro > Generar informe de error) y compártalo en GitHub."
 
-#: ttsengine.lua:2634
+#: ttsengine.lua:2663
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3144,7 +3152,7 @@ msgstr ""
 "\n"
 "Si usa Bluetooth, asegúrese de que los auriculares estén emparejados y conectados."
 
-#: ttsengine.lua:2727
+#: ttsengine.lua:2756
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3158,7 +3166,7 @@ msgstr ""
 "\n"
 "Si ya tiene auriculares conectados, genere un informe de error (Audiolibro > Generar informe de error) y compártalo en GitHub; le ayudará a identificar la ruta de audio correcta para este modelo Kindle."
 
-#: ttsengine.lua:2729 ttsengine.lua:6656
+#: ttsengine.lua:2758 ttsengine.lua:6685
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3178,7 +3186,7 @@ msgstr ""
 "3. Escanea y empareja tus auriculares/altavoz\n"
 "4. Luego comience a leer nuevamente."
 
-#: ttsengine.lua:2823
+#: ttsengine.lua:2852
 msgid ""
 "No Bluetooth headphones detected.\n"
 "\n"
@@ -3188,7 +3196,7 @@ msgstr ""
 "\n"
 "Este Kindle no tiene altavoz incorporado. Conecte los auriculares Bluetooth en Configuración → Wi-Fi y Bluetooth antes de jugar."
 
-#: ttsengine.lua:2888
+#: ttsengine.lua:2917
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -3198,7 +3206,7 @@ msgstr ""
 "\n"
 "En este PocketBook, la reproducción directa de ALSA puede dañar el subsistema de audio. Primero conecte los auriculares Bluetooth y luego vuelva a intentarlo."
 
-#: ttsengine.lua:2988
+#: ttsengine.lua:3017
 msgid ""
 "Using Kindle's built-in voice.\n"
 "\n"
@@ -3212,7 +3220,7 @@ msgstr ""
 "\n"
 "El resaltado de palabras puede ser un poco menos preciso con la voz incorporada."
 
-#: ttsengine.lua:3268
+#: ttsengine.lua:3297
 msgid ""
 "Kindle native TTS failed.\n"
 "\n"
@@ -3222,7 +3230,7 @@ msgstr ""
 "\n"
 "No se pudo ejecutar el binario del asistente de conversión de texto a voz. Genere un informe de error y compártalo en GitHub."
 
-#: ttsengine.lua:3280
+#: ttsengine.lua:3309
 msgid ""
 "Kindle native TTS failed.\n"
 "\n"
@@ -3232,7 +3240,7 @@ msgstr ""
 "\n"
 "El motor de texto a voz no pudo producir audio. Genere un informe de error y compártalo en GitHub."
 
-#: ttsengine.lua:3531
+#: ttsengine.lua:3560
 msgid ""
 "Kindle native TTS failed.\n"
 "\n"
@@ -3246,7 +3254,7 @@ msgstr ""
 "\n"
 "Genere un informe de error y compártalo en GitHub."
 
-#: ttsengine.lua:3649
+#: ttsengine.lua:3678
 msgid ""
 "Audio playback failed on this Kindle model.\n"
 "\n"
@@ -3256,7 +3264,7 @@ msgstr ""
 "\n"
 "La tubería ttssrc TTS no pudo iniciarse. Genere un informe de error y compártalo sobre el problema GitHub."
 
-#: ttsengine.lua:3916 ttsengine.lua:4011
+#: ttsengine.lua:3945 ttsengine.lua:4040
 msgid ""
 "Kindle audio playback failed.\n"
 "\n"
@@ -3284,7 +3292,7 @@ msgstr ""
 "\n"
 "Si esto persiste, genere un informe de error (Audiolibro > Generar informe de error) y compártalo en GitHub."
 
-#: ttsengine.lua:4009
+#: ttsengine.lua:4038
 msgid ""
 "Kindle audio playback failed.\n"
 "\n"
@@ -3306,7 +3314,7 @@ msgstr ""
 "\n"
 "Genere un informe de error (Audiolibro > Generar informe de error) y compártalo en GitHub."
 
-#: ttsengine.lua:4187
+#: ttsengine.lua:4216
 msgid ""
 "Audio playback failed on this Kindle model.\n"
 "\n"
@@ -3320,7 +3328,7 @@ msgstr ""
 "\n"
 "Genera un informe de errores (Audiobook > Generate bug report) y compártelo en el issue de GitHub."
 
-#: ttsengine.lua:4258
+#: ttsengine.lua:4287
 msgid ""
 "Audio playback failed on this Kindle model.\n"
 "\n"
@@ -3330,7 +3338,7 @@ msgstr ""
 "\n"
 "La canalización de audio GStreamer no pudo iniciarse"
 
-#: ttsengine.lua:4264
+#: ttsengine.lua:4293
 msgid ""
 "\n"
 "\n"
@@ -3340,7 +3348,7 @@ msgstr ""
 "\n"
 "Suele ser un problema de compatibilidad de la biblioteca del sistema. Intente conectar los auriculares Bluetooth a través de la Configuración Kindle, cambie al backend espeak (Herramientas → Audiolibro → Configuración de voz → Motor TTS) o genere un informe de error (Audiolibro > Generar informe de error) y compártalo sobre el problema GitHub."
 
-#: ttsengine.lua:6468
+#: ttsengine.lua:6497
 msgid ""
 "Bluetooth audio not connected.\n"
 "\n"
@@ -3362,19 +3370,19 @@ msgstr ""
 "\n"
 "Luego inténtalo de nuevo."
 
-#: ttsengine.lua:6601
+#: ttsengine.lua:6630
 msgid "The audio player keeps crashing, playback was stopped."
 msgstr "El reproductor de audio sigue fallando, se detuvo la reproducción."
 
-#: ttsengine.lua:6602
+#: ttsengine.lua:6631
 msgid "Last error:"
 msgstr "Último error:"
 
-#: ttsengine.lua:6604
+#: ttsengine.lua:6633
 msgid "Please generate a bug report (Audiobook > Generate bug report) and share it on GitHub."
 msgstr "Genere un informe de error (Audiolibro > Generar informe de error) y compártalo en GitHub."
 
-#: ttsengine.lua:6652
+#: ttsengine.lua:6681
 msgid ""
 "No audio output available.\n"
 "\n"
