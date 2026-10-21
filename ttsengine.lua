@@ -2182,7 +2182,15 @@ function TTSEngine:prefetchAndroid(text)
         return false
     end
     if self._android_prefetch_session_disabled then
-        return false
+        -- A dead player twice (a call, a paused route) used to switch the
+        -- lookahead off until KOReader restarted, and with a neural engine
+        -- every later sentence then waited for its synthesis.  Retry later.
+        if os.time() - (self._android_prefetch_disabled_at or 0) < 300 then
+            return false
+        end
+        logger.warn("TTSEngine: Android lookahead re-enabled after the cool-down")
+        self._android_prefetch_session_disabled = nil
+        self._android_slot_fail_count = 0
     end
     if not self:androidPrefetchEnabled() then
         return false
@@ -2204,9 +2212,23 @@ function TTSEngine:prefetchAndroid(text)
     -- done (2); see the safety rules above for status 0.
     local status = atts:getPipelineStatus()
     if status == 0 then
+        -- Try again once the current sentence is playing, instead of
+        -- leaving the next one to be synthesized after this one ends.
+        self._android_prefetch_retries = (self._android_prefetch_retries or 0) + 1
+        if self._android_prefetch_retries <= 30 then
+            local engine = self
+            local gen = self.play_generation
+            UIManager:scheduleIn(0.2, function()
+                -- Still the same sentence playing: a stop or a jump drops the retry.
+                if engine.play_generation == gen and engine.is_speaking then
+                    engine:prefetchAndroid(text)
+                end
+            end)
+        end
         logger.dbg("TTSEngine: Android prefetch deferred, pipeline still synthesizing")
         return false
     end
+    self._android_prefetch_retries = 0
     -- Drop a stale slot from an earlier sentence before filling anew.
     self:_cleanPrefetch()
     self:_androidPrefetchInvalidate()
@@ -2418,6 +2440,7 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
                 engine._android_slot_fail_count = (engine._android_slot_fail_count or 0) + 1
                 if engine._android_slot_fail_count >= 2 then
                     engine._android_prefetch_session_disabled = true
+                    engine._android_prefetch_disabled_at = os.time()
                     logger.warn("TTSEngine: Android slot playback failed twice, "
                         .. "lookahead disabled for this session")
                 end
@@ -2427,6 +2450,9 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
                 return
             end
             logger.dbg("TTSEngine: Android slot clip complete, elapsed=", elapsed_ms, "ms")
+            -- Only consecutive failures count: one dead clip an hour ago must
+            -- not combine with the next into a lookahead shutdown.
+            engine._android_slot_fail_count = 0
             engine:onPlaybackComplete()
             return
         end
@@ -2451,6 +2477,7 @@ function TTSEngine:_androidSlotClipFailed()
     self._android_slot_fail_count = (self._android_slot_fail_count or 0) + 1
     if self._android_slot_fail_count >= 2 then
         self._android_prefetch_session_disabled = true
+        self._android_prefetch_disabled_at = os.time()
         logger.warn("TTSEngine: Android slot playback failed twice, "
             .. "lookahead disabled for this session")
     end
