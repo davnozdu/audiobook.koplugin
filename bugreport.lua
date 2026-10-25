@@ -1874,10 +1874,24 @@ find /usr /system /vendor /mnt /data -maxdepth 4 -name '*audio*.so*' 2>/dev/null
             "( tail -40 /mnt/us/koreader/crash.log 2>/dev/null || tail -40 crash.log 2>/dev/null )", 4)
         info.koreader_crash_log = crash_log_raw and sanitizePath(crash_log_raw) or "none"
 
-        -- Kernel ring tail: OOM kills name the victim process, which is the
-        -- only way to tell a Lua crash from the kernel shooting KOReader.
-        -- Readable on rooted devices (the usual case for KOReader on Kindle).
-        info.dmesg_tail = shellCapture("dmesg | tail -25", 4) or "n/a"
+        -- Kernel ring: OOM kills and segfaults name their victim, which is
+        -- the only way to tell a Lua crash from the kernel or the OOM
+        -- killer shooting the process.  Readable on rooted devices (the
+        -- usual case for KOReader on Kindle).  Chatty kernels scroll a
+        -- tail-only window in well under a minute (the 5.15 lab126 ring
+        -- carries watchdog kicks and moisture-detect spam), so also grep
+        -- the WHOLE ring for death signatures: those lines survive until
+        -- they age out of the ring, long after the tail has moved on
+        -- (issue #73: the 25-line tail missed a crash 90 s before the
+        -- report was generated).
+        info.dmesg_tail = shellCapture("dmesg | tail -120", 6) or "n/a"
+        info.dmesg_deaths = shellCapture(
+            "dmesg | grep -i -E 'out of memory|oom-kill|killed process|lowmemory|panic|segfault|sigsegv|sigill' | tail -30",
+            6) or "none"
+        -- Boot time context: pairs with the kernel timestamps in the two
+        -- captures above so a report reader can tell whether the crash
+        -- window is even inside them.
+        info.uptime = shellCapture("cat /proc/uptime", 3) or "n/a"
     end
 
     -- v0.1.17.52: join the collected signals into a short diagnosis so the
