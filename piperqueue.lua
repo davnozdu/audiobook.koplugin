@@ -43,6 +43,16 @@ end
 local _cpu_cores    = _detect_cpu_cores()
 local SERVER_COUNT  = math.min(_cpu_cores, 2)  -- 1 server per core, max 2
 local SERVER_PREFIX = "/tmp/piper_server_"
+
+-- Append to the plugin debug log (included in bug reports).  Never throws.
+-- Crash forensics for issue #73: server lifecycle must be attributable in
+-- the ring's last lines before a hard process death.
+local function dlog(...)
+    local DL = package.loaded["audiobook_debuglog"]
+    if DL and DL.log then
+        pcall(DL.log, ...)
+    end
+end
 local BATCH_SIZE    = _cpu_cores == 1 and 3 or 1  -- batch more on single-core
 -- Maximum requests queued per server via FIFO pipelining.
 -- On single-core, depth>1 adds FIFO overhead with no benefit (CPU can't
@@ -720,6 +730,7 @@ rm -f "$FIFO" "${FIFO}.pid" "${FIFO}.piper_pid"
     -- Poll for all servers to be ready
     local pq = self
     local start_time = UIManager:getTime()
+    dlog("piper-launch", "pool", pool, "engine", engine.backend)
     local function checkServersReady()
         local all_ready = true
         for i = 1, pool do
@@ -757,6 +768,7 @@ rm -f "$FIFO" "${FIFO}.pid" "${FIFO}.piper_pid"
                             pid = tonumber(pid),
                             piper_pid = piper_pid,
                         }
+                        dlog("piper-ready", "slot", i, "pid", pid, "piper_pid", piper_pid)
                         logger.warn("PiperQueue: Server", i, "ready, PID:", pid, "piper_pid:", piper_pid)
                     end
                 else
@@ -800,6 +812,7 @@ function PiperQueue:stopServers()
     -- be orphan processes from a previous crash.  Always kill by PID file
     -- and killall to be safe.  Sweep the larger legacy pool so slots from a
     -- backend switch are reaped too.
+    dlog("piper-stop")
     for i = 1, math.max(SERVER_COUNT, _pool_count(self.engine)) do
         local server = self._servers and self._servers[i]
         if server and server.pid then

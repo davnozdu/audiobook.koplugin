@@ -4222,6 +4222,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
         self._gst_play_pid = pid
         self._audio_launched_at = UIManager:getTime()
+        -- Crash forensics (issue #73): the ring's last line before a hard
+        -- process death must name the native step in flight.
+        dlog("player-spawn", "pid", pid, "gen", my_gen,
+            "bundled", from_bundled, "wav", file_path)
         self:startTimingLoop()
         -- Poll /proc/<pid> for process completion.
         -- When the process exits, check its status to distinguish
@@ -4317,6 +4321,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 if poll_count >= max_polls then
                     logger.warn("TTSEngine: kindle-gst-play timed out after",
                         poll_count * 0.1, "s -- killing")
+                    dlog("player-timeout", "pid", pid, "polls", poll_count)
                     os.execute("kill " .. pid .. " 2>/dev/null")
                     engine._gst_play_pid = nil
                     engine:onPlaybackComplete()
@@ -4343,6 +4348,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     or log_text:match("gst%-play: pipeline creation failed")
                     or log_text:match("gst%-play: cannot load libgstreamer")
                     or log_text:match("gst%-play: GStreamer error:")
+                -- Crash forensics: record every player exit with its shape,
+                -- so a hard death right after this line is attributable.
+                dlog("player-exit", "pid", pid, "elapsed_ms", elapsed_ms,
+                    "early_exit", is_early_exit, "error", has_error and true or false)
                 if is_early_exit and has_error then
                     logger.err("TTSEngine: kindle-gst-play exited early (", elapsed_ms,
                         "ms) with error, expected ~", expected_ms, "ms")
