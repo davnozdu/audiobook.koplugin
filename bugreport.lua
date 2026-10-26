@@ -1892,6 +1892,15 @@ find /usr /system /vendor /mnt /data -maxdepth 4 -name '*audio*.so*' 2>/dev/null
         -- captures above so a report reader can tell whether the crash
         -- window is even inside them.
         info.uptime = shellCapture("cat /proc/uptime", 3) or "n/a"
+
+        -- MediaTek ramoops/pstore: the juno kernel keeps a console ring in
+        -- reboot-persistent memory that records panics and hard deaths even
+        -- when the live dmesg ring has scrolled past or stopped moving
+        -- entirely (issue #73: a ColorSoft's ring froze three hours before
+        -- its crash, leaving no kernel-side witness).
+        info.pstore_ls = shellCapture("ls -la /sys/fs/pstore 2>/dev/null", 3) or "n/a"
+        info.pstore_console = shellCapture(
+            "cat /sys/fs/pstore/console-ramoops* 2>/dev/null | tail -60", 6) or "none"
     end
 
     -- v0.1.17.52: join the collected signals into a short diagnosis so the
