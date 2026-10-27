@@ -351,11 +351,30 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
             return items
         end)(),
     })
+    -- «Ранее в книге» after a long break: off unless the listener turns it on; the break is chosen here.
     table.insert(menu, {
-        text = _("«Previously in the book» after a break of a day"),
-        checked_func = function() return plugin:getSetting("recap_after_break", true) end,
-        callback = function() plugin:setSetting("recap_after_break", not plugin:getSetting("recap_after_break", true)) end,
-        help_text = _("When the book was not listened to for a day or more, MyTTS first retells what happened before (one cloud request), then reading goes on. Only for books MyTTS knows («Умная книга»)."),
+        text_func = function()
+            if not plugin:getSetting("recap_after_break", false) then return _("«Previously in the book» after a break: off") end
+            return T(_("«Previously in the book» after a break: %1 days"), plugin:getSetting("recap_break_days", 5))
+        end,
+        sub_item_table = (function()
+            local items = { {
+                text = _("Off"),
+                checked_func = function() return not plugin:getSetting("recap_after_break", false) end,
+                callback = function() plugin:setSetting("recap_after_break", false) end,
+            } }
+            for _i, d in ipairs({5, 7, 14, 30}) do
+                table.insert(items, {
+                    text = T(_("after %1 days"), d),
+                    checked_func = function()
+                        return plugin:getSetting("recap_after_break", false) and plugin:getSetting("recap_break_days", 5) == d
+                    end,
+                    callback = function() plugin:setSetting("recap_break_days", d); plugin:setSetting("recap_after_break", true) end,
+                })
+            end
+            return items
+        end)(),
+        help_text = _("When the book was not listened to for this long, MyTTS first retells what happened before (one cloud request), then reading goes on. Only for books MyTTS knows («Умная книга»)."),
     })
     table.insert(menu, {
         text = _("Return to the page being read after a minute"),

@@ -1463,7 +1463,7 @@ end
 function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self._init_ok then self:_showInitError(); return end
     if not self:_audioOutputReady() then return end
-    -- After a break of a day or more (MyTTS fork, «recap_after_break», on): «Ранее в книге» from MyTTS first, then
+    -- After a break (MyTTS fork, «recap_after_break», off by default; «recap_break_days», 5): «Ранее в книге» first, then
     -- this start goes on by itself.  A book MyTTS does not know just starts.
     if self:_recapAfterBreak(function() self:startReadAlong(text, start_pos, anchor_xp) end) then return end
     self:_noteListened()
@@ -4176,11 +4176,12 @@ end
 
 function Audiobook:_recapAfterBreak(go_on)
     if not (MyTTSBridge and MyTTSBridge.available and MyTTSBridge.available()) then return false end
-    if not self:getSetting("recap_after_break", true) then return false end
+    if not self:getSetting("recap_after_break", false) then return false end
     local ds = self.ui and self.ui.doc_settings
     if not ds then return false end
     local last = ds:readSetting("mytts_last_listen")
-    if not last or os.time() - last < 24 * 3600 then return false end
+    local days = tonumber(self:getSetting("recap_break_days", 5)) or 5
+    if not last or os.time() - last < days * 24 * 3600 then return false end
     self:_noteListened() -- asked once per break
     logger.warn("Audiobook: break of", math.floor((os.time() - last) / 3600), "h, «Ранее в книге» first")
     return MyTTSBridge.recap(self, "BEFORE", go_on) == true

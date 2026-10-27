@@ -102,7 +102,7 @@ msgstr ""
 msgid "Cancel"
 msgstr ""
 
-#: absbrowse.lua:259 menubuilder.lua:1740 menubuilder.lua:1775
+#: absbrowse.lua:259 menubuilder.lua:1759 menubuilder.lua:1794
 msgid "Save"
 msgstr ""
 
@@ -146,7 +146,7 @@ msgstr ""
 msgid "Login failed: "
 msgstr ""
 
-#: absbrowse.lua:374 absbrowse.lua:430 absbrowse.lua:557 absbrowse.lua:756 absbrowse.lua:1192 absbrowse.lua:1361 absbrowse.lua:1582 menubuilder.lua:1251
+#: absbrowse.lua:374 absbrowse.lua:430 absbrowse.lua:557 absbrowse.lua:756 absbrowse.lua:1192 absbrowse.lua:1361 absbrowse.lua:1582 menubuilder.lua:1270
 msgid "unknown error"
 msgstr ""
 
@@ -475,7 +475,7 @@ msgstr ""
 msgid "Playback speed"
 msgstr ""
 
-#: audiobookplayer.lua:1108 main.lua:584 mediasync.lua:3195 menubuilder.lua:1976
+#: audiobookplayer.lua:1108 main.lua:584 mediasync.lua:3195 menubuilder.lua:1995
 msgid "Close"
 msgstr ""
 
@@ -499,7 +499,7 @@ msgstr ""
 msgid "Keep"
 msgstr ""
 
-#: audiobookplayer.lua:1299 main.lua:1127 main.lua:2940 menubuilder.lua:2348
+#: audiobookplayer.lua:1299 main.lua:1127 main.lua:2940 menubuilder.lua:2367
 msgid "Sleep timer"
 msgstr ""
 
@@ -527,7 +527,7 @@ msgstr ""
 msgid "Speed"
 msgstr ""
 
-#: audiobookplayer.lua:1824 menubuilder.lua:2448
+#: audiobookplayer.lua:1824 menubuilder.lua:2467
 msgid "Volume"
 msgstr ""
 
@@ -582,7 +582,7 @@ msgstr ""
 msgid "Restoring Bluetooth connection…"
 msgstr ""
 
-#: btui.lua:24 main.lua:1130
+#: btui.lua:24 main.lua:1130 menubuilder.lua:362
 msgid "Off"
 msgstr ""
 
@@ -918,7 +918,7 @@ msgstr ""
 msgid "Invert (best for e-ink)"
 msgstr ""
 
-#: highlightmanager.lua:1302 main.lua:1012 menubuilder.lua:947
+#: highlightmanager.lua:1302 main.lua:1012 menubuilder.lua:966
 msgid "Underline"
 msgstr ""
 
@@ -1514,31 +1514,31 @@ msgid ""
 "%1"
 msgstr ""
 
-#: main.lua:2438 main.lua:2855 main.lua:5328
+#: main.lua:2438 main.lua:2855 main.lua:5329
 msgid "Unknown book"
 msgstr ""
 
-#: main.lua:2448 main.lua:5331
+#: main.lua:2448 main.lua:5332
 msgid "Resume from %1?"
 msgstr ""
 
-#: main.lua:2450 main.lua:2859 main.lua:5333
+#: main.lua:2450 main.lua:2859 main.lua:5334
 msgid "Book: %1"
 msgstr ""
 
-#: main.lua:2453 main.lua:2862 main.lua:5336
+#: main.lua:2453 main.lua:2862 main.lua:5337
 msgid "Chapter: %1"
 msgstr ""
 
-#: main.lua:2456 main.lua:2866 main.lua:5348
+#: main.lua:2456 main.lua:2866 main.lua:5349
 msgid "Last played: %1"
 msgstr ""
 
-#: main.lua:2459 main.lua:2880 main.lua:5351
+#: main.lua:2459 main.lua:2880 main.lua:5352
 msgid "Resume"
 msgstr ""
 
-#: main.lua:2467 main.lua:2895 main.lua:5359
+#: main.lua:2467 main.lua:2895 main.lua:5360
 msgid "From start"
 msgstr ""
 
@@ -1586,7 +1586,7 @@ msgstr ""
 msgid "Select the number of hours."
 msgstr ""
 
-#: main.lua:2985 mediasync.lua:3199 menubuilder.lua:1980
+#: main.lua:2985 mediasync.lua:3199 menubuilder.lua:1999
 msgid "Next"
 msgstr ""
 
@@ -1609,7 +1609,7 @@ msgid ""
 "This book has embedded narration — use \"Play aligned audiobook from here\" instead."
 msgstr ""
 
-#: main.lua:3429 menubuilder.lua:2216 menubuilder.lua:2281
+#: main.lua:3429 menubuilder.lua:2235 menubuilder.lua:2300
 msgid "TTS engine is not available."
 msgstr ""
 
@@ -1624,31 +1624,31 @@ msgstr ""
 msgid "Could not retrieve page text for TTS."
 msgstr ""
 
-#: main.lua:4225
+#: main.lua:4226
 msgid "Chapter ends in under a minute"
 msgstr ""
 
-#: main.lua:4226
+#: main.lua:4227
 msgid "Chapter ends in ~%1 h"
 msgstr ""
 
-#: main.lua:4227
+#: main.lua:4228
 msgid "Chapter ends in ~%1 min"
 msgstr ""
 
-#: main.lua:4241 menubuilder.lua:2356
+#: main.lua:4242 menubuilder.lua:2375
 msgid "Sleep timer: until the end of the chapter"
 msgstr ""
 
-#: main.lua:4250
+#: main.lua:4251
 msgid "Sleep timer: end of chapter, playback stopped."
 msgstr ""
 
-#: main.lua:5179
+#: main.lua:5180
 msgid "Audiobookshelf modules not available."
 msgstr ""
 
-#: main.lua:5344
+#: main.lua:5345
 msgid "File: %1"
 msgstr ""
 
@@ -1687,11 +1687,11 @@ msgstr ""
 msgid "No chapters available."
 msgstr ""
 
-#: mediasync.lua:3163 menubuilder.lua:1941
+#: mediasync.lua:3163 menubuilder.lua:1960
 msgid "Item"
 msgstr ""
 
-#: mediasync.lua:3186 menubuilder.lua:1967
+#: mediasync.lua:3186 menubuilder.lua:1986
 msgid "Prev"
 msgstr ""
 
@@ -1731,15 +1731,15 @@ msgstr ""
 msgid "sanoTTS (neural)"
 msgstr ""
 
-#: menubuilder.lua:68 menubuilder.lua:1029 ttsengine.lua:1657
+#: menubuilder.lua:68 menubuilder.lua:1048 ttsengine.lua:1657
 msgid "Pico TTS"
 msgstr ""
 
-#: menubuilder.lua:69 menubuilder.lua:1032
+#: menubuilder.lua:69 menubuilder.lua:1051
 msgid "Flite"
 msgstr ""
 
-#: menubuilder.lua:70 menubuilder.lua:1035
+#: menubuilder.lua:70 menubuilder.lua:1054
 msgid "Festival"
 msgstr ""
 
@@ -1759,7 +1759,7 @@ msgstr ""
 msgid "MBROLA voice UK English Male 1"
 msgstr ""
 
-#: menubuilder.lua:118 menubuilder.lua:1435
+#: menubuilder.lua:118 menubuilder.lua:1454
 msgid "MBROLA disabled. Using regular espeak-ng voice."
 msgstr ""
 
@@ -1802,19 +1802,19 @@ msgstr ""
 msgid "Limits synthesis chunks to about 150 characters instead of 300. Reduces the wait per sentence and avoids synthesis failures with long sentences on low-memory devices. Applies from the next page."
 msgstr ""
 
-#: menubuilder.lua:233 menubuilder.lua:2368
+#: menubuilder.lua:233 menubuilder.lua:2387
 msgid "Use audio output daemon"
 msgstr ""
 
-#: menubuilder.lua:240 menubuilder.lua:2375
+#: menubuilder.lua:240 menubuilder.lua:2394
 msgid "Routes read-aloud audio through a background daemon that keeps the Bluetooth pipeline open between sentences and tracks real playback position. On by default; turning it off uses the legacy per-play pipeline."
 msgstr ""
 
-#: menubuilder.lua:258 menubuilder.lua:262 menubuilder.lua:264 menubuilder.lua:506 menubuilder.lua:2311
+#: menubuilder.lua:258 menubuilder.lua:262 menubuilder.lua:264 menubuilder.lua:525 menubuilder.lua:2330
 msgid "Voice: %1"
 msgstr ""
 
-#: menubuilder.lua:262 menubuilder.lua:2029 menubuilder.lua:2292
+#: menubuilder.lua:262 menubuilder.lua:2048 menubuilder.lua:2311
 msgid "Auto-detect"
 msgstr ""
 
@@ -1830,7 +1830,7 @@ msgstr ""
 msgid "Synthesizes the next sentence in the background while the current one plays, removing most of the pause between sentences. Useful when your TTS engine is slow to answer each request. If audio glitches or repeated sentences occur, turn this off."
 msgstr ""
 
-#: menubuilder.lua:302 menubuilder.lua:2317 menubuilder.lua:2339
+#: menubuilder.lua:302 menubuilder.lua:2336 menubuilder.lua:2358
 msgid "Speech rate: %1x"
 msgstr ""
 
@@ -1862,806 +1862,814 @@ msgstr ""
 msgid "previous sentence (chapter of an audiobook)"
 msgstr ""
 
-#: menubuilder.lua:355
-msgid "«Previously in the book» after a break of a day"
+#: menubuilder.lua:357
+msgid "«Previously in the book» after a break: off"
 msgstr ""
 
 #: menubuilder.lua:358
-msgid "When the book was not listened to for a day or more, MyTTS first retells what happened before (one cloud request), then reading goes on. Only for books MyTTS knows («Умная книга»)."
+msgid "«Previously in the book» after a break: %1 days"
 msgstr ""
 
-#: menubuilder.lua:361
+#: menubuilder.lua:368
+msgid "after %1 days"
+msgstr ""
+
+#: menubuilder.lua:377
+msgid "When the book was not listened to for this long, MyTTS first retells what happened before (one cloud request), then reading goes on. Only for books MyTTS knows («Умная книга»)."
+msgstr ""
+
+#: menubuilder.lua:380
 msgid "Return to the page being read after a minute"
 msgstr ""
 
-#: menubuilder.lua:364
+#: menubuilder.lua:383
 msgid "Browsed away while reading aloud and left it there: after a minute without page turns the book goes back to the page being read. Not while paused."
 msgstr ""
 
-#: menubuilder.lua:370 menubuilder.lua:2446 menubuilder.lua:2461
+#: menubuilder.lua:389 menubuilder.lua:2465 menubuilder.lua:2480
 msgid "Volume: %1%%"
 msgstr ""
 
-#: menubuilder.lua:380 menubuilder.lua:2415 menubuilder.lua:2423
+#: menubuilder.lua:399 menubuilder.lua:2434 menubuilder.lua:2442
 msgid "Sentence pause (. ? !): %1s"
 msgstr ""
 
-#: menubuilder.lua:387 menubuilder.lua:2430 menubuilder.lua:2438
+#: menubuilder.lua:406 menubuilder.lua:2449 menubuilder.lua:2457
 msgid "Paragraph pause (newlines): %1s"
 msgstr ""
 
-#: menubuilder.lua:397 menubuilder.lua:2384 menubuilder.lua:2392
+#: menubuilder.lua:416 menubuilder.lua:2403 menubuilder.lua:2411
 msgid "Sentence gap (. ? !): %1s"
 msgstr ""
 
-#: menubuilder.lua:404 menubuilder.lua:2399 menubuilder.lua:2407
+#: menubuilder.lua:423 menubuilder.lua:2418 menubuilder.lua:2426
 msgid "Paragraph gap (newlines): %1s"
 msgstr ""
 
-#: menubuilder.lua:413
+#: menubuilder.lua:432
 msgid "Gap test mode (audible tones)"
 msgstr ""
 
-#: menubuilder.lua:431
+#: menubuilder.lua:450
 msgid "Clause pause (, ; : -): %1s"
 msgstr ""
 
-#: menubuilder.lua:439
+#: menubuilder.lua:458
 msgid "Word gap (between words): %1"
 msgstr ""
 
-#: menubuilder.lua:450
+#: menubuilder.lua:469
 msgid "Piper voice: %1"
 msgstr ""
 
-#: menubuilder.lua:458
+#: menubuilder.lua:477
 msgid "Download Piper voice…"
 msgstr ""
 
-#: menubuilder.lua:470
+#: menubuilder.lua:489
 msgid "Could not load voice download menu."
 msgstr ""
 
-#: menubuilder.lua:480
+#: menubuilder.lua:499
 msgid "sanoTTS voice: %1"
 msgstr ""
 
-#: menubuilder.lua:488
+#: menubuilder.lua:507
 msgid "Voice: Japanese (sanoTTS-jp)"
 msgstr ""
 
-#: menubuilder.lua:490
+#: menubuilder.lua:509
 msgid "The rate slider has no effect on this voice: the Japanese core has no speed control yet. Weights and dictionary are your own downloads from sanoTTS-jp and carry their own usage terms."
 msgstr ""
 
-#: menubuilder.lua:504
+#: menubuilder.lua:523
 msgid "Voice: (disabled while MBROLA is on)"
 msgstr ""
 
-#: menubuilder.lua:512
+#: menubuilder.lua:531
 msgid "Base voice and accent variant are ignored when a MBROLA voice is active. Disable MBROLA to use regular espeak-ng voices."
 msgstr ""
 
-#: menubuilder.lua:524
+#: menubuilder.lua:543
 msgid "Download sanoTTS-jp files…"
 msgstr ""
 
-#: menubuilder.lua:536
+#: menubuilder.lua:555
 msgid "Could not load the download menu."
 msgstr ""
 
-#: menubuilder.lua:550
+#: menubuilder.lua:569
 msgid "PocketBook pipeline - tts_sm (recommended)"
 msgstr ""
 
-#: menubuilder.lua:551
+#: menubuilder.lua:570
 msgid "Routes through the PocketBook audio daemon (softvol, dmix, resampling). Best compatibility on devices that expose tts_sm in /etc/asound.conf."
 msgstr ""
 
-#: menubuilder.lua:552
+#: menubuilder.lua:571
 msgid "Direct hardware with resampling - plughw:0"
 msgstr ""
 
-#: menubuilder.lua:553
+#: menubuilder.lua:572
 msgid "Direct hardware access through the ALSA plug layer. On some PocketBooks (e.g. PB631) the plug layer does not actually resample; if you hear playback at 2-3x speed, switch back to tts_sm or Auto."
 msgstr ""
 
-#: menubuilder.lua:554
+#: menubuilder.lua:573
 msgid "Auto (default ALSA device)"
 msgstr ""
 
-#: menubuilder.lua:555
+#: menubuilder.lua:574
 msgid "Uses the system default ALSA device, then falls back to tts_sm and plughw:0 if the default is unavailable."
 msgstr ""
 
-#: menubuilder.lua:556
+#: menubuilder.lua:575
 msgid "System player (InkView) - experimental"
 msgstr ""
 
-#: menubuilder.lua:557
+#: menubuilder.lua:576
 msgid "Uses the PocketBook InkView PlayFile API. Some firmwares (PB740, PB631) export PlayFile but do not actually play audio; if no sound comes out, switch back to tts_sm or Auto."
 msgstr ""
 
-#: menubuilder.lua:565
+#: menubuilder.lua:584
 msgid "PocketBook pipeline (direct dmix) - hwout_mix"
 msgstr ""
 
-#: menubuilder.lua:566
+#: menubuilder.lua:585
 msgid "Routes to the same PocketBook audio daemon output as tts_sm but skips the softvol layers that crash on some firmwares. Try this if tts_sm produces no sound or playback stops with an error. Loses the system TTS volume control."
 msgstr ""
 
-#: menubuilder.lua:613
+#: menubuilder.lua:632
 msgid "0 (very low)"
 msgstr ""
 
-#: menubuilder.lua:615
+#: menubuilder.lua:634
 msgid "50 (default)"
 msgstr ""
 
-#: menubuilder.lua:617
+#: menubuilder.lua:636
 msgid "99 (very high)"
 msgstr ""
 
-#: menubuilder.lua:659 menubuilder.lua:679 menubuilder.lua:701 menubuilder.lua:721
+#: menubuilder.lua:678 menubuilder.lua:698 menubuilder.lua:720 menubuilder.lua:740
 msgid " (default)"
 msgstr ""
 
-#: menubuilder.lua:742
+#: menubuilder.lua:761
 msgid " (default / off)"
 msgstr ""
 
-#: menubuilder.lua:762
+#: menubuilder.lua:781
 msgid "0 (no extra gap)"
 msgstr ""
 
-#: menubuilder.lua:763
+#: menubuilder.lua:782
 msgid "1 (10ms)"
 msgstr ""
 
-#: menubuilder.lua:764
+#: menubuilder.lua:783
 msgid "2 (20ms - default)"
 msgstr ""
 
-#: menubuilder.lua:765
+#: menubuilder.lua:784
 msgid "5 (50ms)"
 msgstr ""
 
-#: menubuilder.lua:766
+#: menubuilder.lua:785
 msgid "10 (100ms)"
 msgstr ""
 
-#: menubuilder.lua:767
+#: menubuilder.lua:786
 msgid "20 (200ms)"
 msgstr ""
 
-#: menubuilder.lua:768
+#: menubuilder.lua:787
 msgid "50 (500ms)"
 msgstr ""
 
-#: menubuilder.lua:798
+#: menubuilder.lua:817
 msgid "English (GB)"
 msgstr ""
 
-#: menubuilder.lua:799 menubuilder.lua:1799
+#: menubuilder.lua:818 menubuilder.lua:1818
 msgid "English (US)"
 msgstr ""
 
-#: menubuilder.lua:800
+#: menubuilder.lua:819
 msgid "English (Received Pronunciation)"
 msgstr ""
 
-#: menubuilder.lua:801
+#: menubuilder.lua:820
 msgid "English (Scotland)"
 msgstr ""
 
-#: menubuilder.lua:802
+#: menubuilder.lua:821
 msgid "English (Lancaster)"
 msgstr ""
 
-#: menubuilder.lua:803
+#: menubuilder.lua:822
 msgid "English (West Midlands)"
 msgstr ""
 
-#: menubuilder.lua:804
+#: menubuilder.lua:823
 msgid "English (Caribbean)"
 msgstr ""
 
-#: menubuilder.lua:805
+#: menubuilder.lua:824
 msgid "English (New York City)"
 msgstr ""
 
-#: menubuilder.lua:808 menubuilder.lua:1446 menubuilder.lua:1802
+#: menubuilder.lua:827 menubuilder.lua:1465 menubuilder.lua:1821
 msgid "German"
 msgstr ""
 
-#: menubuilder.lua:809 menubuilder.lua:1447 menubuilder.lua:1801
+#: menubuilder.lua:828 menubuilder.lua:1466 menubuilder.lua:1820
 msgid "Spanish"
 msgstr ""
 
-#: menubuilder.lua:810 menubuilder.lua:1446 menubuilder.lua:1798
+#: menubuilder.lua:829 menubuilder.lua:1465 menubuilder.lua:1817
 msgid "French"
 msgstr ""
 
-#: menubuilder.lua:811 menubuilder.lua:1447 menubuilder.lua:1803
+#: menubuilder.lua:830 menubuilder.lua:1466 menubuilder.lua:1822
 msgid "Italian"
 msgstr ""
 
-#: menubuilder.lua:812 menubuilder.lua:1447
+#: menubuilder.lua:831 menubuilder.lua:1466
 msgid "Portuguese"
 msgstr ""
 
-#: menubuilder.lua:813 menubuilder.lua:1804
+#: menubuilder.lua:832 menubuilder.lua:1823
 msgid "Portuguese (Brazil)"
 msgstr ""
 
-#: menubuilder.lua:814 menubuilder.lua:1448 menubuilder.lua:1805
+#: menubuilder.lua:833 menubuilder.lua:1467 menubuilder.lua:1824
 msgid "Dutch"
 msgstr ""
 
-#: menubuilder.lua:815 menubuilder.lua:1450 menubuilder.lua:1819
+#: menubuilder.lua:834 menubuilder.lua:1469 menubuilder.lua:1838
 msgid "Russian"
 msgstr ""
 
-#: menubuilder.lua:816 menubuilder.lua:1448 menubuilder.lua:1806
+#: menubuilder.lua:835 menubuilder.lua:1467 menubuilder.lua:1825
 msgid "Polish"
 msgstr ""
 
-#: menubuilder.lua:817 menubuilder.lua:1448 menubuilder.lua:1807
+#: menubuilder.lua:836 menubuilder.lua:1467 menubuilder.lua:1826
 msgid "Czech"
 msgstr ""
 
-#: menubuilder.lua:818 menubuilder.lua:1448 menubuilder.lua:1808
+#: menubuilder.lua:837 menubuilder.lua:1467 menubuilder.lua:1827
 msgid "Slovak"
 msgstr ""
 
-#: menubuilder.lua:819 menubuilder.lua:1450 menubuilder.lua:1822
+#: menubuilder.lua:838 menubuilder.lua:1469 menubuilder.lua:1841
 msgid "Swedish"
 msgstr ""
 
-#: menubuilder.lua:820 menubuilder.lua:1451 menubuilder.lua:1823
+#: menubuilder.lua:839 menubuilder.lua:1470 menubuilder.lua:1842
 msgid "Turkish"
 msgstr ""
 
-#: menubuilder.lua:821 menubuilder.lua:1449 menubuilder.lua:1820
+#: menubuilder.lua:840 menubuilder.lua:1468 menubuilder.lua:1839
 msgid "Greek"
 msgstr ""
 
-#: menubuilder.lua:822 menubuilder.lua:1818
+#: menubuilder.lua:841 menubuilder.lua:1837
 msgid "Finnish"
 msgstr ""
 
-#: menubuilder.lua:823 menubuilder.lua:1824
+#: menubuilder.lua:842 menubuilder.lua:1843
 msgid "Hungarian"
 msgstr ""
 
-#: menubuilder.lua:824 menubuilder.lua:1825
+#: menubuilder.lua:843 menubuilder.lua:1844
 msgid "Romanian"
 msgstr ""
 
-#: menubuilder.lua:827 menubuilder.lua:1450 menubuilder.lua:1811
+#: menubuilder.lua:846 menubuilder.lua:1469 menubuilder.lua:1830
 msgid "Arabic"
 msgstr ""
 
-#: menubuilder.lua:828
+#: menubuilder.lua:847
 msgid "Chinese (Mandarin)"
 msgstr ""
 
-#: menubuilder.lua:829 menubuilder.lua:1449 menubuilder.lua:1815
+#: menubuilder.lua:848 menubuilder.lua:1468 menubuilder.lua:1834
 msgid "Japanese"
 msgstr ""
 
-#: menubuilder.lua:830 menubuilder.lua:1816
+#: menubuilder.lua:849 menubuilder.lua:1835
 msgid "Korean"
 msgstr ""
 
-#: menubuilder.lua:831 menubuilder.lua:1810
+#: menubuilder.lua:850 menubuilder.lua:1829
 msgid "Hindi"
 msgstr ""
 
-#: menubuilder.lua:832
+#: menubuilder.lua:851
 msgid "Vietnamese"
 msgstr ""
 
-#: menubuilder.lua:836
+#: menubuilder.lua:855
 msgid "Default (male)"
 msgstr ""
 
-#: menubuilder.lua:839
+#: menubuilder.lua:858
 msgid "Female 1"
 msgstr ""
 
-#: menubuilder.lua:840
+#: menubuilder.lua:859
 msgid "Female 2"
 msgstr ""
 
-#: menubuilder.lua:841
+#: menubuilder.lua:860
 msgid "Female 3"
 msgstr ""
 
-#: menubuilder.lua:842
+#: menubuilder.lua:861
 msgid "Female 4 (breathy)"
 msgstr ""
 
-#: menubuilder.lua:843
+#: menubuilder.lua:862
 msgid "Female 5"
 msgstr ""
 
-#: menubuilder.lua:845
+#: menubuilder.lua:864
 msgid "Annie (F)"
 msgstr ""
 
-#: menubuilder.lua:846
+#: menubuilder.lua:865
 msgid "Alicia (F)"
 msgstr ""
 
-#: menubuilder.lua:847
+#: menubuilder.lua:866
 msgid "Belinda (F)"
 msgstr ""
 
-#: menubuilder.lua:848
+#: menubuilder.lua:867
 msgid "Linda (F)"
 msgstr ""
 
-#: menubuilder.lua:849
+#: menubuilder.lua:868
 msgid "Steph (F)"
 msgstr ""
 
-#: menubuilder.lua:850
+#: menubuilder.lua:869
 msgid "Andrea (F)"
 msgstr ""
 
-#: menubuilder.lua:851
+#: menubuilder.lua:870
 msgid "Anika (F)"
 msgstr ""
 
-#: menubuilder.lua:852
+#: menubuilder.lua:871
 msgid "Aunty (F)"
 msgstr ""
 
-#: menubuilder.lua:853
+#: menubuilder.lua:872
 msgid "Grandma (F)"
 msgstr ""
 
-#: menubuilder.lua:856
+#: menubuilder.lua:875
 msgid "Male 1"
 msgstr ""
 
-#: menubuilder.lua:857
+#: menubuilder.lua:876
 msgid "Male 2"
 msgstr ""
 
-#: menubuilder.lua:858
+#: menubuilder.lua:877
 msgid "Male 3"
 msgstr ""
 
-#: menubuilder.lua:859
+#: menubuilder.lua:878
 msgid "Male 4"
 msgstr ""
 
-#: menubuilder.lua:860
+#: menubuilder.lua:879
 msgid "Male 5"
 msgstr ""
 
-#: menubuilder.lua:861
+#: menubuilder.lua:880
 msgid "Male 6"
 msgstr ""
 
-#: menubuilder.lua:862
+#: menubuilder.lua:881
 msgid "Male 7"
 msgstr ""
 
-#: menubuilder.lua:863
+#: menubuilder.lua:882
 msgid "Alex (M)"
 msgstr ""
 
-#: menubuilder.lua:864
+#: menubuilder.lua:883
 msgid "Andy (M)"
 msgstr ""
 
-#: menubuilder.lua:865
+#: menubuilder.lua:884
 msgid "Gene (M)"
 msgstr ""
 
-#: menubuilder.lua:866
+#: menubuilder.lua:885
 msgid "Lee (M)"
 msgstr ""
 
-#: menubuilder.lua:867
+#: menubuilder.lua:886
 msgid "Shelby (M, smooth)"
 msgstr ""
 
-#: menubuilder.lua:870
+#: menubuilder.lua:889
 msgid "Robosoft 1 (softer)"
 msgstr ""
 
-#: menubuilder.lua:871
+#: menubuilder.lua:890
 msgid "Robosoft 2 (softer)"
 msgstr ""
 
-#: menubuilder.lua:872
+#: menubuilder.lua:891
 msgid "Robosoft 3 (softer)"
 msgstr ""
 
-#: menubuilder.lua:873
+#: menubuilder.lua:892
 msgid "Robosoft 4 (softer)"
 msgstr ""
 
-#: menubuilder.lua:874
+#: menubuilder.lua:893
 msgid "Robosoft 5 (softer)"
 msgstr ""
 
-#: menubuilder.lua:875
+#: menubuilder.lua:894
 msgid "Robosoft 6 (softer)"
 msgstr ""
 
-#: menubuilder.lua:876
+#: menubuilder.lua:895
 msgid "Robosoft 7 (softer)"
 msgstr ""
 
-#: menubuilder.lua:877
+#: menubuilder.lua:896
 msgid "Robosoft 8 (softer)"
 msgstr ""
 
-#: menubuilder.lua:880
+#: menubuilder.lua:899
 msgid "Whisper"
 msgstr ""
 
-#: menubuilder.lua:881
+#: menubuilder.lua:900
 msgid "Whisper (female)"
 msgstr ""
 
-#: menubuilder.lua:882
+#: menubuilder.lua:901
 msgid "Croak"
 msgstr ""
 
-#: menubuilder.lua:909
+#: menubuilder.lua:928
 msgid "Accent: %1"
 msgstr ""
 
-#: menubuilder.lua:936
+#: menubuilder.lua:955
 msgid "Voice type: %1"
 msgstr ""
 
-#: menubuilder.lua:946
+#: menubuilder.lua:965
 msgid "Background highlight"
 msgstr ""
 
-#: menubuilder.lua:948
+#: menubuilder.lua:967
 msgid "Box border"
 msgstr ""
 
-#: menubuilder.lua:949
+#: menubuilder.lua:968
 msgid "Invert colors"
 msgstr ""
 
-#: menubuilder.lua:998
+#: menubuilder.lua:1017
 msgid "espeak-ng (formant, fast, robotic)"
 msgstr ""
 
-#: menubuilder.lua:1006
+#: menubuilder.lua:1025
 msgid "Piper (neural, natural-sounding)"
 msgstr ""
 
-#: menubuilder.lua:1014
+#: menubuilder.lua:1033
 msgid "sanoTTS (neural, lightweight)"
 msgstr ""
 
-#: menubuilder.lua:1023
+#: menubuilder.lua:1042
 msgid "sanoTTS-jp (Japanese neural)"
 msgstr ""
 
-#: menubuilder.lua:1042
+#: menubuilder.lua:1061
 msgid "Platform-native helper (user-supplied engine)"
 msgstr ""
 
-#: menubuilder.lua:1048
+#: menubuilder.lua:1067
 msgid "No TTS engines found"
 msgstr ""
 
-#: menubuilder.lua:1089
+#: menubuilder.lua:1108
 msgid "No voice models found"
 msgstr ""
 
-#: menubuilder.lua:1093
+#: menubuilder.lua:1112
 msgid "Place .onnx files in plugins/audiobook.koplugin/piper/"
 msgstr ""
 
-#: menubuilder.lua:1141
+#: menubuilder.lua:1160
 msgid "Note: this device has limited CPU/RAM. Piper voices may pause between sentences or fall back to espeak during playback. Enabling \"Low-resource mode\" in Voice settings can help."
 msgstr ""
 
-#: menubuilder.lua:1165
+#: menubuilder.lua:1184
 msgid "No sanoTTS voices found"
 msgstr ""
 
-#: menubuilder.lua:1189
+#: menubuilder.lua:1208
 msgid "Word phonemization: dictionary (no espeak)"
 msgstr ""
 
-#: menubuilder.lua:1207
+#: menubuilder.lua:1226
 msgid "Reads the pronunciation dictionary directly instead of running the espeak helper for every clause: faster and it keeps word boundaries exact. Hard-to-read words (names) still fall back to espeak per clause. On by default for all sanoTTS voices."
 msgstr ""
 
-#: menubuilder.lua:1234
+#: menubuilder.lua:1253
 msgid "Refresh voice list from internet"
 msgstr ""
 
-#: menubuilder.lua:1238
+#: menubuilder.lua:1257
 msgid "Fetching latest voice list…"
 msgstr ""
 
-#: menubuilder.lua:1246
+#: menubuilder.lua:1265
 msgid ""
 "Voice list updated.\n"
 "%1 voices available."
 msgstr ""
 
-#: menubuilder.lua:1251
+#: menubuilder.lua:1270
 msgid ""
 "Could not refresh voice list.\n"
 "\n"
 msgstr ""
 
-#: menubuilder.lua:1259
+#: menubuilder.lua:1278
 msgid "─"
 msgstr ""
 
-#: menubuilder.lua:1279 menubuilder.lua:1533
+#: menubuilder.lua:1298 menubuilder.lua:1552
 msgid " ✓ installed"
 msgstr ""
 
-#: menubuilder.lua:1288 menubuilder.lua:1542
+#: menubuilder.lua:1307 menubuilder.lua:1561
 msgid "Downloading "
 msgstr ""
 
-#: menubuilder.lua:1288 menubuilder.lua:1542
+#: menubuilder.lua:1307 menubuilder.lua:1561
 msgid ""
 "…\n"
 "(~"
 msgstr ""
 
-#: menubuilder.lua:1289 menubuilder.lua:1543
+#: menubuilder.lua:1308 menubuilder.lua:1562
 msgid " MB)"
 msgstr ""
 
-#: menubuilder.lua:1309 menubuilder.lua:1561
+#: menubuilder.lua:1328 menubuilder.lua:1580
 msgid ""
 "Voice installed:\n"
 msgstr ""
 
-#: menubuilder.lua:1310
+#: menubuilder.lua:1329
 msgid ""
 "\n"
 "\n"
 "It is now selected as your active Piper voice."
 msgstr ""
 
-#: menubuilder.lua:1315 menubuilder.lua:1383 menubuilder.lua:1567
+#: menubuilder.lua:1334 menubuilder.lua:1402 menubuilder.lua:1586
 msgid ""
 "Download failed:\n"
 msgstr ""
 
-#: menubuilder.lua:1342
+#: menubuilder.lua:1361
 msgid "Japanese voice for sanoTTS: two files, ~14 MB total, from the sanoTTS-jp v1.0.0 release (MIT). The plugin bundles none of this data."
 msgstr ""
 
-#: menubuilder.lua:1347
+#: menubuilder.lua:1366
 msgid "Voice weights"
 msgstr ""
 
-#: menubuilder.lua:1348
+#: menubuilder.lua:1367
 msgid "Japanese dictionary (438k entries)"
 msgstr ""
 
-#: menubuilder.lua:1368
+#: menubuilder.lua:1387
 msgid "Downloading sanoTTS-jp file…"
 msgstr ""
 
-#: menubuilder.lua:1378
+#: menubuilder.lua:1397
 msgid ""
 "Downloaded.\n"
 "\n"
 "Weights & dictionary © ayutaz/sanoTTS-jp (release v1.0.0). Their usage terms (LICENSE-MODEL.md, NOTICE.md) were saved next to the voice. Select 'sanoTTS-jp (Japanese)' under TTS engine to use it."
 msgstr ""
 
-#: menubuilder.lua:1393
+#: menubuilder.lua:1412
 msgid "When both files are downloaded, select 'sanoTTS-jp (Japanese)' under TTS engine."
 msgstr ""
 
-#: menubuilder.lua:1421
+#: menubuilder.lua:1440
 msgid "Disable MBROLA (use regular espeak-ng voice)"
 msgstr ""
 
-#: menubuilder.lua:1446
+#: menubuilder.lua:1465
 msgid "English"
 msgstr ""
 
-#: menubuilder.lua:1449
+#: menubuilder.lua:1468
 msgid "Chinese"
 msgstr ""
 
-#: menubuilder.lua:1477
+#: menubuilder.lua:1496
 msgid " (bundled)"
 msgstr ""
 
-#: menubuilder.lua:1491
+#: menubuilder.lua:1510
 msgid ""
 "MBROLA voice selected:\n"
 "%1"
 msgstr ""
 
-#: menubuilder.lua:1562
+#: menubuilder.lua:1581
 msgid ""
 "\n"
 "\n"
 "It is now selected as your active MBROLA voice."
 msgstr ""
 
-#: menubuilder.lua:1580
+#: menubuilder.lua:1599
 msgid "All available MBROLA voices are already installed."
 msgstr ""
 
-#: menubuilder.lua:1599
+#: menubuilder.lua:1618
 msgid "Native helper: not set"
 msgstr ""
 
-#: menubuilder.lua:1601
+#: menubuilder.lua:1620
 msgid "Native helper: %1"
 msgstr ""
 
-#: menubuilder.lua:1611
+#: menubuilder.lua:1630
 msgid "Input encoding: %1"
 msgstr ""
 
-#: menubuilder.lua:1639
+#: menubuilder.lua:1658
 msgid "daemon/FIFO"
 msgstr ""
 
-#: menubuilder.lua:1639
+#: menubuilder.lua:1658
 msgid "one-shot"
 msgstr ""
 
-#: menubuilder.lua:1640
+#: menubuilder.lua:1659
 msgid "Speed mode: %1"
 msgstr ""
 
-#: menubuilder.lua:1644
+#: menubuilder.lua:1663
 msgid "One-shot (run helper per sentence)"
 msgstr ""
 
-#: menubuilder.lua:1653
+#: menubuilder.lua:1672
 msgid "Daemon/FIFO (keep helper running)"
 msgstr ""
 
-#: menubuilder.lua:1669
+#: menubuilder.lua:1688
 msgid "FIFO path: default"
 msgstr ""
 
-#: menubuilder.lua:1671
+#: menubuilder.lua:1690
 msgid "FIFO path: %1"
 msgstr ""
 
-#: menubuilder.lua:1683
+#: menubuilder.lua:1702
 msgid "Pre-synthesis command: none"
 msgstr ""
 
-#: menubuilder.lua:1685
+#: menubuilder.lua:1704
 msgid "Pre-synthesis command: %1"
 msgstr ""
 
-#: menubuilder.lua:1702
+#: menubuilder.lua:1721
 msgid "Select native TTS helper"
 msgstr ""
 
-#: menubuilder.lua:1714
+#: menubuilder.lua:1733
 msgid "Native helper path saved."
 msgstr ""
 
-#: menubuilder.lua:1729
+#: menubuilder.lua:1748
 msgid "Native TTS FIFO path"
 msgstr ""
 
-#: menubuilder.lua:1732
+#: menubuilder.lua:1751
 msgid "Optional path to the request FIFO used in daemon mode. Leave empty to use the default."
 msgstr ""
 
-#: menubuilder.lua:1764
+#: menubuilder.lua:1783
 msgid "Pre-synthesis command"
 msgstr ""
 
-#: menubuilder.lua:1767
+#: menubuilder.lua:1786
 msgid "Optional shell command to run before each synthesis request (for example, to wake or restart a device-specific audio path)."
 msgstr ""
 
-#: menubuilder.lua:1800
+#: menubuilder.lua:1819
 msgid "English (UK)"
 msgstr ""
 
-#: menubuilder.lua:1809
+#: menubuilder.lua:1828
 msgid "Ukrainian"
 msgstr ""
 
-#: menubuilder.lua:1812
+#: menubuilder.lua:1831
 msgid "Catalan"
 msgstr ""
 
-#: menubuilder.lua:1813
+#: menubuilder.lua:1832
 msgid "Chinese (Simplified)"
 msgstr ""
 
-#: menubuilder.lua:1814
+#: menubuilder.lua:1833
 msgid "Chinese (Traditional)"
 msgstr ""
 
-#: menubuilder.lua:1817
+#: menubuilder.lua:1836
 msgid "Danish"
 msgstr ""
 
-#: menubuilder.lua:1821
+#: menubuilder.lua:1840
 msgid "Norwegian"
 msgstr ""
 
-#: menubuilder.lua:1844
+#: menubuilder.lua:1863
 msgid "offline"
 msgstr ""
 
-#: menubuilder.lua:1844
+#: menubuilder.lua:1863
 msgid "online"
 msgstr ""
 
-#: menubuilder.lua:1846
+#: menubuilder.lua:1865
 msgid "%1 · %2 (%3)"
 msgstr ""
 
-#: menubuilder.lua:1848
+#: menubuilder.lua:1867
 msgid "%1 (%2)"
 msgstr ""
 
-#: menubuilder.lua:1865 menubuilder.lua:1887 menubuilder.lua:2133 menubuilder.lua:2161 menubuilder.lua:2197
+#: menubuilder.lua:1884 menubuilder.lua:1906 menubuilder.lua:2152 menubuilder.lua:2180 menubuilder.lua:2216
 msgid "Voice set to %1."
 msgstr ""
 
-#: menubuilder.lua:1900
+#: menubuilder.lua:1919
 msgid "No voices found."
 msgstr ""
 
-#: menubuilder.lua:1909 menubuilder.lua:2002 menubuilder.lua:2013
+#: menubuilder.lua:1928 menubuilder.lua:2021 menubuilder.lua:2032
 msgid "Could not open voice list."
 msgstr ""
 
-#: menubuilder.lua:1991 menubuilder.lua:2232 menubuilder.lua:2251
+#: menubuilder.lua:2010 menubuilder.lua:2251 menubuilder.lua:2270
 msgid "Select voice"
 msgstr ""
 
-#: menubuilder.lua:2027
+#: menubuilder.lua:2046
 msgid "Auto (book language)"
 msgstr ""
 
-#: menubuilder.lua:2048
+#: menubuilder.lua:2067
 msgid "Installed voices"
 msgstr ""
 
-#: menubuilder.lua:2082
+#: menubuilder.lua:2101
 msgid "Languages"
 msgstr ""
 
-#: menubuilder.lua:2224
+#: menubuilder.lua:2243
 msgid "Loading voices…"
 msgstr ""
 
-#: menubuilder.lua:2319
+#: menubuilder.lua:2338
 msgid "Speech rate"
 msgstr ""
 
-#: menubuilder.lua:2386 menubuilder.lua:2417
+#: menubuilder.lua:2405 menubuilder.lua:2436
 msgid "Sentence pause"
 msgstr ""
 
-#: menubuilder.lua:2401 menubuilder.lua:2432
+#: menubuilder.lua:2420 menubuilder.lua:2451
 msgid "Paragraph pause"
 msgstr ""
 
-#: menubuilder.lua:2468
+#: menubuilder.lua:2487
 msgid "TTS settings"
 msgstr ""
 
