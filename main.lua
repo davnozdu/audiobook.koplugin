@@ -1460,7 +1460,11 @@ function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self:_audioOutputReady() then return end
     self:_volumeKeysToSystem(true)
     -- MyTTS: this page and the next go to its LLM as soon as reading has started.
-    if MyTTSBridge and UIManager then UIManager:scheduleIn(1, function() MyTTSBridge.ahead(self) end) end
+    if MyTTSBridge and UIManager then
+        -- A new start: MyTTS may have restarted meanwhile, the pages go again.
+        MyTTSBridge._sent_index, MyTTSBridge._last_ahead = nil, nil
+        UIManager:scheduleIn(1, function() MyTTSBridge.ahead(self) end)
+    end
     local page_text = text or self:getCurrentPageText()
     if not page_text or page_text == "" then
         UIManager:show(InfoMessage:new{

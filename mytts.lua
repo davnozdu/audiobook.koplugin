@@ -202,6 +202,15 @@ function MyTTS.ahead(plugin, tries)
     tries = tries or 0
     UIManager:scheduleIn(tries == 0 and 0.5 or 1, function()
         local sc = plugin.sync_controller
+        -- Still well inside what MyTTS was given: no new extraction (12 pages of text and their parse on every page
+        -- turn cost more than the turn itself). Sent again past the middle, or after a jump.
+        local now_text = sc and sc.parsed_data and sc.parsed_data.sentences and sc.reading_sentence_idx
+            and sc.parsed_data.sentences[sc.reading_sentence_idx]
+        now_text = now_text and now_text.text
+        if now_text and MyTTS._sent_index and MyTTS._sent_index[now_text]
+                and MyTTS._sent_index[now_text] < (MyTTS._sent_count or 0) / 2 then
+            return
+        end
         if not (sc and sc.isPlaying and sc:isPlaying()) then
             -- Reading is starting (the engine loads, the first sentence is made): ask again, up to 20 s.
             if sc and sc.state == "loading" and tries < 20 then MyTTS.ahead(plugin, tries + 1); return end
@@ -237,7 +246,13 @@ function MyTTS.ahead(plugin, tries)
         end
         local sent = MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
         -- Not reached (MyTTS restarting after an update): the same page is sent again on the next call.
-        if sent then MyTTS._last_ahead = text end
+        if sent then
+            MyTTS._last_ahead = text
+            MyTTS._sent_index, MyTTS._sent_count = {}, #sentences
+            for i, t in ipairs(sentences) do
+                if MyTTS._sent_index[t] == nil then MyTTS._sent_index[t] = i end
+            end
+        end
         alog("mytts-ahead chars", #text, "sentences", #sentences, sent and "ok" or "unreachable")
     end)
 end

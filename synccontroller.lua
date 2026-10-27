@@ -1827,10 +1827,13 @@ finishes, the next one's WAV is already on disk.
 @param explicit_idx number|nil  If provided, prefetch this sentence index
                                 instead of reading_sentence_idx + 1.
 --]]
---- True when [text] has something to say: a letter or a digit (Latin, Latin-1
---- or Cyrillic lead byte), not just punctuation.
+--- True when [text] has something to say: a letter or a digit, not just
+--- punctuation.  UTF-8 lead bytes C3–DF (Latin-1 letters, Greek, Cyrillic,
+--- Armenian, Hebrew, Arabic…) and E3–EF (CJK, Hangul, kana) count as letters;
+--- C2 («», NBSP) and E2 (dashes, …, quotes) are punctuation.  A Greek or
+--- Chinese sentence used to be skipped as «punctuation only».
 function SyncController.speakable(text)
-    return text ~= nil and text:find("[%w\195\208\209]") ~= nil
+    return text ~= nil and text:find("[%w\195-\223\227-\239]") ~= nil
 end
 
 function SyncController:_prefetchNextSentence(explicit_idx)

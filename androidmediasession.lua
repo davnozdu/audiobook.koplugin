@@ -259,6 +259,41 @@ function AndroidMediaSession:pollCommand()
     return cmd or self.CMD_NONE
 end
 
+--- Headphones (Bluetooth A2DP or wired) are the audio route now; nil when unknown.
+function AndroidMediaSession:headphonesOn()
+    local android = self._android
+    if not android then return nil end
+    local ok, on = pcall(function()
+        return android.jni:context(android.app.activity.vm, function(jni)
+            local env = jni.env
+            env[0].PushLocalFrame(env, 16)
+            local activity = android.app.activity.clazz
+            local cls = env[0].GetObjectClass(env, activity)
+            local get = env[0].GetMethodID(env, cls, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;")
+            local am = env[0].CallObjectMethod(env, activity, get, env[0].NewStringUTF(env, "audio"))
+            local result
+            if not checkException(env) and am ~= nil and tonumber(ffi.cast("intptr_t", am)) ~= 0 then
+                local am_cls = env[0].GetObjectClass(env, am)
+                local a2dp = env[0].GetMethodID(env, am_cls, "isBluetoothA2dpOn", "()Z")
+                local wired = env[0].GetMethodID(env, am_cls, "isWiredHeadsetOn", "()Z")
+                if not checkException(env) then
+                    result = env[0].CallBooleanMethod(env, am, a2dp) ~= 0 or env[0].CallBooleanMethod(env, am, wired) ~= 0
+                    if checkException(env) then result = nil end
+                end
+            end
+            env[0].PopLocalFrame(env, nil)
+            return result
+        end)
+    end)
+    if ok then return on end
+    return nil
+end
+
+local function isPlaying(p)
+    local sc, ms = p.sync_controller, p.media_sync
+    return (sc and sc.isPlaying and sc:isPlaying()) or (ms and ms.isPlaying and ms:isPlaying()) or false
+end
+
 function AndroidMediaSession:startPolling(plugin)
     self._plugin = plugin
     self._poll_gen = (self._poll_gen or 0) + 1
@@ -313,7 +348,23 @@ function AndroidMediaSession:startPolling(plugin)
                 end
             end
         end
-        UIManager:scheduleIn(0.2, tick)
+        -- Headphones gone while playing (Bluetooth off, cable out): pause, as media apps do, instead of going on
+        -- through the speaker.  Checked once a second.
+        local p = self._plugin
+        local playing = p and isPlaying(p)
+        self._route_ticks = (self._route_ticks or 0) + 1
+        if p and self._route_ticks >= 5 then
+            self._route_ticks = 0
+            local on = self:headphonesOn()
+            if playing and on == false and self._headphones == true then
+                logger.warn("AndroidMediaSession: headphones disconnected, pausing")
+                pcall(function() p:onMediaPause() end)
+                playing = false
+            end
+            if on ~= nil then self._headphones = on end
+        end
+        -- Paused or stopped: buttons are still heard, but once a second instead of five times.
+        UIManager:scheduleIn(playing and 0.2 or 1, tick)
     end
     UIManager:scheduleIn(0.2, tick)
 end
