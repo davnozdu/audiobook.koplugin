@@ -408,6 +408,7 @@ TRANSLATIONS_RU = {
     "Volume: %1%%": "Громкость: %1%%",
     "Bottom bar size: %1×": "Размер нижней панели: %1×",
     "Until the end of the chapter": "До конца главы",
+    "Ask about the book…": "Спросить о книге…",
     "Headset «next»: time left in the chapter": "Кнопка «вперёд» гарнитуры: сколько до конца главы",
     "Headset «next»: next sentence": "Кнопка «вперёд» гарнитуры: следующее предложение",
     "Say how much is left of the chapter": "Сказать, сколько осталось до конца главы",

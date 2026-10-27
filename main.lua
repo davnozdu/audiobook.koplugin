@@ -581,6 +581,14 @@ function Audiobook:showMyTTSDialog()
         if #row == 2 then table.insert(rows, row); row = {} end
     end
     if #row > 0 then table.insert(rows, row) end
+    -- «Спросить о книге»: only when it is on in MyTTS («Умная книга» → «Вопросы о книге»).
+    local st = MyTTSBridge.call and MyTTSBridge.call("state")
+    if st and st.questions == 1 then
+        table.insert(rows, {{ text = _("Ask about the book…"), callback = function()
+            UIManager:close(dialog)
+            MyTTSBridge.askDialog(self)
+        end }})
+    end
     table.insert(rows, {{ text = _("Close"), callback = function() UIManager:close(dialog) end }})
     dialog = ButtonDialog:new{ title = _("Smart book (MyTTS)"), buttons = rows }
     UIManager:show(dialog)

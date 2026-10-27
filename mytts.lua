@@ -147,7 +147,7 @@ function MyTTS.call(method, arg)
                     result[key] = ""
                 end
             end
-            for _i, key in ipairs({ "running", "speaking", "paused" }) do
+            for _i, key in ipairs({ "running", "speaking", "paused", "questions" }) do
                 result[key] = tonumber(env[0].CallIntMethod(env, bundle, get_int, jstr(key))) or 0
             end
             failed()
@@ -255,6 +255,65 @@ function MyTTS.ahead(plugin, tries)
         end
         alog("mytts-ahead chars", #text, "sentences", #sentences, sent and "ok" or "unreachable")
     end)
+end
+
+--- «Спросить о книге»: [question] about the place being read, answered by MyTTS's cloud LLM from what has been read
+--- (the page goes with it, and the sentence heard last for «объясни последнюю фразу»), shown and read in the window.
+function MyTTS.ask(plugin, question)
+    if not question or question:match("^%s*$") then return false end
+    if plugin.pauseReadAlong then pcall(plugin.pauseReadAlong, plugin) end
+    local extras = MyTTS.extras(plugin)
+    if not extras.text then return false end
+    extras.question = jniText(question, 1000)
+    local sc = plugin.sync_controller
+    local sentence = sc and sc.current_sentence and sc.current_sentence.text
+    if sentence then extras.sentence = jniText(sentence, 2000) end
+    extras.window = "1"
+    if not MyTTS.send(extras) then return false end
+    local UIManager = require("ui/uimanager")
+    MyTTS._recap_seen = nil
+    UIManager:scheduleIn(0.8, function() MyTTS.showWindow(plugin, "Вопрос о книге") end)
+    return true
+end
+
+--- «Спросить о книге»: a field for the question, or the microphone (MyTTS listens and recognises it, GigaAM).
+function MyTTS.askDialog(plugin)
+    local UIManager = require("ui/uimanager")
+    local InputDialog = require("ui/widget/inputdialog")
+    local input
+    input = InputDialog:new{
+        title = "Спросить о книге",
+        input_hint = "Например: почему героиня злится?",
+        buttons = {{
+            { text = "Отмена", id = "close", callback = function() UIManager:close(input) end },
+            -- 🎤 (voice question, GigaAM in MyTTS) comes with MyTTS's voice input: MyTTS.askByVoice is ready for it.
+            { text = "Спросить", is_enter_default = true, callback = function()
+                local q = input:getInputText()
+                UIManager:close(input)
+                MyTTS.ask(plugin, q)
+            end },
+        }},
+    }
+    UIManager:show(input)
+    input:onShowKeyboard()
+end
+
+--- The question by voice: MyTTS opens its small listening window over KOReader, recognises the question and asks it;
+--- the answer comes into this plugin's window as a typed one does.
+function MyTTS.askByVoice(plugin)
+    if plugin.pauseReadAlong then pcall(plugin.pauseReadAlong, plugin) end
+    local extras = MyTTS.extras(plugin)
+    if not extras.text then return false end
+    local sc = plugin.sync_controller
+    local sentence = sc and sc.current_sentence and sc.current_sentence.text
+    if sentence then extras.sentence = jniText(sentence, 2000) end
+    extras.voice = "1"
+    extras.window = "1"
+    if not MyTTS.send(extras) then return false end
+    MyTTS._recap_seen = nil
+    -- After listening (a few seconds) the answer is being made: the window follows it.
+    require("ui/uimanager"):scheduleIn(1.5, function() MyTTS.showWindow(plugin, "Вопрос о книге") end)
+    return true
 end
 
 --- Pause / resume / stop / replay of the retelling's speech: through the provider, else through the command activity.
