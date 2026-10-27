@@ -225,7 +225,9 @@ function MyTTS.ahead(plugin)
             logger.warn("MyTTS: no json module, ahead text not sent")
             return
         end
-        MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
+        local sent = MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
+        local DL = package.loaded["audiobook_debuglog"]
+        if DL and DL.log then pcall(DL.log, "mytts-ahead chars", #text, "sentences", #sentences, sent and "ok" or "unreachable") end
     end)
 end
 

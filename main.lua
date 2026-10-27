@@ -49,6 +49,27 @@ local Audiobook = WidgetContainer:extend{
     is_doc_only = false,
 }
 
+--- While reading aloud the volume keys change the volume (on Android KOReader turns pages with them by default, so the
+--- system never saw the key); after stop they turn pages again. Only a setting this plugin changed is put back.
+function Audiobook:_volumeKeysToSystem(on)
+    if not (Device and Device.isAndroid and Device:isAndroid()) then return end
+    local ok, android = pcall(require, "android")
+    if not ok or not android or not android.getVolumeKeysIgnored then return end
+    pcall(function()
+        if on then
+            if not android.getVolumeKeysIgnored() then
+                android.setVolumeKeysIgnored(true)
+                self._volume_keys_taken = true
+                dlog("volume-keys to system")
+            end
+        elseif self._volume_keys_taken then
+            self._volume_keys_taken = nil
+            android.setVolumeKeysIgnored(false)
+            dlog("volume-keys back to page turning")
+        end
+    end)
+end
+
 function Audiobook:init()
     -- ── Phase 1: Load ancillary modules ─────────────────────────────
     -- These are loaded here (not at module top level) because a failed
@@ -1437,6 +1458,7 @@ end
 function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self._init_ok then self:_showInitError(); return end
     if not self:_audioOutputReady() then return end
+    self:_volumeKeysToSystem(true)
     -- MyTTS: this page and the next go to its LLM as soon as reading has started.
     if MyTTSBridge and UIManager then UIManager:scheduleIn(1, function() MyTTSBridge.ahead(self) end) end
     local page_text = text or self:getCurrentPageText()
@@ -1687,6 +1709,7 @@ function Audiobook:startMediaPlayback()
         return
     end
     if not self:_audioOutputReady() then return end
+    self:_volumeKeysToSystem(true)
 
     local doc_path = self.ui and self.ui.document and (self.ui.document.file_path or self.ui.document.file)
     if doc_path then
@@ -3647,6 +3670,7 @@ function Audiobook:stopReadAlong(opts)
     opts = opts or {}
     if not self._init_ok then return end
     logger.warn("Audiobook: stopReadAlong() called")
+    self:_volumeKeysToSystem(false)
     -- Save media playback position before stopping
     if self.media_sync and self.media_sync.state ~= "stopped" then
         local ok_pos, pos = pcall(function()
@@ -4662,6 +4686,7 @@ end
 
 function Audiobook:onCloseDocument()
     logger.warn("Audiobook: onCloseDocument event received")
+    self:_volumeKeysToSystem(false)
     -- Re-assert the overlay inset into the sidecar before ReaderConfig writes
     -- copt_* (SaveSettings fires before CloseDocument, so this only covers
     -- paths that bypassed it). Dropping chrome must not restore the original
