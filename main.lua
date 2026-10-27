@@ -225,6 +225,19 @@ function Audiobook:init()
                 end,
             }
         end)
+        -- MyTTS «Умная книга»: with the dictionary off for single words, long-press opens this menu instead.
+        self.ui.highlight:addToHighlightDialog("17_mytts", function(this)
+            return {
+                text = _("Smart book (MyTTS)"),
+                show_in_highlight_dialog_func = function()
+                    return MyTTSBridge ~= nil and MyTTSBridge.available()
+                end,
+                callback = function()
+                    this:onClose()
+                    UIManager:scheduleIn(0.3, function() self:showMyTTSDialog() end)
+                end,
+            }
+        end)
     end
 
     -- Single-word dictionary popup buttons.  KOReader 2026.07
