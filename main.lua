@@ -1463,6 +1463,10 @@ end
 function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self._init_ok then self:_showInitError(); return end
     if not self:_audioOutputReady() then return end
+    -- After a break of a day or more (MyTTS fork, «recap_after_break», on): «Ранее в книге» from MyTTS first, then
+    -- this start goes on by itself.  A book MyTTS does not know just starts.
+    if self:_recapAfterBreak(function() self:startReadAlong(text, start_pos, anchor_xp) end) then return end
+    self:_noteListened()
     self:_volumeKeysToSystem(true)
     -- MyTTS: this page and the next go to its LLM as soon as reading has started.
     if MyTTSBridge and UIManager then
@@ -3681,6 +3685,7 @@ function Audiobook:stopReadAlong(opts)
     if not self._init_ok then return end
     logger.warn("Audiobook: stopReadAlong() called")
     self:_volumeKeysToSystem(false)
+    self:_noteListened()
     -- Save media playback position before stopping
     if self.media_sync and self.media_sync.state ~= "stopped" then
         local ok_pos, pos = pcall(function()
@@ -4054,6 +4059,8 @@ function Audiobook:onPageUpdate(cur_page, prev_page)
     self:_handlePageTurnFollow()
     self:_armAutoReturn()
     self:_checkChapterSleep()
+    local sc = self.sync_controller
+    if sc and sc:isPlaying() then self:_noteListened() end
     -- MyTTS: the next pages prepared by its LLM while this one is read.
     if MyTTSBridge then MyTTSBridge.ahead(self) end
     -- TTS overlay boxes are screen coordinates.  A page turn must drop them
@@ -4159,6 +4166,65 @@ function Audiobook:_armAutoReturn()
         end
     end
     UIManager:scheduleIn(60, self._auto_return_fn)
+end
+
+--- This book was listened to now (kept with the book's own settings, written when KOReader saves them).
+function Audiobook:_noteListened()
+    local ds = self.ui and self.ui.doc_settings
+    if ds then pcall(function() ds:saveSetting("mytts_last_listen", os.time()) end) end
+end
+
+function Audiobook:_recapAfterBreak(go_on)
+    if not (MyTTSBridge and MyTTSBridge.available and MyTTSBridge.available()) then return false end
+    if not self:getSetting("recap_after_break", true) then return false end
+    local ds = self.ui and self.ui.doc_settings
+    if not ds then return false end
+    local last = ds:readSetting("mytts_last_listen")
+    if not last or os.time() - last < 24 * 3600 then return false end
+    self:_noteListened() -- asked once per break
+    logger.warn("Audiobook: break of", math.floor((os.time() - last) / 3600), "h, «Ранее в книге» first")
+    return MyTTSBridge.recap(self, "BEFORE", go_on) == true
+end
+
+--- Characters from the place being read to the start of the next chapter (cached per page: a chapter's text is
+--- taken once per page, not on every refresh of the bar).
+function Audiobook:_charsToChapterEnd()
+    local ui = self.ui
+    if not (ui and ui.document and ui.getCurrentPage) then return nil end
+    local page = ui:getCurrentPage()
+    if self._chapter_chars and self._chapter_chars.page == page then return self._chapter_chars.n end
+    local doc = ui.document
+    local ok, n = pcall(function()
+        local total = doc:getPageCount()
+        local nxt = ui.toc and ui.toc:getNextChapter(page)
+        if not nxt or nxt <= page then nxt = total + 1 end
+        local function count(t) return t and select(2, t:gsub("[^\128-\191]", "")) or 0 end
+        if ui.rolling and doc.getTextFromXPointers and doc.getPageXPointer then
+            local from = doc:getXPointer()
+            local to = nxt <= total and doc:getPageXPointer(nxt) or doc:getPageXPointer(total)
+            local text = doc:getTextFromXPointers(from, to)
+            return count(text)
+        end
+        local here = count(self:getCurrentPageText())
+        return here * (nxt - page)
+    end)
+    if not ok or not n then return nil end
+    self._chapter_chars = { page = page, n = n }
+    return n
+end
+
+--- «До конца главы ~12 мин» for the read-aloud bar: the text left in the chapter at the speed actually measured
+--- while listening (about 14 characters a second until a minute has been heard).
+function Audiobook:chapterRemainingText()
+    local sc = self.sync_controller
+    if not (sc and (sc:isPlaying() or sc:isPaused())) then return nil end
+    local chars = self:_charsToChapterEnd()
+    if not chars or chars <= 0 then return nil end
+    local rate = sc.charsPerSecond and sc:charsPerSecond() or nil
+    local minutes = math.floor(chars / (rate or 14) / 60 + 0.5)
+    if minutes < 1 then return _("Chapter ends in under a minute") end
+    if minutes >= 120 then return T(_("Chapter ends in ~%1 h"), math.floor(minutes / 60 + 0.5)) end
+    return T(_("Chapter ends in ~%1 min"), minutes)
 end
 
 --- Sleep timer «end of chapter»: reading stops once the page of the next chapter is reached.

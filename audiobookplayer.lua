@@ -1813,6 +1813,12 @@ function AudiobookPlayer:_ttsInfoLines()
         lines[#lines + 1] = voice
     end
 
+    -- Time left in the chapter (MyTTS fork), first: the line worth a glance.
+    if p.chapterRemainingText then
+        local ok, left = pcall(p.chapterRemainingText, p)
+        if ok and left then table.insert(lines, 1, left) end
+    end
+
     lines[#lines + 1] = string.format("%s %sx", _("Speed"),
         tostring(p:getSetting("speech_rate", 1.0)))
     lines[#lines + 1] = string.format("%s %d%%", _("Volume"),
@@ -1826,6 +1832,11 @@ function AudiobookPlayer:_scheduleTtsInfo()
     if not (self.tts_mode and self._tts_info_active and self.visible) then return end
     UIManager:scheduleIn(3.5, function()
         if not (self.tts_mode and self._tts_info_active and self.visible) then return end
+        -- Screen off / another app in front: no repaint every 3.5 s for nobody.
+        if self.plugin and self.plugin._app_in_background then
+            self:_scheduleTtsInfo()
+            return
+        end
         local lines = self:_ttsInfoLines()
         if #lines == 0 then
             self:_scheduleTtsInfo()

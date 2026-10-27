@@ -3475,7 +3475,8 @@ function SyncController:_noteHeard(sentence)
     self._heard = self._heard or {}
     local last = self._heard[#self._heard]
     if last and last.idx == sentence.index and last.gen == self._page_gen then return end
-    table.insert(self._heard, { idx = sentence.index, t = time.to_s(UIManager:getTime()), gen = self._page_gen })
+    table.insert(self._heard, { idx = sentence.index, t = time.to_s(UIManager:getTime()), gen = self._page_gen,
+        chars = sentence.text and select(2, sentence.text:gsub("[^\128-\191]", "")) or 0 })
     while #self._heard > 60 do table.remove(self._heard, 1) end
 end
 
@@ -3511,6 +3512,19 @@ function SyncController:rewind(seconds)
         pcall(function() self:_applyBarVisibility() end)
     end
     self:readNextSentence()
+end
+
+--- Characters read per second, as measured on the sentences heard (a pause, over 30 s, does not count); nil until
+--- a minute of reading.  Follows the engine's real speed (MyTTS's own speed setting included).
+function SyncController:charsPerSecond()
+    local heard = self._heard or {}
+    local chars, secs = 0, 0
+    for i = 1, #heard - 1 do
+        local d = heard[i + 1].t - heard[i].t
+        if d > 0 and d <= 30 then chars = chars + (heard[i].chars or 0); secs = secs + d end
+    end
+    if secs < 60 then return nil end
+    return chars / secs
 end
 
 function SyncController:prevSentence()

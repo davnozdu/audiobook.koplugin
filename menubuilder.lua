@@ -352,6 +352,12 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         end)(),
     })
     table.insert(menu, {
+        text = _("«Previously in the book» after a break of a day"),
+        checked_func = function() return plugin:getSetting("recap_after_break", true) end,
+        callback = function() plugin:setSetting("recap_after_break", not plugin:getSetting("recap_after_break", true)) end,
+        help_text = _("When the book was not listened to for a day or more, MyTTS first retells what happened before (one cloud request), then reading goes on. Only for books MyTTS knows («Умная книга»)."),
+    })
+    table.insert(menu, {
         text = _("Return to the page being read after a minute"),
         checked_func = function() return plugin:getSetting("auto_return", true) end,
         callback = function() plugin:setSetting("auto_return", not plugin:getSetting("auto_return", true)) end,

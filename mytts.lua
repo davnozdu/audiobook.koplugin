@@ -264,7 +264,9 @@ end
 
 --- KOReader's own window over the book: the retelling as it is written, and its speech controls. It asks MyTTS once a
 --- second while the retelling is made or read, and stops asking when the window closes or the speech ends.
-function MyTTS.showWindow(plugin, label)
+--- [on_done]: called once the retelling has been made and read (or failed), the window then closes by itself —
+--- reading after a break goes on with the book.
+function MyTTS.showWindow(plugin, label, on_done)
     local UIManager = require("ui/uimanager")
     local TextViewer = require("ui/widget/textviewer")
     local Screen = require("device").screen
@@ -341,9 +343,28 @@ function MyTTS.showWindow(plugin, label)
         -- Asked only while something is made or read; a closed window or a finished retelling costs nothing.
         -- The first seconds always: the new retelling may not have started yet when the window opens.
         polls = polls + 1
+        if on_done and open then
+            if s and (s.running == 1 or s.speaking == 1) then MyTTS._recap_seen = true end
+            local over = (s and s.running == 0 and s.speaking == 0 and s.paused == 0 and (MyTTS._recap_seen or s.error ~= ""))
+                or (not s and polls >= 5)
+            if over and polls >= 3 then
+                open = false
+                UIManager:close(viewer)
+                MyTTS._recap_seen = nil
+                pcall(on_done)
+                return
+            end
+            if s and polls >= 5 and s.running == 0 and s.speaking == 0 and not MyTTS._recap_seen then
+                -- Nothing started (the book is not in MyTTS's «Умная книга»): go on reading.
+                open = false
+                UIManager:close(viewer)
+                pcall(on_done)
+                return
+            end
+        end
         -- Paused: nothing changes until a button here or in the notification, so rarely.
-        if s and (polls < 5 or s.running == 1 or s.speaking == 1) then
-            UIManager:scheduleIn((s.paused == 1 and s.running == 0) and 5 or 1, function() refresh(false) end)
+        if (s or on_done) and (polls < 5 or (s and (s.running == 1 or s.speaking == 1))) then
+            UIManager:scheduleIn((s and s.paused == 1 and s.running == 0) and 5 or 1, function() refresh(false) end)
         end
     end
     UIManager:scheduleIn(1, function() refresh(false) end)
@@ -351,7 +372,7 @@ end
 
 --- A retelling: the plugin's own reading pauses first (MyTTS reads the retelling with the same engine), then KOReader
 --- shows its window with the text and the controls.
-function MyTTS.recap(plugin, kind)
+function MyTTS.recap(plugin, kind, on_done)
     if plugin.pauseReadAlong then pcall(plugin.pauseReadAlong, plugin) end
     local extras = MyTTS.extras(plugin, kind)
     if not extras.text then
@@ -364,7 +385,8 @@ function MyTTS.recap(plugin, kind)
     for _i, k in ipairs(MyTTS.KINDS) do if k[1] == kind then label = k[2] end end
     local UIManager = require("ui/uimanager")
     -- After MyTTS's invisible step has finished and KOReader is in front again.
-    UIManager:scheduleIn(0.8, function() MyTTS.showWindow(plugin, label) end)
+    MyTTS._recap_seen = nil
+    UIManager:scheduleIn(0.8, function() MyTTS.showWindow(plugin, label, on_done) end)
     return true
 end
 
