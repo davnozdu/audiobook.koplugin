@@ -191,14 +191,22 @@ end
 --- paragraphs by its LLM (stress, ё, punctuation, voices) and makes their audio ahead into its RAM cache, so each sentence
 --- plays at once, also through a dropped connection while the buffer lasts. Only while reading aloud, on start and on
 --- page turns; deferred so a page turn is not slowed. MyTTS skips what it already has.
+local function alog(...)
+    local DL = package.loaded["audiobook_debuglog"]
+    if DL and DL.log then pcall(DL.log, ...) end
+end
+
 function MyTTS.ahead(plugin)
-    if not MyTTS.available() then return end
+    if not MyTTS.available() then alog("mytts-ahead no android module"); return end
     local UIManager = require("ui/uimanager")
     UIManager:scheduleIn(0.5, function()
         local sc = plugin.sync_controller
-        if not (sc and sc.isPlaying and sc:isPlaying()) then return end
+        if not (sc and sc.isPlaying and sc:isPlaying()) then
+            alog("mytts-ahead skip state", sc and tostring(sc.state) or "no controller")
+            return
+        end
         local text = aheadText(plugin)
-        if not text then return end
+        if not text then alog("mytts-ahead no text"); return end
         text = jniText(text, MyTTS.AHEAD_CHARS)
         if text == MyTTS._last_ahead then return end
         MyTTS._last_ahead = text
@@ -222,12 +230,11 @@ function MyTTS.ahead(plugin)
         end
         local ok_j, json = pcall(require, "json")
         if not ok_j or not json or not json.encode then
-            logger.warn("MyTTS: no json module, ahead text not sent")
+            alog("mytts-ahead no json module")
             return
         end
         local sent = MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
-        local DL = package.loaded["audiobook_debuglog"]
-        if DL and DL.log then pcall(DL.log, "mytts-ahead chars", #text, "sentences", #sentences, sent and "ok" or "unreachable") end
+        alog("mytts-ahead chars", #text, "sentences", #sentences, sent and "ok" or "unreachable")
     end)
 end
 
