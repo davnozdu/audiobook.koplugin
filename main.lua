@@ -32,6 +32,7 @@ end
 -- as nil and become usable after init() succeeds.
 local Device, UIManager, InfoMessage, T, Time
 local BtUI, BtMediaControl, BugReport, BenchmarkRunner, MenuBuilder, Utils, Updater
+local MyTTSBridge -- MyTTS «Умная книга» (mytts.lua)
 local SessionRecorder
 local PLUGIN_PATH
 
@@ -114,6 +115,7 @@ function Audiobook:init()
         MenuBuilder = try_dofile(_utils_dir .. "menubuilder.lua")
         Utils = try_dofile(_utils_dir .. "utils.lua")
         SessionRecorder = try_dofile(_utils_dir .. "sessionrecorder.lua")
+        MyTTSBridge = try_dofile(_utils_dir .. "mytts.lua")
         -- Persistent debug ring for Android/Boox (included in bug reports).
         local DebugLog = try_dofile(_utils_dir .. "debuglog.lua")
         if DebugLog and DebugLog.init then
@@ -492,6 +494,47 @@ function Audiobook:onDispatcherRegisterActions()
         title = _("Stop Read-Along"),
         reader = true,
     })
+    -- MyTTS «Умная книга»: a gesture for each retelling.
+    if MyTTSBridge then
+        for _i, kind in ipairs(MyTTSBridge.KINDS) do
+            Dispatcher:registerAction("audiobook_mytts_" .. kind[1]:lower(), {
+                category = "none",
+                event = "AudiobookMyTTS",
+                arg = kind[1],
+                title = "MyTTS: " .. kind[2],
+                reader = true,
+            })
+        end
+    end
+end
+
+function Audiobook:onAudiobookMyTTS(kind)
+    if not MyTTSBridge then return true end
+    if not MyTTSBridge.recap(self, kind) and UIManager and InfoMessage then
+        UIManager:show(InfoMessage:new{ text = _("MyTTS is not installed or the page has no text."), timeout = 4 })
+    end
+    return true
+end
+
+--- MyTTS «Умная книга» submenu (Android with MyTTS only).
+function Audiobook:_myttsMenu()
+    if not (MyTTSBridge and MyTTSBridge.available()) then return nil end
+    local items = {}
+    for _i, kind in ipairs(MyTTSBridge.KINDS) do
+        table.insert(items, {
+            text = kind[2],
+            enabled_func = function() return (self.ui and self.ui.document) and true or false end,
+            callback = function(touchmenu_instance)
+                if touchmenu_instance then touchmenu_instance:closeMenu() end
+                self:onAudiobookMyTTS(kind[1])
+            end,
+        })
+    end
+    return {
+        text = _("Smart book (MyTTS)"),
+        help_text = _("Retellings of this book by MyTTS: what happened before, the previous chapter, this chapter, who is who, how it ends. MyTTS reads them aloud; the book's text goes to the cloud LLM chosen in MyTTS."),
+        sub_item_table = items,
+    }
 end
 
 function Audiobook:_showInitError()
@@ -541,6 +584,7 @@ function Audiobook:addToMainMenu(menu_items)
         return
     end
 
+    local mytts_menu = self:_myttsMenu()
     menu_items.audiobook = {
         text = _("Audiobook Read-Along"),
         sorting_hint = "tools",
@@ -1253,7 +1297,8 @@ function Audiobook:addToMainMenu(menu_items)
                 help_text = _("Shows plugin version, KOReader version, device model, active TTS backend, and audio player. Useful when reporting issues."),
             },
         },
-    }
+    }    -- MyTTS «Умная книга» first (absent without MyTTS / Android: inserted, never a hole in the list).
+    if mytts_menu then table.insert(menu_items.audiobook.sub_item_table, 1, mytts_menu) end
 end
 
 --- Legacy hook: dictionary popup "DictButtonsReady" event (KOReader <= 2026.03).

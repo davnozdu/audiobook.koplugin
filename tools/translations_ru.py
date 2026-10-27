@@ -698,4 +698,7 @@ TRANSLATIONS_RU = {
     'Word phonemization: dictionary (no espeak)': 'Транскрипция слов: словарь (без espeak)',
     'Reads the pronunciation dictionary directly instead of running the espeak helper for every clause: faster and it keeps word boundaries exact. Hard-to-read words (names) still fall back to espeak per clause. On by default for all sanoTTS voices.': 'Читает словарь произношений напрямую вместо запуска espeak для каждой фразы: быстрее и точно сохраняет границы слов. Трудные слова (имена) по-прежнему обрабатываются espeak. Включено по умолчанию для всех голосов sanoTTS.',
     'The selected text moved when the page re-laid out; starting from the top of the visible page.': 'Выделенный текст сместился при перевёрстке страницы; чтение начнётся с верха видимой страницы.',
+    'Smart book (MyTTS)': 'Умная книга (MyTTS)',
+    "Retellings of this book by MyTTS: what happened before, the previous chapter, this chapter, who is who, how it ends. MyTTS reads them aloud; the book's text goes to the cloud LLM chosen in MyTTS.": 'Пересказы этой книги от MyTTS: что было раньше, предыдущая глава, эта глава, кто есть кто, чем закончится. MyTTS читает их вслух; текст книги уходит облачной LLM, выбранной в MyTTS.',
+    'MyTTS is not installed or the page has no text.': 'MyTTS не установлен или на странице нет текста.',
 }
