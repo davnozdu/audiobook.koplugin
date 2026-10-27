@@ -330,8 +330,11 @@ public class MediaSessionHelper {
                                 interruptEnd();
                                 break;
                             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-                                // Phone call, navigation prompt, voice assistant:
-                                // pause now, resume when focus comes back.
+                            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                                // Phone call, navigation prompt, voice assistant,
+                                // an app reading a notification aloud: pause now,
+                                // resume when focus comes back.  Spoken word is
+                                // not ducked under another voice (MyTTS fork).
                                 focusLost = true;
                                 interruptBegin();
                                 break;
@@ -347,7 +350,6 @@ public class MediaSessionHelper {
                                 }
                                 break;
                             default:
-                                // LOSS_TRANSIENT_CAN_DUCK: the system ducks us.
                                 break;
                         }
                     }
@@ -360,11 +362,13 @@ public class MediaSessionHelper {
                     .build();
                 // Full GAIN like any audiobook/podcast player, so the system
                 // delivers LOSS_TRANSIENT on incoming calls.  Spoken word
-                // should pause rather than be ducked under a notification.
+                // pauses rather than being ducked under a notification.
                 AudioFocusRequest req = new AudioFocusRequest.Builder(
                         AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(attrs)
-                    .setWillPauseWhenDucked(false)
+                    // Delivered LOSS_TRANSIENT_CAN_DUCK instead of being ducked
+                    // by the system: two voices at once are not understood.
+                    .setWillPauseWhenDucked(true)
                     .setAcceptsDelayedFocusGain(false)
                     .setOnAudioFocusChangeListener(focusListener, worker)
                     .build();
