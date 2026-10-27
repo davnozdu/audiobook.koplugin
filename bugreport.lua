@@ -28,10 +28,27 @@ local function sanitizePath(path)
     return path
 end
 
+--- Check once whether the timeout binary exists.  Very old Kindle
+--- firmwares (e.g. a KT4 on fw 5.3.x, issue #85) ship a BusyBox without
+--- it; wrapping commands there made every timed probe come back empty.
+local _has_timeout_bin = nil
+local function hasTimeoutBin()
+    if _has_timeout_bin ~= nil then return _has_timeout_bin end
+    local h = io.popen("command -v timeout 2>/dev/null")
+    if h then
+        local out = h:read("*l") or ""
+        h:close()
+        _has_timeout_bin = out ~= ""
+    else
+        _has_timeout_bin = false
+    end
+    return _has_timeout_bin
+end
+
 --- Run a shell command and return trimmed stdout (max 500 chars).
 local function shellCapture(cmd, timeout_s)
     local full_cmd
-    if timeout_s then
+    if timeout_s and hasTimeoutBin() then
         -- BusyBox timeout expects "timeout SECS PROG [ARGS]" and cannot
         -- run shell builtins (for, if, etc.) directly.  Wrap the entire
         -- command in "sh -c '...'" so timeout gets a single executable.
@@ -229,7 +246,7 @@ local function collectPluginInfo(plugin)
         local f = io.open(ao_bin, "r")
         info.audioout_binary = f ~= nil
         if f then f:close() end
-        info.audioout_enabled = tostring(plugin:getSetting("audioout_enabled", false))
+        info.audioout_enabled = tostring(plugin:getSetting("audioout_enabled", true))
         local pg = io.popen("pgrep -c audioout 2>/dev/null")
         if pg then
             local n = tonumber(pg:read("*a"))
@@ -239,6 +256,30 @@ local function collectPluginInfo(plugin)
         local sock = io.open("/tmp/audiobook_audioout.sock", "r")
         info.audioout_socket = sock ~= nil
         if sock then sock:close() end
+        -- Deployed-build checksums: bug reports from devices running a
+        -- mix of release and hand-deployed binaries are otherwise
+        -- undiagnosable.
+        for name, path in pairs({ snt_server_md5 = ao_dir .. "../sanotts/snt_server",
+                                  audioout_md5 = ao_bin }) do
+            local mp = io.popen("md5sum '" .. path:gsub("'", "'\\''") .. "' 2>/dev/null")
+            if mp then
+                local sum = mp:read("*l")
+                mp:close()
+                info[name] = sum and sum:match("^(%x+)") or "unavailable"
+            end
+        end
+        -- sanoTTS server log tail: carries the per-request G2P counters
+        -- ({"g2p": "nano=N espeak_fb=N oov=X/Y"}) and synthesis errors.
+        local slog = io.open("/tmp/piper_server_1.log", "r")
+        if slog then
+            local lines = {}
+            for line in slog:lines() do
+                lines[#lines + 1] = line
+                if #lines > 15 then lines[#lines - 15] = nil end
+            end
+            slog:close()
+            info.snt_server_log_tail = table.concat(lines, " | ")
+        end
         local dlog = io.open("/tmp/audiobook_audioout.log", "r")
         if dlog then
             local tail_lines = {}
@@ -355,6 +396,13 @@ local function collectPluginInfo(plugin)
             smil_sync_offset_ms = tostring(plugin:getSetting("smil_sync_offset_ms", 0)),
             media_follow_page_turn = tostring(plugin:getSetting("media_follow_page_turn", false)),
             android_prefetch = tostring(plugin:getSetting("android_prefetch", false)),
+            sentence_pause = tostring(plugin:getSetting("sentence_pause", 0.1)),
+            paragraph_pause = tostring(plugin:getSetting("paragraph_pause", 0.8)),
+            piper_sentence_gap = tostring(plugin:getSetting("piper_sentence_gap", 0.3)),
+            piper_paragraph_gap = tostring(plugin:getSetting("piper_paragraph_gap", 1.0)),
+            sanotts_voice = tostring(plugin:getSetting("sanotts_voice", "kristin")),
+            -- nil means the per-voice default (dictionary G2P since v0.5.0)
+            sanotts_g2p = plugin:getSetting("sanotts_g2p", nil) or "voice default",
         }
     end
 
@@ -1811,6 +1859,48 @@ find /usr /system /vendor /mnt /data -maxdepth 4 -name '*audio*.so*' 2>/dev/null
         -- Last ttssrc fallback log (stderr from kindle-native-tts-fallback path)
         info.kindle_ttssrc_fallback_log = shellCapture(
             "cat /tmp/.ttssrc_fallback.log 2>/dev/null", 2) or "none"
+
+        -- audiomgrd logs stream rejects and teardowns to a stderr file it
+        -- deletes immediately; the fd keeps it readable.  This is where a
+        -- mixer-side cause of cut-off speech would show (issue #73).
+        info.kindle_audiomgrd_err_fd = shellCapture(
+            "tail -20 /proc/$(pidof audiomgrd)/fd/2 2>/dev/null", 3) or "n/a"
+
+        -- KOReader's own crash log: fatal Lua errors land here, not in the
+        -- plugin debug log.  Without it a crash that takes KOReader down
+        -- (e.g. the Piper shutdown on 5.19.x) leaves nothing behind.
+        -- sanitizePath: a traceback can name the file being read.
+        local crash_log_raw = shellCapture(
+            "( tail -40 /mnt/us/koreader/crash.log 2>/dev/null || tail -40 crash.log 2>/dev/null )", 4)
+        info.koreader_crash_log = crash_log_raw and sanitizePath(crash_log_raw) or "none"
+
+        -- Kernel ring: OOM kills and segfaults name their victim, which is
+        -- the only way to tell a Lua crash from the kernel or the OOM
+        -- killer shooting the process.  Readable on rooted devices (the
+        -- usual case for KOReader on Kindle).  Chatty kernels scroll a
+        -- tail-only window in well under a minute (the 5.15 lab126 ring
+        -- carries watchdog kicks and moisture-detect spam), so also grep
+        -- the WHOLE ring for death signatures: those lines survive until
+        -- they age out of the ring, long after the tail has moved on
+        -- (issue #73: the 25-line tail missed a crash 90 s before the
+        -- report was generated).
+        info.dmesg_tail = shellCapture("dmesg | tail -120", 6) or "n/a"
+        info.dmesg_deaths = shellCapture(
+            "dmesg | grep -i -E 'out of memory|oom-kill|killed process|lowmemory|panic|segfault|sigsegv|sigill' | tail -30",
+            6) or "none"
+        -- Boot time context: pairs with the kernel timestamps in the two
+        -- captures above so a report reader can tell whether the crash
+        -- window is even inside them.
+        info.uptime = shellCapture("cat /proc/uptime", 3) or "n/a"
+
+        -- MediaTek ramoops/pstore: the juno kernel keeps a console ring in
+        -- reboot-persistent memory that records panics and hard deaths even
+        -- when the live dmesg ring has scrolled past or stopped moving
+        -- entirely (issue #73: a ColorSoft's ring froze three hours before
+        -- its crash, leaving no kernel-side witness).
+        info.pstore_ls = shellCapture("ls -la /sys/fs/pstore 2>/dev/null", 3) or "n/a"
+        info.pstore_console = shellCapture(
+            "cat /sys/fs/pstore/console-ramoops* 2>/dev/null | tail -60", 6) or "none"
     end
 
     -- v0.1.17.52: join the collected signals into a short diagnosis so the

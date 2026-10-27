@@ -26,7 +26,8 @@ cc -O2 -std=c99 -w \
   "$REPO/sanotts/mcu/src/snt_nano.c" "$REPO/sanotts/mcu/src/snt_front_q8.c" \
   "$REPO/sanotts/mcu/src/snt_piperlite_q8.c" "$REPO/sanotts/mcu/src/snt_front_f32.c" \
   "$REPO/sanotts/mcu/src/snt_piperlite.c" "$REPO/sanotts/mcu/ports/host/snt_port_host.c" \
-  "$REPO/sanotts/nano_lex_g2p.c" "$REPO/sanotts/nano_lex_tables.c" -lm
+  "$REPO/sanotts/nano_lex_g2p.c" "$REPO/sanotts/nano_lex_tables.c" \
+  "$REPO/sanotts/nano_lex_fr.c" "$REPO/sanotts/nano_lex_fr_tables.c" -lm
 
 ESPEAK_BIN="$(command -v espeak-ng)"
 ESPEAK_DATA="$(dirname "$(dirname "$(readlink -f "$ESPEAK_BIN")")")/share/espeak-ng-data"

@@ -974,6 +974,19 @@ function HighlightManager:_highlightSentenceRolling(sentence, parsed_data, doc, 
         self:_captureViewForBoxes()
         self:_ensureViewModule()
         self.is_highlighting = true
+        -- Word-highlight context: the visible slice's char territory in the
+        -- cached line map, so highlightWord can locate each word's box
+        -- without new line-map work.
+        self._word_ctx = {
+            vis_start = vis_start,
+            sent_text = sent_text,
+            built_text = built_text,
+            cum = cum,
+            sboxes = sboxes,
+            n = n,
+            page = cur_page,
+        }
+        self._word_scan = nil
         self:_refreshHighlight(boxes, cur_page)
         dlog("hl-roll", "sent_words", #sent_words, "span", first_w, last_w, "mlen", matched_len, "want", want_len, "lines", start_line, end_line, "nbox", #boxes, "cre_n", cre_len or 0)
         return true
@@ -1014,6 +1027,18 @@ function HighlightManager:_paintOverlay(bb, _x, _y)
     local style = self.current_style
     local line_w = Screen:scaleBySize(2)
     local sw, sh = Screen:getWidth(), Screen:getHeight()
+
+    -- word box on top of the sentence highlight: always invert, so it
+    -- reads as the karaoke pop-out against every sentence style
+    for _, box in ipairs(self._pending_word_boxes or {}) do
+        local bx = math.max(0, box.x)
+        local by = math.max(0, box.y)
+        local bw = math.min(box.w - (bx - box.x), sw - bx)
+        local bh = math.min(box.h - (by - box.y), sh - by)
+        if bw > 0 and bh > 0 then
+            pcall(function() bb:invertRect(bx, by, bw, bh) end)
+        end
+    end
 
     for _, box in ipairs(boxes) do
         -- Clip to screen bounds to prevent out-of-range framebuffer access
@@ -1062,9 +1087,167 @@ excessive e-ink refreshes.
 @param word table Word object
 @param parsed_data table Full parsed text data
 --]]
+-- Map a char span of the cached page text to screen boxes: proportional
+-- estimate inside the word's line, refined with selection-length binary
+-- searches on single-line words (the common case). Returns boxes or nil.
+function HighlightManager:_wordScreenBoxes(c0, c1)
+    local ctx = self._word_ctx
+    local doc = self.ui and self.ui.document
+    if not ctx or not doc then return nil end
+    local line0, line1
+    for i = 1, ctx.n do
+        local lo = ctx.cum[i - 1] or 0
+        local hi = ctx.cum[i]
+        if not line0 and c0 >= lo and c0 < hi then line0 = i end
+        if c1 > lo and c1 <= hi then line1 = i end
+    end
+    if not line0 or not line1 or line1 < line0 then return nil end
+    local function selLen(x0, y0, x1, y1)
+        local ok, r = pcall(doc.getTextFromPositions, doc,
+            {x = x0, y = y0}, {x = x1, y = y1}, true)
+        if not (ok and r and r.text) then return nil end
+        return #Utils.normalizeForMatching(r.text)
+    end
+    local function edgeX(i, char_off)
+        local lo_c = ctx.cum[i - 1] or 0
+        local hi_c = ctx.cum[i]
+        local box = ctx.sboxes[i]
+        local span = hi_c - lo_c
+        if span <= 0 then return box.x end
+        return box.x + math.floor(box.w * (char_off - lo_c) / span)
+    end
+    local sx = edgeX(line0, c0)
+    local ex = edgeX(line1, c1)
+    -- single-line refinement: selection-length binary searches snap both
+    -- edges onto glyph boundaries
+    if line0 == line1 then
+        local box = ctx.sboxes[line0]
+        local lo_c = ctx.cum[line0 - 1] or 0
+        local y = box.y + math.floor(box.h / 2)
+        local right = box.x + box.w
+        local target0 = c0 - lo_c
+        local target1 = c1 - lo_c
+        if right > box.x + 2 and hi_c > lo_c then
+            local lo, hi = box.x, right
+            for _ = 1, 7 do
+                if hi - lo < 2 then break end
+                local mid = math.floor((lo + hi) / 2)
+                local len = selLen(box.x, y, mid, y)
+                if len == nil then break end
+                if len <= target0 then lo = mid else hi = mid end
+            end
+            sx = lo
+            lo, hi = sx, right
+            for _ = 1, 7 do
+                if hi - lo < 2 then break end
+                local mid = math.floor((lo + hi) / 2)
+                local len = selLen(box.x, y, mid, y)
+                if len == nil then break end
+                if len <= target1 then lo = mid else hi = mid end
+            end
+            ex = lo
+        end
+    end
+    if ex <= sx then return nil end
+    local ok, r = pcall(doc.getTextFromPositions, doc,
+        {x = sx, y = ctx.sboxes[line0].y + math.floor(ctx.sboxes[line0].h / 2)},
+        {x = ex, y = ctx.sboxes[line1].y + math.floor(ctx.sboxes[line1].h / 2)},
+        true)
+    if ok and r and r.pos0 and r.pos1 then
+        local cre_boxes = doc:getScreenBoxesFromPositions(r.pos0, r.pos1, true)
+        if cre_boxes and #cre_boxes > 0 then
+            local out = {}
+            for _, cb in ipairs(cre_boxes) do
+                if cb.w > 0 and cb.h > 0 then
+                    table.insert(out, {x = cb.x, y = cb.y, w = cb.w, h = cb.h})
+                end
+            end
+            if #out > 0 then return out end
+        end
+    end
+    -- proportional fallback boxes
+    local out = {}
+    for i = line0, line1 do
+        local box = ctx.sboxes[i]
+        local lo_c = ctx.cum[i - 1] or 0
+        local bx, bw = box.x, box.w
+        if i == line0 and i == line1 then
+            bx, bw = sx, ex - sx
+        elseif i == line0 then
+            bx, bw = sx, (box.x + box.w) - sx
+        elseif i == line1 then
+            bx, bw = ex - box.x
+        end
+        if bw > 0 and box.h > 0 then
+            table.insert(out, {x = bx, y = box.y, w = bw, h = box.h})
+        end
+    end
+    return #out > 0 and out or nil
+end
+
+--[[--
+Highlight the current word inside the sentence highlight. Rolling
+documents paint a small inverted word box on top of the sentence
+highlight (real word timing decides WHICH word; the cached line map
+decides WHERE it draws, so estimated timings never misplace the box).
+Every other platform keeps the store-only behavior and the read-along
+bar carries the word.
+@param word table Word object
+@param parsed_data table Full parsed text data
+--]]
 function HighlightManager:highlightWord(word, parsed_data)
     self.current_word = word
     self.is_highlighting = true
+    if not word or not word.text then return end
+    if not (self.ui and self.ui.rolling and self.ui.document) then return end
+    if self.plugin and self.plugin.getSetting
+            and self.plugin:getSetting("highlight_words", true) == false then
+        return
+    end
+    local ctx = self._word_ctx
+    if not ctx or not ctx.sent_text then return end
+    if not self:_boxesMatchCurrentView() then return end
+    local nw = Utils.normalizeForMatching(word.text)
+    if nw == "" then return end
+    -- words arrive in order; scan forward, wrap once for repeats
+    local off = ctx.sent_text:find(nw, (self._word_scan or 0) + 1, true)
+    if not off then off = ctx.sent_text:find(nw, 1, true) end
+    if not off then return end
+    self._word_scan = off + #nw
+    local c0 = ctx.vis_start + off - 1
+    local c1 = c0 + #nw
+    local boxes = self:_wordScreenBoxes(c0, c1)
+    if not boxes then return end
+    self._pending_word_boxes = boxes
+    self:_ensureViewModule()
+    self:_refreshWordHighlight(boxes, ctx.page)
+end
+
+--[[--
+Refresh only the strip the word box moved through (its own last-boxes
+tracking, so the sentence refresh and the word refresh never widen each
+other's update regions).
+--]]
+function HighlightManager:_refreshWordHighlight(new_boxes, page)
+    local arrays = {}
+    if self._last_word_boxes and self._last_word_boxes_page == page then
+        table.insert(arrays, self._last_word_boxes)
+    end
+    if new_boxes and #new_boxes > 0 then
+        table.insert(arrays, new_boxes)
+    end
+    local region = boxesUnionRegion(arrays)
+    if region then
+        local bar_top = self:_overlayBarTop()
+        if bar_top and region.y + region.h > bar_top then
+            region.h = math.max(0, bar_top - region.y)
+        end
+        if region.h > 0 then
+            UIManager:setDirty(self.ui.dialog or "all", "ui", region)
+        end
+    end
+    self._last_word_boxes = new_boxes
+    self._last_word_boxes_page = page
 end
 
 --[[--
@@ -1079,16 +1262,29 @@ function HighlightManager:clearHighlights()
     self._pending_boxes = nil
     self._pending_view_page = nil
     self._pending_view_pos = nil
+    local had_word_boxes = self._pending_word_boxes ~= nil
+    self._pending_word_boxes = nil
+    self._word_ctx = nil
+    self._word_scan = nil
     if self.is_highlighting or had_boxes then
         -- Refresh only the strip where the highlight was drawn.
         self:_refreshHighlight(nil, self._last_boxes_page)
+    end
+    if had_word_boxes then
+        self:_refreshWordHighlight(nil, self._last_word_boxes_page)
     end
     self.current_word = nil
     self.is_highlighting = false
 end
 
 function HighlightManager:clearWordHighlight()
-    -- No separate word highlight to clear
+    self.current_word = nil
+    self._word_scan = nil
+    local had = self._pending_word_boxes ~= nil
+    self._pending_word_boxes = nil
+    if had then
+        self:_refreshWordHighlight(nil, self._last_word_boxes_page)
+    end
 end
 
 function HighlightManager:clearSentenceHighlight()

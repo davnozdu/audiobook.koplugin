@@ -50,6 +50,16 @@ local Utils = dofile(_utils_dir .. "utils.lua")
 local WavUtils = dofile(_utils_dir .. "wavutils.lua")
 local PiperQueue = dofile(_utils_dir .. "piperqueue.lua")
 local AndroidTts = dofile(_utils_dir .. "androidtts.lua")
+
+-- Plugin debug log (the file bug reports attach); logger.* goes to logcat,
+-- which Android reporters rarely capture (issue #96).
+local function dlog(...)
+    local DL = package.loaded["audiobook_debuglog"]
+    if DL and DL.log then
+        pcall(DL.log, ...)
+    end
+end
+
 local TTSEngine = {
     -- Supported TTS backends
     BACKENDS = {
@@ -374,19 +384,21 @@ function TTSEngine:detectBackend()
         local sanotts_server = sanotts_dir .. "/snt_server"
         local found_sanotts = false
         if ensureBinary(sanotts_server) and binaryRunsOnHost(sanotts_server) then
-            -- Voice inventory with per-voice engine config.  amy (piperlite
-            -- int8, ~1.5 MB across four blob files, the English quality
-            -- voice), kristin (R7 int8, ~700 KB, the light voice, noticeably
-            -- less accurate) and fr (fp32 piperlite pair, ~6.3 MB, French,
+            -- Voice inventory with per-voice engine config.  kristin (R7
+            -- int8, ~700 KB, the fast default: the ARM NEON kernels make it
+            -- comfortably real-time even on single-core Kobos), amy
+            -- (piperlite int8, ~1.5 MB across four blob files, the English
+            -- quality voice, opt-in: its pq8 stack is heavier than real
+            -- time on ARMv7) and fr (fp32 piperlite pair, ~6.3 MB, French,
             -- converted from upstream's fp16 package).  Either voice alone
             -- is enough to offer the backend; the active one is the
-            -- persisted setting when its blobs exist, else amy, else the
-            -- next best available.
+            -- persisted setting when its blobs exist, else kristin, else
+            -- the next best available.
             self.sanotts_voices = {}
             self.sanotts_voice_defs = {
-                amy = { engine = "pq8", espeak_voice = "en-us", phonemes = "en" },
-                fr = { engine = "f32", espeak_voice = "fr", phonemes = "fr" },
-                kristin = { engine = "int8", espeak_voice = "en-us", phonemes = "en" },
+                amy = { engine = "pq8", espeak_voice = "en-us", phonemes = "en", g2p = "nano" },
+                fr = { engine = "f32", espeak_voice = "fr", phonemes = "fr", g2p = "nano" },
+                kristin = { engine = "int8", espeak_voice = "en-us", phonemes = "en", g2p = "nano" },
             }
             local af = io.open(sanotts_dir .. "/voice-amy/front_meta_q8.bin", "r")
             local aw = io.open(sanotts_dir .. "/voice-amy/front_weights_q8.bin", "r")
@@ -410,11 +422,11 @@ function TTSEngine:detectBackend()
                 ff:close(); fw:close(); df:close(); dwf:close()
                 self.sanotts_voices.fr = sanotts_dir .. "/voice-fr"
             end
-            local voice_name = self.sanotts_voice_name or "amy"
+            local voice_name = self.sanotts_voice_name or "kristin"
             if not self.sanotts_voices[voice_name] then
-                voice_name = self.sanotts_voices.amy and "amy"
-                    or (self.sanotts_voices.fr and "fr"
-                    or (self.sanotts_voices.kristin and "kristin" or nil))
+                voice_name = self.sanotts_voices.kristin and "kristin"
+                    or (self.sanotts_voices.amy and "amy"
+                    or (self.sanotts_voices.fr and "fr" or nil))
             end
             if voice_name then
                 found_sanotts = true
@@ -1175,7 +1187,8 @@ function TTSEngine:synthesizeCommand(text, callback)
         end
     end
     if self.backend == self.BACKENDS.ESPEAK then
-        -- espeak-ng supports word timing output
+        -- espeak-ng gives no word timing back; the sync controller falls
+        -- back to per-word duration estimates for this backend
         local speed = math.floor(175 * self.rate) -- Default is 175 wpm
         local pitch = self.pitch or 50
         local amplitude = math.floor((self.volume or 1.0) * 100)
@@ -1839,6 +1852,7 @@ function TTSEngine:synthesizeAndroid(text, audio_file, callback)
     -- round-trip between synthesis and playback.  This keeps audio going
     -- even when the Lua event loop is throttled (app backgrounded).
     local dispatch = atts:synthesizeAndPlay(text, audio_file)
+    dlog("android-pipeline", "dispatch", "chars", text and #text or 0)
     -- Right after lazy init / setLanguage the engine can still report
     -- not-ready (-1).  Brief retries beat skipping the first sentences.
     -- Some engines (Xiaomi mibrain, issue #96) also refuse a new
@@ -2161,7 +2175,9 @@ end
 --- so its poll loop exits, and remove the file it was writing (the Java
 --- helper runs one synthesis under one utterance id, so after a real
 --- dispatch or a stop the in-flight synthesis is never signalled).  A READY
---- slot is left alone: it is owned by the normal prefetch cleanup.
+--- slot is left alone: it is owned by the normal prefetch cleanup.  The
+--- queued-but-never-dispatched follow-up is dropped with the in-flight one:
+--- its drain point (the completion poll) is gone with the generation bump.
 function TTSEngine:_androidPrefetchInvalidate()
     self._android_prefetch_gen = (self._android_prefetch_gen or 0) + 1
     if self._android_prefetch_inflight then
@@ -2169,28 +2185,49 @@ function TTSEngine:_androidPrefetchInvalidate()
         self._android_prefetch_inflight = nil
     end
     self._android_prefetch_inflight_text = nil
+    self._android_prefetch_inflight_slot = nil
+    self._android_prefetch_queued_text = nil
 end
 
---- Lookahead status for a sentence: "ready" (the slot holds its audio),
---- "inflight" (background synthesis still running), or "none".  Used by the
---- sentence controller to wait out an in-flight lookahead instead of
---- dispatching a duplicate on-demand synthesis (issue #96).
+--- Drop the second lookahead slot's content (Android only; no-op elsewhere).
+function TTSEngine:_androidCleanSlot2()
+    if self._android_prefetch2_file then
+        os.remove(self._android_prefetch2_file)
+        self._android_prefetch2_file = nil
+    end
+    self._android_prefetch2_text = nil
+    self._prefetch2_timing = nil
+end
+
+--- Lookahead status for a sentence: "ready" (a slot holds its audio),
+--- "inflight" (background synthesis still running or queued behind one), or
+--- "none".  Used by the sentence controller to wait out an in-flight
+--- lookahead instead of dispatching a duplicate on-demand synthesis
+--- (issue #96).
 function TTSEngine:getAndroidPrefetchStatus(text)
     if self._prefetch_file and self._prefetch_text == text then
         return "ready"
     end
-    if self._android_prefetch_inflight
-            and self._android_prefetch_inflight_text == text then
+    if self._android_prefetch2_file and self._android_prefetch2_text == text then
+        return "ready"
+    end
+    if (self._android_prefetch_inflight
+                and self._android_prefetch_inflight_text == text)
+            or self._android_prefetch_queued_text == text then
         return "inflight"
     end
     return "none"
 end
 
 --- Background lookahead synthesis for the Android TTS backend (issue #96).
---- Fills the shared single prefetch slot while the current sentence plays,
---- so the next sentence starts from a ready WAV instead of paying the
---- engine's synthesis + turnaround between sentences (a fixed ~1 s pause on
---- engines like Xiaomi mibrain).
+--- Fills the lookahead slots while the current sentence plays, so the next
+--- sentence starts from a ready WAV instead of paying the engine's synthesis
+--- + turnaround between sentences (a fixed ~1 s pause on engines like Xiaomi
+--- mibrain).
+--- Two slots deep: a request that arrives while a synthesis is in flight is
+--- queued and dispatched the moment the engine frees up, so the engine never
+--- idles between lookaheads (short sentences at a high speech rate can
+--- otherwise finish before the next synthesis does — issue #96).
 --- Safety rules:
 ---   * Uses synthesizeToFile, never synthesizeAndPlay: the latter stops the
 ---     pipeline (and with it the playing sentence) on dispatch.
@@ -2199,13 +2236,13 @@ end
 ---     synthesis at a time under a single utterance id, so a background
 ---     dispatch there would swallow the current sentence's onDone callback
 ---     and the sentence would never start.  Playing (1) or done (2) is safe.
----   * Writes _prefetch_* from its own async completion and never touches
----     current_audio_file / timing_data of the playing sentence (the failure
----     mode that got Android excluded from prefetch before).
+---   * Writes the slot fields from its own async completion and never
+---     touches current_audio_file / timing_data of the playing sentence (the
+---     failure mode that got Android excluded from prefetch before).
 ---   * Voice settings persist Java-side (worker-thread FIFO), so the clip
 ---     inherits the current rate/pitch; language is (re)selected per chunk.
 --- @param text string  Next sentence text
---- @return boolean     true when a background synthesis was launched
+--- @return boolean     true when a background synthesis was launched or queued
 function TTSEngine:prefetchAndroid(text)
     if self.backend ~= self.BACKENDS.ANDROID or not text or text == "" then
         return false
@@ -2242,10 +2279,20 @@ function TTSEngine:prefetchAndroid(text)
     if self._prefetch_file and self._prefetch_text == text then
         return true
     end
+    if self._android_prefetch2_file and self._android_prefetch2_text == text then
+        return true
+    end
     -- A background synthesis is already running: Java handles one utterance
-    -- at a time, so a second dispatch now would invalidate the first.
+    -- at a time, so a second dispatch now would invalidate the first.  Queue
+    -- ONE follow-up text behind it instead; _androidPollPrefetch launches it
+    -- as soon as the engine frees.
     if self._android_prefetch_inflight then
-        return skip("another prefetch in flight")
+        if not self._android_prefetch_queued_text
+                and self._android_prefetch_inflight_text ~= text then
+            self._android_prefetch_queued_text = text
+            dlog("android-prefetch", "queued", "chars", #text)
+        end
+        return true
     end
     -- Only dispatch while the current sentence is already playing (1) or
     -- done (2); see the safety rules above for status 0.
@@ -2270,6 +2317,17 @@ function TTSEngine:prefetchAndroid(text)
     -- Drop a stale slot from an earlier sentence before filling anew.
     self:_cleanPrefetch()
     self:_androidPrefetchInvalidate()
+    return self:_androidDispatchPrefetch(atts, text, 1)
+end
+
+--- Dispatch one background synthesis into a lookahead slot and start its
+--- completion poll.  Shared by the direct fill (slot 1) and the queue drain
+--- (slot 2).
+-- @param atts table  AndroidTts instance
+-- @param text string  Sentence text
+-- @param slot_no number  1 (shared prefetch slot) or 2 (Android-only slot)
+-- @return boolean  true when dispatched
+function TTSEngine:_androidDispatchPrefetch(atts, text, slot_no)
     self.file_counter = (self.file_counter or 0) + 1
     local slot_path = atts:getTempDir() .. "/audiobook_prefetch_"
         .. os.time() .. "_" .. self.file_counter .. ".wav"
@@ -2293,11 +2351,19 @@ function TTSEngine:prefetchAndroid(text)
     logger.warn("TTSEngine: Android prefetch dispatched for:", text:sub(1, 40))
     self._android_prefetch_inflight = slot_path
     self._android_prefetch_inflight_text = text
-    -- keeps its own callbacks).  A real synthesis dispatch or stop()
-    -- invalidates this loop via the generation counter.
+    self._android_prefetch_inflight_slot = slot_no
+    -- A real synthesis dispatch or stop() invalidates this loop via the
+    -- generation counter (the Java helper runs one synthesis under one
+    -- utterance id, so after a dispatch or stop the old onDone never fires).
     self._android_prefetch_gen = (self._android_prefetch_gen or 0) + 1
-    local my_gen = self._android_prefetch_gen
+    self:_androidPollPrefetch(slot_path, text, slot_no, self._android_prefetch_gen)
+    return true
+end
+
+--- Poll a background synthesis to completion and fill its slot.
+function TTSEngine:_androidPollPrefetch(slot_path, text, slot_no, my_gen)
     local engine = self
+    local atts = self._android_tts
     local poll_count = 0
     local max_polls = 200  -- 20 s cap (200 x 0.1 s)
     local function pollPrefetchDone()
@@ -2307,32 +2373,80 @@ function TTSEngine:prefetchAndroid(text)
         if st == 1 then
             engine._android_prefetch_inflight = nil
             engine._android_prefetch_inflight_text = nil
+            engine._android_prefetch_inflight_slot = nil
+            -- The engine bakes silence into its clips; trim it at fill time
+            -- so the shortened file is what every later duration/scale read
+            -- sees (the audible gap no pause setting can reach, issue #96).
+            WavUtils.trimSilence(slot_path)
             -- Compute the word-timing estimates for the slot text without
             -- clobbering the playing sentence's timing_data.
             local saved_timing = engine.timing_data
             engine:generateTimingEstimates(text)
-            engine._prefetch_timing = engine.timing_data
+            local timing = engine.timing_data
             engine.timing_data = saved_timing
-            engine._prefetch_file = slot_path
-            engine._prefetch_text = text
+            if slot_no == 2 then
+                engine._android_prefetch2_file = slot_path
+                engine._android_prefetch2_text = text
+                engine._prefetch2_timing = timing
+            else
+                engine._prefetch_timing = timing
+                engine._prefetch_file = slot_path
+                engine._prefetch_text = text
+            end
             logger.warn("TTSEngine: Android prefetch ready for:", text:sub(1, 40))
+            dlog("android-prefetch", "ready", "slot", slot_no, "chars", #text)
+            -- The engine is free: launch a queued follow-up if one waits.
+            engine:_androidDispatchQueuedPrefetch()
         elseif st == 2 then
             engine._android_prefetch_inflight = nil
             engine._android_prefetch_inflight_text = nil
+            engine._android_prefetch_inflight_slot = nil
             logger.warn("TTSEngine: Android prefetch synthesis failed")
+            dlog("android-prefetch", "failed", "slot", slot_no)
             os.remove(slot_path)
         elseif poll_count < max_polls then
             UIManager:scheduleIn(0.1, pollPrefetchDone)
         else
             engine._android_prefetch_inflight = nil
             engine._android_prefetch_inflight_text = nil
+            engine._android_prefetch_inflight_slot = nil
             logger.warn("TTSEngine: Android prefetch timed out after",
                 poll_count * 0.1, "s")
+            dlog("android-prefetch", "timeout", "slot", slot_no)
             os.remove(slot_path)
         end
     end
     UIManager:scheduleIn(0.1, pollPrefetchDone)
-    return true
+end
+
+--- Launch a queued lookahead text once the engine has freed up.  Prefers the
+--- second slot, then an empty first slot; if both hold ready audio the queue
+--- entry is dropped (both sentences will be consumed before anything new is
+--- requested).
+function TTSEngine:_androidDispatchQueuedPrefetch()
+    local text = self._android_prefetch_queued_text
+    if not text or text == "" then return end
+    if self._android_prefetch_inflight then return end
+    if self._android_prefetch_session_disabled then
+        self._android_prefetch_queued_text = nil
+        return
+    end
+    if not self.plugin or not self.plugin:getSetting("android_prefetch", false) then
+        self._android_prefetch_queued_text = nil
+        return
+    end
+    local atts = self._android_tts
+    if not atts then return end
+    local slot_no
+    if not self._android_prefetch2_file then
+        slot_no = 2
+    elseif not self._prefetch_file then
+        slot_no = 1
+    else
+        return
+    end
+    self._android_prefetch_queued_text = nil
+    self:_androidDispatchPrefetch(atts, text, slot_no)
 end
 --[[--
 Check if prefetched audio matches the given text and swap it in.
@@ -2357,6 +2471,25 @@ function TTSEngine:usePrefetched(text)
             self._android_prefetch_consumed = true
         end
         logger.dbg("TTSEngine: Using prefetched audio")
+        return true
+    end
+    -- Check the second Android lookahead slot
+    if self.backend == self.BACKENDS.ANDROID and self._android_prefetch2_file
+            and self._android_prefetch2_text == text then
+        if self.current_audio_file then
+            os.remove(self.current_audio_file)
+        end
+        self.current_audio_file = self._android_prefetch2_file
+        self.timing_data = self._prefetch2_timing
+        self._android_prefetch2_file = nil
+        self._android_prefetch2_text = nil
+        self._prefetch2_timing = nil
+        -- The prefetched WAV is played straight from the file by play()'s
+        -- slot sub-path (no synthesizeAndPlay dispatch happened for this
+        -- sentence, so the pipeline status is stale from the last one).
+        self._android_prefetch_consumed = true
+        dlog("android-sentence", "slot2-hit")
+        logger.dbg("TTSEngine: Using prefetched audio (slot 2)")
         return true
     end
     -- Check Piper async queue
@@ -2428,6 +2561,9 @@ function TTSEngine:_cleanPrefetch()
     self._prefetch_timing = nil
     self._prefetch_text = nil
     self._prefetch_in_use = false
+    -- Second Android lookahead slot and any queued follow-up
+    self:_androidCleanSlot2()
+    self._android_prefetch_queued_text = nil
     -- Clean Piper async queue
     self._piper:cleanQueue()
 end
@@ -2445,19 +2581,28 @@ local PIPELINE_RETRY_COOLDOWN_S = 30  -- minimum seconds between retry attempts
 function TTSEngine:_playAndroidSlotClip(atts, my_gen)
     local engine = self
     local file_path = self.current_audio_file
-    -- playFile() only posts the MediaPlayer start to the helper's worker and
-    -- returns 0 (-1 = refused); it never returns the duration.  Treating that
-    -- 0 as "failed to start" made every prefetched sentence fall back to
-    -- on-demand synthesis and, after two, switched the lookahead off.
+    -- playFile dispatches asynchronously and reports only dispatch success
+    -- (issue #44 moved media work off the JNI thread): it never returns the
+    -- clip duration, so the old caller here read 0 and treated every slot
+    -- clip as a launch failure, self-disabling the lookahead after two
+    -- sentences and putting every sentence back on the slow on-demand
+    -- pipeline (the ~1 s inter-sentence gap, issue #96).  The WAV header
+    -- carries the duration the completion checks need; a genuine launch
+    -- failure surfaces within ~100 ms as an immediate isPlaybackDone and is
+    -- handled by the early-death branch below.
+    atts:setPcmMode(self:_androidPcmActive())
     local dispatched = atts:playFile(file_path)
-    local dur_ms = self:getWavDurationMs(file_path)
+    local dur_ms = WavUtils.getDurationMs(file_path)
     if not dispatched or dispatched < 0 or not dur_ms or dur_ms <= 0 then
         logger.warn("TTSEngine: Android slot clip failed to start (dispatch=",
-            dispatched, ", wav=", dur_ms, "ms), falling back to on-demand synthesis")
+            tostring(dispatched), " dur=", dur_ms, "ms), falling back to on-demand synthesis")
+        dlog("android-slot", "start-failed", "dispatch", tostring(dispatched), "dur", dur_ms)
         return self:_androidSlotClipFailed()
     end
+    self._current_audio_duration_ms = dur_ms
     self._expected_play_duration_ms = dur_ms
     self._audio_launched_at = UIManager:getTime()
+    dlog("android-slot", "start", "dur", dur_ms)
     self:startTimingLoop()
     local poll_count = 0
     local max_polls = math.max(300, math.floor(dur_ms * 3 / 100))
@@ -2494,6 +2639,7 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
             if dur_ms > 1000 and elapsed_ms < dur_ms - 800 then
                 logger.warn("TTSEngine: Android slot clip died after", elapsed_ms,
                     "ms (expected", dur_ms, "ms), flagging for replay")
+                dlog("android-slot", "early-death", "elapsed", elapsed_ms, "dur", dur_ms)
                 atts:stopPlayback()
                 engine._android_slot_fail_count = (engine._android_slot_fail_count or 0) + 1
                 if engine._android_slot_fail_count >= 2 then
@@ -2511,12 +2657,14 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
             -- Only consecutive failures count: one dead clip an hour ago must
             -- not combine with the next into a lookahead shutdown.
             engine._android_slot_fail_count = 0
+            dlog("android-slot", "done", "elapsed", elapsed_ms, "dur", dur_ms)
             engine:onPlaybackComplete()
             return
         end
         if poll_count >= max_polls then
             logger.warn("TTSEngine: Android slot clip timed out after",
                 poll_count * 0.1, "s, forcing completion")
+            dlog("android-slot", "timeout", "dur", dur_ms)
             atts:stopPlayback()
             engine:onPlaybackComplete()
             return
@@ -2557,9 +2705,9 @@ Play the synthesized audio.
 @return boolean Success
 --]]
 --[[--
-Client for the audioout daemon (Tier 2, default off via the
-`audioout_enabled` setting). The daemon owns the audio pipeline across
-sentences: no restart churn on volume/rate changes, a real
+Client for the audioout daemon (Tier 2, on by default; the
+`audioout_enabled` setting opts out). The daemon owns the audio pipeline
+across sentences: no restart churn on volume/rate changes, a real
 rendered-position clock from a sink-pad probe, and deterministic
 completion via status polling. See dev/audioout/PLAN.md.
 --]]
@@ -2608,8 +2756,8 @@ function TTSEngine:_getAudioOut()
     return self._audioout_client
 end
 
--- True when the experimental daemon path is enabled and usable on this
--- device (Kobo MTK BT output only, same gate as the persistent pipeline).
+-- True when the daemon path is enabled and usable on this device (Kobo BT
+-- output: the MTK vendor sink and the BlueZ/bluealsa PCM alike).
 function TTSEngine:_useAudioOut()
     -- Session-only degradation: once the daemon path failed this session,
     -- stay on the legacy path until the next session (fallback policy).
@@ -2617,7 +2765,9 @@ function TTSEngine:_useAudioOut()
             and self.plugin:getSetting("audioout_enabled", true)) then
         return false
     end
-    if self.audio_player_type ~= "gst-bt" then return false end
+    if self.audio_player_type ~= "gst-bt" and self.audio_player_type ~= "bluealsa" then
+        return false
+    end
     -- No connected peer: stand aside. The vendor sink stalls its init for
     -- tens of seconds without an A2DP peer, which would time out every
     -- play; the legacy pipeline handles the "Play anyway" flow instead.
@@ -2626,6 +2776,13 @@ function TTSEngine:_useAudioOut()
         return false
     end
     return true
+end
+
+-- Release the daemon's pipeline but keep the daemon running. Used when the
+-- Piper model (and possibly its sample rate) changes, so the next play
+-- rebuilds at the new rate. No-op when the daemon is not running.
+function TTSEngine:_releaseAudioout()
+    if self._audioout_client then self._audioout_client:release() end
 end
 
 function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
@@ -4102,20 +4259,21 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         local file_path = self.current_audio_file
         logger.warn("TTSEngine: kindle-gst-play:", file_path,
             "dur=", self._expected_play_duration_ms, "ms")
-        -- Audio focus ('Music') is taken once per session by
-        -- _ensureKindleKeepalive below — NOT per sentence: every setFocus
-        -- makes audiomgrd re-ramp gain to its stored level, which reset
-        -- the headset volume to max on every sentence boundary.
+        -- Take audio focus ('Music') ONCE per session and keep the A2DP
+        -- datapath open -- NOT per sentence: every setFocus makes audiomgrd
+        -- re-ramp gain to its stored level, which reset the headset volume
+        -- to max on every sentence boundary.  This runs before EITHER launch
+        -- path: firmware 5.17+ dropped gst-launch-0.10 entirely (issue #73),
+        -- so there the bundled binary is the only playback path and would
+        -- otherwise run with no focus and no keepalive at all.
+        self:_ensureKindleKeepalive()
         -- Prefer the system gst-launch-0.10 pipeline: on PW5/PW6 the working
         -- recipe is mixersink stream-type=Music sync=true (the bundled
         -- gst-play binary sets neither and hangs in commit).  Fall back to
-        -- the bundled binary only when the system pipeline cannot launch.
+        -- the bundled binary when the system pipeline cannot launch.
         local pid = nil
+        local from_bundled = false
         if self:commandExists("gst-launch-0.10") then
-            -- Keep the A2DP datapath up across sentence boundaries so the
-            -- next stream starts instantly instead of losing its opening
-            -- to the datapath resume.
-            self:_ensureKindleKeepalive()
             local sys_pid, raw_file = self:_trySystemGstLaunch(file_path)
             if sys_pid then
                 pid = sys_pid
@@ -4128,6 +4286,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
         end
         if not pid and self._kindle_gst_play_bin then
+            from_bundled = true
             -- Launch gst-play in background, capture PID.
             -- Capture stderr to a log file for diagnostics (was previously
             -- discarded, making it impossible to debug silent failures).
@@ -4158,6 +4317,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         end
         self._gst_play_pid = pid
         self._audio_launched_at = UIManager:getTime()
+        -- Crash forensics (issue #73): the ring's last line before a hard
+        -- process death must name the native step in flight.
+        dlog("player-spawn", "pid", pid, "gen", my_gen,
+            "bundled", from_bundled, "wav", file_path)
         self:startTimingLoop()
         -- Poll /proc/<pid> for process completion.
         -- When the process exits, check its status to distinguish
@@ -4183,7 +4346,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             if proc_fh then
                 proc_fh:close()
                 -- Still running -- perform a health check after a few seconds.
-                if not health_checked and poll_count >= health_check_polls then
+                -- Bundled helper only: the system gst-launch pipeline has no
+                -- marker line, and killing it mid-sentence would cut speech
+                -- that is playing perfectly well.
+                if from_bundled and not health_checked and poll_count >= health_check_polls then
                     health_checked = true
                     local log_text = ""
                     local log_fh = io.open("/tmp/.gst_play_last.log", "r")
@@ -4191,14 +4357,17 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                         log_text = log_fh:read("*a") or ""
                         log_fh:close()
                     end
-                    -- If the log only contains the initial loader message and
-                    -- (for the new helper) the pipeline description, but no
-                    -- playback progress, the pipeline is likely hung in state
-                    -- change or caps negotiation (missing audioconvert/audioresample).
-                    local has_playback_activity = log_text:match("GStreamer error")
-                        or log_text:match("EOS")
-                        or log_text:match("playback")
-                    local is_hung = not has_playback_activity
+                    -- The helper prints "state=PLAYING" once preroll
+                    -- completes (gst-play 0.6.2+).  A log that shows the
+                    -- loader line but no PLAYING marker means the pipeline
+                    -- never started: stuck in a state change or caps
+                    -- negotiation.  Before the marker existed this check
+                    -- matched on "playback"/"EOS" text, which a healthy
+                    -- helper never prints either -- so every sentence longer
+                    -- than ~2.4 s was killed as hung (issue #73: speech cut
+                    -- off after 1-2 words on 5.17+ firmware).
+                    local reached_playing = log_text:match("state=PLAYING")
+                    local is_hung = not reached_playing
                         and log_text:match("gst%-play: loaded libgstreamer")
                     if is_hung then
                         logger.err("TTSEngine: kindle-gst-play hung after",
@@ -4216,6 +4385,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                                 engine._gst_play_pid = sys_pid
                                 engine._gst_system_raw_file = raw_file
                                 pid = sys_pid
+                                from_bundled = false
                                 health_checked = false
                                 UIManager:scheduleIn(0.1, pollGstPlayDone)
                                 return
@@ -4246,6 +4416,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 if poll_count >= max_polls then
                     logger.warn("TTSEngine: kindle-gst-play timed out after",
                         poll_count * 0.1, "s -- killing")
+                    dlog("player-timeout", "pid", pid, "polls", poll_count)
                     os.execute("kill " .. pid .. " 2>/dev/null")
                     engine._gst_play_pid = nil
                     engine:onPlaybackComplete()
@@ -4272,6 +4443,10 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                     or log_text:match("gst%-play: pipeline creation failed")
                     or log_text:match("gst%-play: cannot load libgstreamer")
                     or log_text:match("gst%-play: GStreamer error:")
+                -- Crash forensics: record every player exit with its shape,
+                -- so a hard death right after this line is attributable.
+                dlog("player-exit", "pid", pid, "elapsed_ms", elapsed_ms,
+                    "early_exit", is_early_exit, "error", has_error and true or false)
                 if is_early_exit and has_error then
                     logger.err("TTSEngine: kindle-gst-play exited early (", elapsed_ms,
                         "ms) with error, expected ~", expected_ms, "ms")
@@ -4285,6 +4460,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                             engine._gst_play_pid = sys_pid
                             engine._gst_system_raw_file = raw_file
                             pid = sys_pid
+                            from_bundled = false
                             -- Reset state and continue polling with system process
                             engine.is_speaking = true
                             engine.play_generation = my_gen
@@ -4336,7 +4512,7 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
     -- For Bluetooth: use a single persistent gst-launch that never stops.
     -- A feeder script writes silence between sentences to keep BT A2DP alive,
     -- and switches to real audio on demand via a control file.
-    -- === AUDIOOUT DAEMON PATH (Tier 2, default off) ===
+    -- === AUDIOOUT DAEMON PATH (Tier 2, default on; opt-out in settings) ===
     -- Replaces the shell-wrapper persistent pipeline for TTS read-along:
     -- the daemon keeps the pipeline up across sentences, feeds silence
     -- between groups (no 120 s keepalive WAV), and reports a real clock.
@@ -4410,7 +4586,14 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
                 return false
             end
             self._audioout_active = true
-            self._audioout_done_baseline = resp.done_count or 0
+            -- The completion poll compares the daemon's done_count against
+            -- the value at queue time; a stale or missing baseline here
+            -- made every later group complete the moment it was queued.
+            self._audioout_done_baseline = resp.done_count
+            if not self._audioout_done_baseline then
+                local bst = self._audioout_client:status(400)
+                self._audioout_done_baseline = (bst and bst.done_count) or 0
+            end
             self._audioout_start_ms = resp.start_ms or 0
             self._audioout_fed_end_ms = resp.fed_end_ms
             self._audio_launched_at = UIManager:getTime()
@@ -6132,7 +6315,16 @@ end
 -- (filesrc /dev/zero ! mixersink) in the mixer for the whole reading
 -- session keeps the datapath up so sentence streams start instantly.
 -- Verified on PW5: zero suspend_audio_datapath events while running.
+-- On the 5.17+ generation (no gst-launch-0.10) the silence stream is
+-- currently SKIPPED: the GStreamer 1.0 variant shipped in v0.6.2 and two
+-- 5.19.x devices have lost the KOReader process mid-sentence ever since
+-- (issue #73), so until the crash is attributed, that path runs without
+-- the stream and only takes Music focus.
 function TTSEngine:_ensureKindleKeepalive()
+    -- Remember a failed probe for the rest of the session: without this,
+    -- every sentence would re-run commandExists + io.popen on firmware
+    -- with no gst-launch at all.
+    if self._keepalive_unavailable then return end
     if self._keepalive_pid then
         local f = io.open("/proc/" .. self._keepalive_pid .. "/status", "r")
         if f then f:close() return end
@@ -6142,10 +6334,29 @@ function TTSEngine:_ensureKindleKeepalive()
     -- audiomgrd re-ramp gain to its stored level, which yanked the
     -- headset volume back up on every sentence boundary.
     os.execute("lipc-set-prop com.lab126.audiomgrd setFocus 'Music' 2>/dev/null")
-    local h = io.popen(
-        "gst-launch-0.10 filesrc location=/dev/zero"
-        .. " ! 'audio/x-raw-int,rate=22050,channels=1,width=16,depth=16,signed=true,endianness=1234'"
-        .. " ! mixersink stream-type=Music sync=true >/dev/null 2>&1 & echo $!")
+    local cmd
+    if self:commandExists("gst-launch-0.10") then
+        cmd = "gst-launch-0.10 filesrc location=/dev/zero"
+            .. " ! 'audio/x-raw-int,rate=22050,channels=1,width=16,depth=16,signed=true,endianness=1234'"
+            .. " ! mixersink stream-type=Music sync=true >/dev/null 2>&1 & echo $!"
+    elseif self:commandExists("gst-launch-1.0") then
+        -- 5.17+ firmware (juno generation, no gst-launch-0.10): SKIP the
+        -- silence stream.  It is the only always-on audio stream v0.6.2
+        -- introduced on this path, and since it shipped, two 5.19.x
+        -- devices lose the whole KOReader process a couple of words into
+        -- every TTS session (issue #73).  Until the crash log names the
+        -- real cause, return this path to the v0.6.1 stream profile; the
+        -- focus take above still runs, and sentence gaps just pay the
+        -- datapath resume the stream used to avoid.
+        self._keepalive_unavailable = true
+        logger.warn("TTSEngine: skipping A2DP keepalive stream on gst-launch-1.0-only firmware (issue #73)")
+        return
+    else
+        self._keepalive_unavailable = true
+        logger.warn("TTSEngine: no gst-launch binary for Kindle A2DP keepalive")
+        return
+    end
+    local h = io.popen(cmd)
     local pid_str = h and h:read("*a") or ""
     if h then h:close() end
     self._keepalive_pid = tonumber(pid_str:match("(%d+)"))
@@ -6346,11 +6557,11 @@ function TTSEngine:_killAudioProcess()
     end
 end
 
---[[--%nStart a BT keepalive process that plays silence to hold the A2DP
-connection alive.  Without this, the BT audio sink disconnects after
-~1-2s of idle time, causing the next gst-launch to crash.
-Called from onPlaybackComplete via a short delay — if the next sentence
-is immediately ready, play() cancels this before it starts.
+--[[--
+Digital volume fragment for the gst-launch pipelines: a ` ! volume v=…`
+element when the device's GStreamer has the volume element, else empty so
+a stripped build can never stop playback.  Result cached per session.
+--]]
 function TTSEngine:_gstVolumeFragment()
     if self._gst_volume_available == nil then
         local h = io.popen("gst-inspect-1.0 volume 2>/dev/null | head -1")
@@ -7042,8 +7253,9 @@ function TTSEngine:forceKillAll()
     -- Stop platform-native helper daemon if it is running.
     self:_stopNativeDaemon()
     -- SIGKILL to guarantee hung gst-launch processes die (e.g. stuck in
-    -- BT audio driver).  _stopPersistentPipeline already used SIGKILL for
-    -- the pipeline; this catches any legacy-path or newly spawned strays.
+    -- BT audio driver).  This catches any legacy-path or newly spawned
+    -- strays; the audioout daemon's pipeline is torn down by the daemon
+    -- itself.
     os.execute("killall -9 gst-launch-1.0 2>/dev/null")
     -- Full Piper shutdown: stop persistent servers AND kill per-process instances
     self._piper:shutdown()
@@ -7101,14 +7313,14 @@ function TTSEngine:setPiperSpeaker(id)  self._piper:setSpeaker(id) end
 function TTSEngine:listSanottsVoices()
     local out = {}
     local v = self.sanotts_voices or {}
+    if v.kristin then
+        table.insert(out, { name = "kristin", label = "kristin (English, 700 KB, fast)", dir = v.kristin })
+    end
     if v.amy then
-        table.insert(out, { name = "amy", label = "amy (English, 1.5 MB)", dir = v.amy })
+        table.insert(out, { name = "amy", label = "amy (English quality, 1.5 MB, slow on device)", dir = v.amy })
     end
     if v.fr then
         table.insert(out, { name = "fr", label = "fr-siwis (French, 6.3 MB)", dir = v.fr })
-    end
-    if v.kristin then
-        table.insert(out, { name = "kristin", label = "kristin (English light, less accurate)", dir = v.kristin })
     end
     return out
 end

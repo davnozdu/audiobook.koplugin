@@ -28,19 +28,27 @@
  * cross-check only.
  *
  * Protocol: one JSON object per line in, one JSON line per response.
- * Events are not pushed in M1; the client polls "status" and compares
- * done_count. Commands:
+ * Events are pushed best-effort to whichever client is connected at push
+ * time (a client that polls per command will miss pushes, so any fact the
+ * client must not miss is ALSO latched in status). Commands:
  *   {"cmd":"play","path":"...","gap_ms":300,"rate":22050,"channels":1}
  *       Queue a WAV clip (append). A rate/channels change vs the running
  *       pipeline rebuilds it internally and drops any queued clips.
  *   {"cmd":"pause"}    stop feeding clips, feed silence (in-flight buffered
  *                      audio still plays out; same semantics as the old
  *                      feeder pause)
- *   {"cmd":"resume"}   resume feeding
+ *   {"cmd":"resume","pos_ms":N}   resume feeding; with pos_ms (external
+ *                      mode only) the stream re-epochs at that position
  *   {"cmd":"stop"}     drop the queue, keep the A2DP link with silence
  *   {"cmd":"flush"}    drop the queue AND restart the pipeline (instant
  *                      silence, drops buffered audio too)
+ *   {"cmd":"seek","pos_ms":N,"total_ms":N}   external mode: drop the old
+ *                      stream's bytes, re-epoch the clock at pos_ms
+ *   {"cmd":"external","rate":R,"channels":C,"alsa_device":"...","pos_ms":N,
+ *    "total_ms":N}    external stream mode; pos_ms/total_ms place the
+ *                      clock on the client's timeline (book position)
  *   {"cmd":"status"}   state/pos_ms/accepted_ms/fed_ms/done_count/queue/...
+ *                      plus external_done (latched stream completion)
  *   {"cmd":"volume","value_x1000":800}
  *   {"cmd":"ping"} / {"cmd":"shutdown"}
  * Queue: 8 clips. When it runs dry the daemon feeds silence to hold the
@@ -52,9 +60,33 @@
 
 #include <gst/gst.h>
 
+#ifdef AUDIOOUT_WITH_LIBAV
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswresample/swresample.h>
+#include <libavutil/opt.h>
+#endif
+
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifdef AUDIOOUT_WITH_LIBAV
+/* ffmpeg builds with _FILE_OFFSET_BITS=64, which remaps fcntl to
+ * fcntl64; the Jessie glibc (2.19) stub library does not export that
+ * symbol for static linking. fcntl64 is fcntl with a pointer-wide third
+ * argument on this ABI, so forward it (ffmpeg only uses F_GETFL and
+ * FD_CLOEXEC-style commands). */
+#include <stdarg.h>
+#undef fcntl
+int fcntl64(int fd, int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    void *arg = va_arg(ap, void *);
+    va_end(ap);
+    return fcntl(fd, cmd, arg);
+}
+#define fcntl fcntl64
+#endif
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -76,6 +108,12 @@
 #define LINE_MAX_LEN 2048
 /* Bounded writes keep the poll loop responsive to commands. */
 #define FEED_CHUNK (32 * 1024)
+/* Pacing: keep the pipeline at most this many ms ahead of the audible
+ * position.  The mtk sink accepts without backpressure, so an unbounded
+ * feed lets the pipeline swallow the whole queue in seconds and the
+ * firmware/ring then drops or delays it unpredictably (see
+ * dev/audioout/FINDING-2026-10-19-instant-completion.md). */
+#define FEED_LEAD_MS 3000
 #define SILENCE_CHUNK (8 * 1024)
 #define F_SETPIPE_SZ 1031
 /* Output caps: S16LE stereo 48 kHz. */
@@ -132,6 +170,183 @@ static AlsaApi A;
 #define SND_PCM_FORMAT_S16_LE   2
 #define SND_PCM_ACCESS_RW_INTERLEAVED 3
 
+static void log_line(const char *fmt, ...);
+
+/* ------------------------------------------------------------------ */
+/* In-process decode (AUDIOOUT_WITH_LIBAV, Tier 5b)                     */
+/*                                                                      */
+/* A decoder-subset ffmpeg is linked statically (see                    */
+/* build-ffmpeg-libs.sh): any non-WAV clip or external stream is        */
+/* demuxed and decoded to s16 PCM in-process, which retires the         */
+/* per-track ffmpeg exec and the 30 MB bundled binary for compressed    */
+/* input. Clients keep their WAV path unchanged: clip_open sniffs the   */
+/* file. The client ffmpeg feeder stays for speed != 1.0 (atempo is     */
+/* client-side).                                                        */
+/* ------------------------------------------------------------------ */
+
+#ifdef AUDIOOUT_WITH_LIBAV
+
+typedef struct {
+    AVFormatContext *fmt;
+    const AVCodec *codec;
+    AVCodecContext *ctx;
+    AVPacket *pkt;
+    AVFrame *frame;
+    SwrContext *swr;
+    int stream;
+    int eof;
+    /* leftover converted PCM not yet consumed by the caller */
+    unsigned char obuf[16384];
+    size_t olen, opos;
+} DecState;
+
+static void dec_close(DecState *d) {
+    if (!d) return;
+    if (d->swr) swr_free(&d->swr);
+    if (d->frame) av_frame_free(&d->frame);
+    if (d->pkt) av_packet_free(&d->pkt);
+    if (d->ctx) avcodec_free_context(&d->ctx);
+    if (d->fmt) avformat_close_input(&d->fmt);
+    free(d);
+}
+
+/* Open path for in-process decode. Returns 0 and *out (caller frees via
+ * dec_close), negative on any failure (caller falls back to WAV-only or
+ * refuses). */
+static int dec_open(const char *path, DecState **out, long long *duration_ms,
+                    int *rate, int *channels) {
+    *out = NULL;
+    DecState *d = calloc(1, sizeof *d);
+    if (!d) return -1;
+    if (avformat_open_input(&d->fmt, path, NULL, NULL) != 0) {
+        log_line("dec open: avformat_open_input failed for %s", path);
+        goto fail;
+    }
+    if (avformat_find_stream_info(d->fmt, NULL) < 0) {
+        log_line("dec open: find_stream_info failed for %s", path);
+        goto fail;
+    }
+    d->stream = av_find_best_stream(d->fmt, AVMEDIA_TYPE_AUDIO, -1, -1,
+                                    &d->codec, 0);
+    if (d->stream < 0 || !d->codec) {
+        log_line("dec open: no audio stream for %s (rc %d)", path, d->stream);
+        goto fail;
+    }
+    AVStream *st = d->fmt->streams[d->stream];
+    d->ctx = avcodec_alloc_context3(d->codec);
+    if (!d->ctx) goto fail;
+    if (avcodec_parameters_to_context(d->ctx, st->codecpar) < 0) goto fail;
+    d->ctx->pkt_timebase = st->time_base;
+    if (avcodec_open2(d->ctx, d->codec, NULL) < 0) goto fail;
+    log_line("dec: stream=%d codec=%s rate=%d fmt=%d ch=%d",
+             d->stream, d->codec ? d->codec->name : "?",
+             d->ctx->sample_rate, d->ctx->sample_fmt,
+             d->ctx->ch_layout.nb_channels);
+    int orate = d->ctx->sample_rate > 0 ? d->ctx->sample_rate : 44100;
+    int och = d->ctx->ch_layout.nb_channels > 0
+        ? d->ctx->ch_layout.nb_channels : 2;
+    if (swr_alloc_set_opts2(&d->swr,
+                            &d->ctx->ch_layout, AV_SAMPLE_FMT_S16, orate,
+                            &d->ctx->ch_layout, d->ctx->sample_fmt,
+                            d->ctx->sample_rate, 0, NULL) < 0) goto fail;
+    if (swr_init(d->swr) < 0) goto fail;
+    d->pkt = av_packet_alloc();
+    d->frame = av_frame_alloc();
+    if (!d->pkt || !d->frame) goto fail;
+    long long dur = 0;
+    if (d->fmt->duration > 0)
+        dur = d->fmt->duration * 1000LL / AV_TIME_BASE;
+    else if (st->duration > 0 && st->time_base.den)
+        dur = st->duration * 1000LL * st->time_base.num / st->time_base.den;
+    if (dur <= 0 && d->fmt->bit_rate > 0)
+        dur = (long long)d->fmt->pb ? 0
+              : 0;  /* bitrate estimate needs the size; keep 0 = unknown */
+    if (dur <= 0) {
+        log_line("dec open: no duration for %s", path);
+        goto fail;
+    }
+    *duration_ms = dur;
+    *rate = orate;
+    *channels = och;
+    *out = d;
+    return 0;
+fail:
+    dec_close(d);
+    return -1;
+}
+
+/* Convert one received frame into the output buffer (appends). */
+static void dec_convert(DecState *d, AVFrame *f) {
+    int out_samples = swr_get_out_samples(d->swr, f->nb_samples);
+    if (out_samples <= 0) out_samples = f->nb_samples + 16;
+    size_t need = (size_t)out_samples * d->ctx->ch_layout.nb_channels * 2 + 64;
+    if (need > sizeof d->obuf - d->olen) {
+        /* compact first; a frame larger than the free space is clipped by
+         * swr to what fits */
+        if (d->opos > 0) {
+            memmove(d->obuf, d->obuf + d->opos, d->olen - d->opos);
+            d->olen -= d->opos;
+            d->opos = 0;
+        }
+        if (need > sizeof d->obuf - d->olen) out_samples =
+            (int)((sizeof d->obuf - d->olen - 64)
+                  / (size_t)(d->ctx->ch_layout.nb_channels * 2));
+        if (out_samples <= 0) return;
+    }
+    uint8_t *dstp = d->obuf + d->olen;
+    int got = swr_convert(d->swr, &dstp, out_samples,
+                          (const uint8_t **)f->extended_data, f->nb_samples);
+    if (got > 0) d->olen += (size_t)got * d->ctx->ch_layout.nb_channels * 2;
+}
+
+/* Pull up to `want` bytes of s16 PCM; returns bytes pulled (0 = EOF). */
+static size_t dec_pull(DecState *d, unsigned char *out, size_t want) {
+    size_t total = 0;
+    while (total < want) {
+        if (d->opos < d->olen) {
+            size_t take = d->olen - d->opos;
+            if (take > want - total) take = want - total;
+            memcpy(out + total, d->obuf + d->opos, take);
+            d->opos += take;
+            total += take;
+            continue;
+        }
+        d->olen = 0;
+        d->opos = 0;
+        if (d->eof) break;
+        /* drain the decoder first */
+        int r = avcodec_receive_frame(d->ctx, d->frame);
+        if (r == 0) { dec_convert(d, d->frame); av_frame_unref(d->frame); continue; }
+        if (r == AVERROR_EOF) { d->eof = 1; break; }
+        if (r != EAGAIN) {
+            /* decode error: skip the packet rather than spinning */
+        }
+        if (av_read_frame(d->fmt, d->pkt) < 0) {
+            avcodec_send_packet(d->ctx, NULL);   /* drain */
+            continue;
+        }
+        if (d->pkt->stream_index == d->stream)
+            avcodec_send_packet(d->ctx, d->pkt);
+        av_packet_unref(d->pkt);
+    }
+    return total;
+}
+
+/* Re-position the decoder (external file mode seek). */
+static int dec_seek(DecState *d, long long pos_ms) {
+    int64_t ts = (int64_t)(pos_ms / 1000.0 * AV_TIME_BASE);
+    int r = avformat_seek_file(d->fmt, -1, INT64_MIN, ts, ts, 0);
+    if (r < 0) return -1;
+    avcodec_flush_buffers(d->ctx);
+    swr_init(d->swr);
+    d->olen = 0;
+    d->opos = 0;
+    d->eof = 0;
+    return 0;
+}
+
+#endif /* AUDIOOUT_WITH_LIBAV */
+
 typedef struct {
     char path[MAX_PATH];
     int fd;
@@ -143,6 +358,9 @@ typedef struct {
     long long gap_ms_after;
     long long start_ms;             /* stream position of first PCM */
     long long end_ms;               /* start + duration + gap */
+#ifdef AUDIOOUT_WITH_LIBAV
+    void *dec;                      /* DecState* when the clip is decoded */
+#endif
 } Clip;
 
 static struct {
@@ -171,11 +389,27 @@ static struct {
 
     /* External stream mode (media path): an outside writer (ffmpeg) feeds
      * the fifo; the daemon builds the pipeline, stays off the stream, and
-     * reports position from the probe clock. */
+     * reports position from the probe clock. Positions are on the CLIENT's
+     * timeline (book position), not since-pipeline-build: every fresh
+     * stream announces its start position and length (pos_ms/total_ms) and
+     * epoch_off_ms converts the since-build probe counters into that
+     * timeline. */
     int external_active;
-    int external_wait_first;            /* rebaseline base at first movement */
+    int external_wait_first;            /* rebaseline base at first movement
+                                           (legacy no-pos resume) */
+#ifdef AUDIOOUT_WITH_LIBAV
+    int ext_dec_eof;                    /* decoded stream fully delivered */
+#endif
+    long long epoch_off_ms;             /* client ms at since-build intake 0 */
+    long long external_total_ms;        /* stream length from the client */
+    int external_done;                  /* latched completion flag */
     long long external_base_ms;
     long long external_frozen_ms;       /* position while paused */
+    long long external_anchor_wall_ms;  /* wall time the stream's first
+                                           buffer reached the sink */
+    int anchor_wait;                    /* set on a fresh pipeline or
+                                           resume: anchor the audible clock
+                                           at the next sink acceptance */
 
     /* Acceptance pacing: a healthy A2DP sink accepts at real time.  A sink
      * with a dead peer (D-Bus still lists it) swallows buffers at decode
@@ -194,6 +428,11 @@ static struct {
     int alsa_rate, alsa_channels;
     unsigned long long alsa_written_frames;
 
+    long long next_ka_ms;               /* wall time the next keepalive
+                                           silence chunk may be written */
+#ifdef AUDIOOUT_WITH_LIBAV
+    void *ext_dec;                      /* DecState* for external file mode */
+#endif
     int listen_fd;
     int client_fd;
 } S;
@@ -202,6 +441,8 @@ static struct {
 /* ------------------------------------------------------------------ */
 /* Clock                                                                */
 /* ------------------------------------------------------------------ */
+
+static void log_line(const char *fmt, ...);
 
 static pthread_mutex_t probe_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned long long probe_bytes;      /* total accepted output bytes */
@@ -253,11 +494,22 @@ refresh_clock(void) {
                 (long long)(acc_bytes / OUT_BYTES_PER_MS) - acc_boundary_ms;
             S.external_wait_first = 0;
         }
+        if (S.anchor_wait) {
+            S.external_base_ms =
+                (long long)(acc_bytes / OUT_BYTES_PER_MS) - acc_boundary_ms;
+            S.external_anchor_wall_ms = acc_arrival_ms;
+            S.anchor_wait = 0;
+            log_line("ANCHOR base=%lld wall=%lld acc=%lld frozen=%lld paused=%d",
+                     S.external_base_ms, S.external_anchor_wall_ms,
+                     (long long)(acc_bytes / OUT_BYTES_PER_MS),
+                     S.external_frozen_ms, S.paused);
+        }
     }
 }
 
 /* ALSA position: hardware delay tells exactly how many frames are still
- * between written and played. */
+ * between written and played. Shifted by the client-timeline epoch so an
+ * external stream started at a book offset reports book positions. */
 static long long alsa_pos_ms(void);
 
 static long long
@@ -270,7 +522,7 @@ alsa_pos_ms(void) {
     long long pos = written - d;
     int r = S.alsa_rate > 0 ? S.alsa_rate : 44100;
     if (pos < 0) pos = 0;
-    return pos * 1000LL / r;
+    return S.epoch_off_ms + pos * 1000LL / r;
 }
 
 /* Rendered stream position in ms (M0 model), capped at accepted. */
@@ -282,6 +534,45 @@ rendered_ms(void) {
     long long acc = (long long)(acc_bytes / OUT_BYTES_PER_MS);
     if (est < 0) est = 0;
     if (est > acc) est = acc;
+    return est;
+}
+
+/* Audible stream position in external mode.  The mtk sink accepts buffers
+ * without backpressure (they drain into the Bluetooth firmware), so no
+ * acceptance-derived clock represents what the listener hears: a firehose
+ * acceptance sweeps any intake-based model past clips that are still
+ * playing, which made every clip "complete" within a second of queueing.
+ * Instead, anchor once when the stream's first buffer reaches the sink and
+ * advance at audio rate from that anchor; underruns hold at the last
+ * delivered sample (min with the intake position); pauses freeze at the
+ * frozen value until the client rebaselines on resume.
+ *
+ * The intake clamp carries a tail allowance: on the real vendor sink the
+ * LAST partial transport batch (queue 500 ms + firmware, ~700-1000 ms) is
+ * committed to playback but never crosses the pad probe, so clamping
+ * strictly at intake froze completion ~750 ms short of every clip end.
+ * The allowance bounds the overshoot; real positions re-clamp once the
+ * keepalive pushes intake forward again. */
+#define AUDIBLE_TAIL_SLACK_MS 1000
+
+static long long
+audible_ms(void) {
+    if (S.paused) return S.external_frozen_ms;
+    if (S.anchor_wait || acc_bytes == 0) return S.external_frozen_ms;
+    long long est = S.epoch_off_ms + S.external_base_ms
+                  + (wall_now - S.external_anchor_wall_ms);
+    long long acc = S.epoch_off_ms
+                  + (long long)(acc_bytes / OUT_BYTES_PER_MS)
+                  + AUDIBLE_TAIL_SLACK_MS;
+#ifdef AUDIOOUT_WITH_LIBAV
+    /* The decoded stream is fully delivered: the last partial transport
+     * batch never crosses the pad probe, so the intake clamp would freeze
+     * the clock short of the announced total. The anchor alone is truth. */
+    if (S.ext_dec_eof) acc = est + AUDIBLE_TAIL_SLACK_MS;
+#endif
+    if (est > acc) est = acc;
+    long long lo = S.epoch_off_ms + S.external_base_ms;
+    if (est < lo) est = lo;
     return est;
 }
 
@@ -374,6 +665,31 @@ clip_open(Clip *c, const char *path, int rate, int channels) {
         return -1;
     }
     unsigned char hdr[12];
+    if (pread(c->fd, hdr, 12, 0) == 12 &&
+        (memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0)) {
+        /* Not a WAV: in-process decode (Tier 5b). The pread check above
+         * also rejects short/garbage files the demuxer would reject. */
+#ifdef AUDIOOUT_WITH_LIBAV
+        long long dur = 0;
+        int drate = 0, dch = 0;
+        DecState *d = NULL;
+        if (dec_open(path, &d, &dur, &drate, &dch) == 0) {
+            c->dec = d;
+            c->in_bps = drate * dch * 2;
+            if (c->in_bps <= 0) c->in_bps = 44100;
+            c->duration_ms = dur;
+            /* nominal PCM size so remaining/end accounting works */
+            c->data_size = (unsigned long long)(dur * (long long)c->in_bps / 1000);
+            close(c->fd);
+            c->fd = -1;
+            log_line("clip decoded in-process: %s (%lld ms, %d Hz x %d ch)",
+                     path, dur, drate, dch);
+            return 0;
+        }
+        log_line("clip decode open failed, not RIFF either: %s", path);
+#endif
+        goto fail;
+    }
     if (pread(c->fd, hdr, 12, 0) != 12 ||
         memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0) {
         log_line("clip not RIFF/WAVE: %s", path);
@@ -419,8 +735,12 @@ fail:
 /* Pipeline lifecycle                                                   */
 /* ------------------------------------------------------------------ */
 
+static const unsigned char silence_chunk[SILENCE_CHUNK];
+
 static int
 pipeline_build(int rate, int channels) {
+    S.anchor_wait = 1;
+    S.external_frozen_ms = 0;
     char launch[1600];
     char vol[64] = "";
     if (G.gst_element_factory_find && G.gst_element_factory_find("volume"))
@@ -563,7 +883,7 @@ alsa_teardown(void) {
 /* Non-blocking write; returns bytes accepted.  -EPIPE (underrun, happens
  * after pause starvation) recovers and retries once. */
 static unsigned long long
-alsa_write(const unsigned char *buf, unsigned long long len) {
+alsa_write_raw(const unsigned char *buf, unsigned long long len) {
     unsigned long long total = 0;
     int frames_per_byte = S.alsa_channels * 2;
     while (total < len) {
@@ -586,17 +906,65 @@ alsa_write(const unsigned char *buf, unsigned long long len) {
     return total;
 }
 
+/* Software s16 scaling for the ALSA path (the gst path has the volume
+ * element). Scaled into a staging buffer so const or aliased inputs are
+ * never mutated. Values above 1.0 clip; the gst element saturates the same
+ * way, so the knob keeps its range on both outputs. */
+static unsigned char alsa_stage[FEED_CHUNK];
+
+static unsigned long long
+alsa_write(const unsigned char *buf, unsigned long long len) {
+    if (S.volume > 0.999 && S.volume < 1.001)
+        return alsa_write_raw(buf, len);
+    unsigned long long total = 0;
+    while (total < len) {
+        unsigned long long chunk = len - total;
+        if (chunk > sizeof alsa_stage) chunk = sizeof alsa_stage;
+        const unsigned char *p = buf + total;
+        unsigned long long even = chunk & ~1ULL;   /* whole samples */
+        for (unsigned long long i = 0; i < even; i += 2) {
+            int16_t s = (int16_t)(p[i] | (p[i + 1] << 8));
+            int32_t v = (int32_t)((double)s * S.volume);
+            if (v > 32767) v = 32767;
+            if (v < -32768) v = -32768;
+            alsa_stage[i] = (unsigned char)(v & 0xff);
+            alsa_stage[i + 1] = (unsigned char)((v >> 8) & 0xff);
+        }
+        if (even < chunk) alsa_stage[even] = p[even];
+        unsigned long long w = alsa_write_raw(alsa_stage, chunk);
+        total += w;
+        if (w < chunk) break;
+    }
+    return total;
+}
+
 static void
 pipeline_teardown(void) {
     if (S.pipe) {
+        /* Unblock filesrc before stopping the pipeline. The fifo is held
+         * O_RDWR (no EOF across rebuilds by design), so a starved filesrc
+         * sits in a blocking read; gst_pad_stop_task then waits for that
+         * task inside set_state(NULL) and the whole daemon deadlocks (the
+         * 3 s wedge guard below never runs: set_state blocks first). One
+         * burst of silence satisfies the pending read; the flushing check
+         * after each fill ends the task. Writes are nonblocking, so a
+         * fifo that is already full just returns EAGAIN. */
+        if (S.fifo_fd >= 0) {
+            for (int i = 0; i < 8; i++) {
+                if (write(S.fifo_fd, silence_chunk, SILENCE_CHUNK) <= 0) break;
+            }
+        }
         G.gst_element_set_state(S.pipe, GST_STATE_NULL);
         if (G.gst_element_get_state) {
             GstState cur = GST_STATE_VOID_PENDING, pend = GST_STATE_VOID_PENDING;
             /* Closing the MTK sink waits on the BT stack, which a wedged
              * peer can block forever.  Bound the wait; if the sink will
              * not close, exit so the client respawns a fresh daemon
-             * instead of every later command timing out. */
-            G.gst_element_get_state(S.pipe, &cur, &pend, 3 * GST_SECOND);
+             * instead of every later command timing out.  The cast matters
+             * on armhf: GST_SECOND is 10^9, which overflows a 32-bit long
+             * when multiplied and silently turns the bound into ~forever. */
+            G.gst_element_get_state(S.pipe, &cur, &pend,
+                                    3 * (GstClockTime)GST_SECOND);
             if (cur != GST_STATE_NULL) {
                 log_line("teardown wedged (state %d after 3s); exiting",
                          (int)cur);
@@ -681,19 +1049,21 @@ claim_exclusive_socket(void) {
 /* Queue + feeding                                                      */
 /* ------------------------------------------------------------------ */
 
-static const unsigned char silence_chunk[SILENCE_CHUNK];
-
 static int
 queue_clip(const char *path, long long gap_ms) {
     Clip c;
     if (clip_open(&c, path, g_rate, g_channels) != 0) return -1;
     c.gap_ms_after = gap_ms;
-    /* A clip queued while keepalive silence flows starts after every byte
-     * already written. */
-    long long now_written_ms =
-        (long long)((S.fifo_written * 1000ull) /
-                    (unsigned long long)(g_rate * g_channels * 2));
-    c.start_ms = (now_written_ms > S.fed_end_ms) ? now_written_ms : S.fed_end_ms;
+    /* Clip positions live on the AUDIBLE timeline (what the listener has
+     * heard), not the fifo-intake timeline: unpaced keepalive silence and
+     * the firehose sink make intake race ahead of wall time, and a clip
+     * whose end_ms is an intake position "completes" the moment the
+     * audible clock passes it -- the TTS session then races through
+     * sentences and pages. fed_end_ms only ever advances with real clips,
+     * so stacking works; the intake position only bounds the lead. */
+    long long base_ms = audible_ms();
+    if (S.fed_end_ms > base_ms) base_ms = S.fed_end_ms;
+    c.start_ms = base_ms;
     c.end_ms = c.start_ms + c.duration_ms + gap_ms;
     S.fed_end_ms = c.end_ms;
     S.all_fed = 0;
@@ -734,6 +1104,21 @@ fifo_write(const unsigned char *buf, unsigned long long len) {
 static void
 feed_tick(void) {
     if (S.external_active) {
+        /* External file decode (Tier 5b): the daemon demuxes and decodes
+         * the announced file itself, no outside writer. */
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (S.ext_dec) {
+            if (S.paused) {
+                if (S.out_alsa) fifo_write(silence_chunk, SILENCE_CHUNK);
+                return;
+            }
+            unsigned char buf[FEED_CHUNK];
+            size_t n = dec_pull((DecState *)S.ext_dec, buf, FEED_CHUNK);
+            if (n > 0) fifo_write(buf, n);
+            else if (S.out_alsa) fifo_write(silence_chunk, SILENCE_CHUNK);
+            return;
+        }
+#endif
         /* ALSA external mode: the daemon READS the fifo (ffmpeg writes it)
          * and writes the PCM; gst external mode leaves the fifo to filesrc.
          * While paused, feed keepalive silence so the link stays up. */
@@ -751,14 +1136,44 @@ feed_tick(void) {
         return;
     }
     if (S.paused || S.fifo_fd < 0) return;
+    /* Keepalive silence holds the A2DP link and keeps filesrc's blocking
+     * read unblocked (a starved src deadlocks the next teardown; see
+     * pipeline_teardown). It is NEVER gated by the lead window, but it IS
+     * rate-limited to real time: the firehose sink accepts as fast as we
+     * write, and unthrottled silence would flood the BT firmware and race
+     * the intake position far ahead of the audible clock. */
     if (S.feed_idx < 0 && S.queue_len == 0) {
-        fifo_write(silence_chunk, SILENCE_CHUNK);   /* idle keepalive */
+        if (wall_now >= S.next_ka_ms) {
+            fifo_write(silence_chunk, SILENCE_CHUNK);   /* idle keepalive */
+            S.next_ka_ms = wall_now
+                + (long long)SILENCE_CHUNK * 1000LL
+                  / (g_rate * g_channels * 2);
+        }
         return;
     }
     if (S.all_fed) {
         /* Queue fully written (possibly still rendering): keepalive. */
-        fifo_write(silence_chunk, SILENCE_CHUNK);
+        if (wall_now >= S.next_ka_ms) {
+            fifo_write(silence_chunk, SILENCE_CHUNK);
+            S.next_ka_ms = wall_now
+                + (long long)SILENCE_CHUNK * 1000LL
+                  / (g_rate * g_channels * 2);
+        }
         return;
+    }
+    /* Pace REAL audio (clips and gaps) against the audible position: the
+     * listener has heard up to audible_ms(), the FIFO head is at
+     * fifo_written; never let the lead exceed the window.  The fifo's own
+     * EAGAIN backpressure only kicks in once every downstream buffer is
+     * full, which on the firehose mtk sink is far too late.  Before the
+     * anchor fires there is nothing to pace against: feed. */
+    if (!S.anchor_wait) {
+        long long fed_head_ms =
+            (long long)((S.fifo_written * 1000ull) /
+                        (unsigned long long)(g_rate * g_channels * 2));
+        if (fed_head_ms - audible_ms() > FEED_LEAD_MS) {
+            return;   /* enough buffered ahead; next tick */
+        }
     }
     if (S.feed_idx < 0) S.feed_idx = 0;
 
@@ -792,18 +1207,30 @@ feed_tick(void) {
                 close(c->fd);
                 c->fd = -1;
             }
+#ifdef AUDIOOUT_WITH_LIBAV
+            if (c->dec) { dec_close((DecState *)c->dec); c->dec = NULL; }
+#endif
             S.gap_left_ms = c->gap_ms_after;
             S.feed_idx++;
             continue;
         }
         unsigned long long want = remaining < budget ? remaining : budget;
-        ssize_t n = pread(c->fd, buf, want, c->file_pos);
+        ssize_t n;
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (c->dec) {
+            n = (ssize_t)dec_pull((DecState *)c->dec, buf, want);
+        } else
+#endif
+        n = pread(c->fd, buf, want, c->file_pos);
         if (n <= 0) {
             log_line("clip read failed at %llu: %s", c->file_pos, c->path);
             if (c->fd >= 0) {
                 close(c->fd);
                 c->fd = -1;
             }
+#ifdef AUDIOOUT_WITH_LIBAV
+            if (c->dec) { dec_close((DecState *)c->dec); c->dec = NULL; }
+#endif
             S.gap_left_ms = c->gap_ms_after;
             S.feed_idx++;
             continue;
@@ -851,12 +1278,64 @@ state_str(void) {
 
 static void
 drop_queue(void) {
-    for (int i = 0; i < S.queue_len; i++)
+    for (int i = 0; i < S.queue_len; i++) {
         if (S.queue[i].fd >= 0) close(S.queue[i].fd);
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (S.queue[i].dec) { dec_close((DecState *)S.queue[i].dec); S.queue[i].dec = NULL; }
+#endif
+    }
     S.queue_len = 0;
     S.feed_idx = -1;
     S.all_fed = 1;
     S.gap_left_ms = 0;
+}
+
+/* Empty the fifo (O_NONBLOCK, so read returns EAGAIN at empty). A writer
+ * must be dead: the client kills its feeder before re-epoching. */
+static void
+fifo_drain(void) {
+    if (S.fifo_fd < 0) return;
+    unsigned char tmp[4096];
+    while (read(S.fifo_fd, tmp, sizeof tmp) > 0) {}
+}
+
+/* Begin a fresh stream epoch at client position pos_ms: drop every byte of
+ * the old stream (queue, fifo backlog, pipeline) so none of it can leak
+ * into the new one, zero the clocks, and let the first buffer of the new
+ * stream re-anchor. S.paused is left untouched; the caller decides. Used by
+ * external, seek and resume-with-pos. Returns -1 when the gst rebuild
+ * failed. */
+static int
+stream_epoch(long long pos_ms, long long total_ms) {
+    drop_queue();
+    S.external_total_ms = total_ms;
+    S.external_done = 0;
+    S.announce_idle = 1;        /* the dead stream owes no idle event */
+    S.unpaced = 0;
+    S.pace_fast_ticks = 0;
+    S.pace_arm_ms = wall_now;   /* warm-up grace applies to the new stream */
+    if (S.out_alsa) {
+        if (S.alsa_pcm) {
+            A.snd_pcm_drop(S.alsa_pcm);
+            A.snd_pcm_prepare(S.alsa_pcm);
+        }
+        fifo_open();
+        fifo_drain();
+        S.alsa_written_frames = 0;
+    } else {
+        pipeline_teardown();
+        reset_stream();
+        if (fifo_open() != 0) return -1;
+        fifo_drain();
+        if (pipeline_build(g_rate, g_channels) != 0) return -1;
+    }
+    S.epoch_off_ms = pos_ms;
+    S.external_base_ms = 0;
+    S.external_anchor_wall_ms = 0;
+    S.external_frozen_ms = pos_ms;
+    S.external_wait_first = 0;
+    S.anchor_wait = 1;
+    return 0;
 }
 
 static void
@@ -865,7 +1344,11 @@ handle_command(char *line) {
     json_find(line, "cmd", cmd, sizeof cmd);
 
     if (!strcmp(cmd, "ping")) {
-        respond("{\"ok\":true,\"uptime_ms\":%lld,\"bufs\":%llu}",
+        respond("{\"ok\":true,\"uptime_ms\":%lld,\"bufs\":%llu"
+#ifdef AUDIOOUT_WITH_LIBAV
+                ",\"decoder\":1"
+#endif
+                "}",
                 mono_ms() - g_started_ms, acc_bytes / OUT_BYTES_PER_MS);
     } else if (!strcmp(cmd, "play")) {
         char path[MAX_PATH] = "";
@@ -935,24 +1418,56 @@ handle_command(char *line) {
             return;
         }
         respond("{\"ok\":true,\"queue\":%d,\"fed_end_ms\":%lld,"
-                "\"start_ms\":%lld,\"duration_ms\":%lld}",
+                "\"start_ms\":%lld,\"duration_ms\":%lld,"
+                "\"done_count\":%llu}",
                 S.queue_len, S.fed_end_ms,
                 S.queue[S.queue_len - 1].start_ms,
-                S.queue[S.queue_len - 1].duration_ms);
+                S.queue[S.queue_len - 1].duration_ms,
+                S.done_count);
     } else if (!strcmp(cmd, "pause")) {
-        if (S.external_active && !S.paused) {
-            S.external_frozen_ms = (long long)(acc_bytes / OUT_BYTES_PER_MS)
-                                   - S.external_base_ms;
-            if (S.external_frozen_ms < 0) S.external_frozen_ms = 0;
+        /* Freeze the clock in EVERY mode: in clip mode the frozen value is
+         * what status reports while paused, and a collapse to 0 here sent
+         * the client's word tick (pos_ms - start_ms) far negative on every
+         * auto-pause, scrambling the read-along highlight. */
+        if (!S.paused) {
+            S.external_frozen_ms = audible_ms();
+            log_line("PAUSE freeze=%lld acc=%lld", S.external_frozen_ms,
+                     (long long)(acc_bytes / OUT_BYTES_PER_MS));
         }
         S.paused = 1;
         respond("{\"ok\":true,\"state\":\"paused\"}");
     } else if (!strcmp(cmd, "resume")) {
-        if (S.external_active && S.paused) {
-            /* New epoch: the writer restarts at an offset chosen by the
-             * client; rebaseline the stream position at first movement. */
+        long long pos_ms = json_num(line, "pos_ms", -1);
+        if (S.external_active && pos_ms >= 0) {
+            /* Explicit client position: a new epoch at pos. The writer
+             * restarts at pos after this command returns. */
+#ifdef AUDIOOUT_WITH_LIBAV
+            if (S.ext_dec) dec_seek((DecState *)S.ext_dec, pos_ms);
+#endif
+            if (stream_epoch(pos_ms, S.external_total_ms) != 0) {
+                respond("{\"ok\":false,\"error\":\"resume rebuild failed\"}");
+                return;
+            }
+        } else if (S.external_active && S.paused) {
+            /* Legacy resume without a position: the writer restarts at an
+             * offset only it knows; rebaseline the stream position at
+             * first movement (byte-derived, client timeline since-build). */
             S.external_wait_first = 1;
             S.external_base_ms = 0;
+        }
+        if (S.paused && !S.external_active) {
+            /* Clip mode: continue the clock from the frozen value. The
+             * pipeline drains while paused, so re-anchoring from intake
+             * would read the DRAINED position and collapse the clock to
+             * (near) zero on every resume -- which scrambled the client's
+             * word tick each time the sync flow auto-paused. */
+            S.external_base_ms = S.external_frozen_ms;
+            S.epoch_off_ms = 0;
+            S.external_anchor_wall_ms = wall_now;
+            S.external_wait_first = 0;
+            S.anchor_wait = 0;
+        } else if (S.paused) {
+            S.anchor_wait = 1;
         }
         S.paused = 0;
         respond("{\"ok\":true,\"state\":\"%s\"}", state_str());
@@ -962,6 +1477,12 @@ handle_command(char *line) {
     } else if (!strcmp(cmd, "flush")) {
         drop_queue();
         S.external_active = 0;
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (S.ext_dec) { dec_close((DecState *)S.ext_dec); S.ext_dec = NULL; }
+#endif
+        S.epoch_off_ms = 0;
+        S.external_total_ms = 0;
+        S.external_done = 0;
         if (S.out_alsa && S.alsa_pcm) {
             A.snd_pcm_drop(S.alsa_pcm);
             A.snd_pcm_prepare(S.alsa_pcm);
@@ -971,18 +1492,65 @@ handle_command(char *line) {
         if (S.pipe) {
             pipeline_teardown();
             reset_stream();
-            if (fifo_open() != 0 || pipeline_build(g_rate, g_channels) != 0) {
+            if (fifo_open() != 0) {
+                respond("{\"ok\":false,\"error\":\"flush fifo failed\"}");
+                return;
+            }
+            fifo_drain();
+            if (pipeline_build(g_rate, g_channels) != 0) {
                 respond("{\"ok\":false,\"error\":\"flush rebuild failed\"}");
                 return;
             }
         }
         respond("{\"ok\":true,\"state\":\"idle\"}");
+    } else if (!strcmp(cmd, "seek")) {
+        if (!S.external_active) {
+            respond("{\"ok\":false,\"error\":\"not in external mode\"}");
+            return;
+        }
+        long long pos_ms = json_num(line, "pos_ms", 0);
+        long long total_ms = json_num(line, "total_ms", S.external_total_ms);
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (S.ext_dec && dec_seek((DecState *)S.ext_dec, pos_ms) != 0) {
+            respond("{\"ok\":false,\"error\":\"seek failed\"}");
+            return;
+        }
+#endif
+        if (stream_epoch(pos_ms, total_ms) != 0) {
+            respond("{\"ok\":false,\"error\":\"seek rebuild failed\"}");
+            return;
+        }
+        log_line("seek: epoch at %lldms (total %lldms)", pos_ms, total_ms);
+        respond("{\"ok\":true,\"state\":\"%s\",\"pos_ms\":%lld}",
+                state_str(), pos_ms);
     } else if (!strcmp(cmd, "external")) {
         long long rate = json_num(line, "rate", g_rate);
         long long channels = json_num(line, "channels", g_channels);
+        long long pos_ms = json_num(line, "pos_ms", 0);
+        long long total_ms = json_num(line, "total_ms", 0);
         char alsa_dev[MAX_PATH] = "";
+        char dec_path[MAX_PATH] = "";
         json_find(line, "alsa_device", alsa_dev, sizeof alsa_dev);
+        json_find(line, "path", dec_path, sizeof dec_path);
         drop_queue();
+        S.external_active = 0;
+#ifdef AUDIOOUT_WITH_LIBAV
+        S.ext_dec_eof = 0;
+#endif
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (S.ext_dec) { dec_close((DecState *)S.ext_dec); S.ext_dec = NULL; }
+        if (dec_path[0]) {
+            long long dur = 0;
+            int drate = 0, dch = 0;
+            DecState *d = NULL;
+            if (dec_open(dec_path, &d, &dur, &drate, &dch) != 0) {
+                respond("{\"ok\":false,\"error\":\"decode open failed\"}");
+                return;
+            }
+            (void)dur;
+            S.ext_dec = d;
+        }
+#endif
         if (S.out_alsa) {
             const char *dev = (alsa_dev[0] || S.alsa_device[0])
                 ? (alsa_dev[0] ? alsa_dev : S.alsa_device) : "default";
@@ -992,30 +1560,37 @@ handle_command(char *line) {
             }
             g_rate = (int)rate;
             g_channels = (int)channels;
-        } else if (!S.pipe || (int)rate != S.pipe_rate ||
-                (int)channels != S.pipe_channels) {
-            pipeline_teardown();
+            /* New stream, new epoch: no byte of the previous track (fifo
+             * backlog included) may leak into this one. */
+            if (stream_epoch(pos_ms, total_ms) != 0) {
+                respond("{\"ok\":false,\"error\":\"alsa re-epoch failed\"}");
+                return;
+            }
+        } else {
+            /* Always flush-class: a new stream must not inherit the old
+             * pipeline's queued or fifo-buffered bytes. */
             g_rate = (int)rate;
             g_channels = (int)channels;
-            reset_stream();
-            if (fifo_open() != 0 || pipeline_build(g_rate, g_channels) != 0) {
+            if (stream_epoch(pos_ms, total_ms) != 0) {
                 respond("{\"ok\":false,\"error\":\"pipeline build failed\"}");
                 return;
             }
         }
         S.external_active = 1;
-        S.external_wait_first = 1;
-        S.external_base_ms = 0;
-        S.external_frozen_ms = 0;
-        S.unpaced = 0;
-        S.pace_fast_ticks = 0;
-        S.pace_arm_ms = wall_now;
-        log_line("external stream mode (%d x %d)", g_rate, g_channels);
+        S.paused = 0;
+        log_line("external stream mode (%d x %d) at %lldms/%lldms",
+                 g_rate, g_channels, pos_ms, total_ms);
         respond("{\"ok\":true,\"mode\":\"external\",\"fifo\":\"%s\"}",
                 S.fifo_path);
     } else if (!strcmp(cmd, "release")) {
         drop_queue();
         S.external_active = 0;
+#ifdef AUDIOOUT_WITH_LIBAV
+        if (S.ext_dec) { dec_close((DecState *)S.ext_dec); S.ext_dec = NULL; }
+#endif
+        S.epoch_off_ms = 0;
+        S.external_total_ms = 0;
+        S.external_done = 0;
         if (S.out_alsa) {
             alsa_teardown();
             respond("{\"ok\":true,\"state\":\"released\"}");
@@ -1029,35 +1604,50 @@ handle_command(char *line) {
     } else if (!strcmp(cmd, "status")) {
         /* Cap at the end of REAL audio: idle keepalive silence advances
          * the probe clock but is not part of any clip, and the client's
-         * sync math must never see a position past the last word. */
+         * sync math must never see a position past the last word. In
+         * external mode the cap is the stream length the client announced. */
         long long rend = rendered_ms();
         long long fed = (long long)((S.fifo_written * 1000ull) /
                                     (unsigned long long)(g_rate * g_channels * 2));
-        if (rend > S.fed_end_ms) rend = S.fed_end_ms;
-        if (S.external_active) {
-            /* External mode: position is stream-relative from the probe,
-             * frozen while paused (keepalive silence would otherwise run
-             * the clock away from the media position). */
-            rend = S.paused ? S.external_frozen_ms
-                            : (long long)(acc_bytes / OUT_BYTES_PER_MS)
-                                  - S.external_base_ms;
+        if (!S.out_alsa) {
+            /* The audible clock (see audible_ms), so the client's sync math
+             * tracks what the listener hears instead of an intake clock the
+             * firehose mtk sink sweeps ahead. */
+            rend = audible_ms();
             if (rend < 0) rend = 0;
         }
+        long long cap = S.external_active ? S.external_total_ms : S.fed_end_ms;
+        if (cap > 0 && rend > cap) rend = cap;
         respond("{\"ok\":true,\"state\":\"%s\",\"pos_ms\":%lld,"
                 "\"accepted_ms\":%lld,\"fed_ms\":%lld,\"fed_end_ms\":%lld,"
                 "\"done_count\":%llu,\"queue\":%d,\"rate\":%d,\"channels\":%d,"
-                "\"volume\":%.2f,\"unpaced\":%d,\"out\":\"%s\",\"uptime_ms\":%lld}",
+                "\"volume\":%.2f,\"unpaced\":%d,\"out\":\"%s\",\"uptime_ms\":%lld,"
+                "\"external\":%d,\"external_done\":%d,\"decoder\":%d}",
                 state_str(), rend, (long long)(acc_bytes / OUT_BYTES_PER_MS),
                 fed, S.fed_end_ms, S.done_count, S.queue_len,
                 S.pipe_rate, S.pipe_channels, S.volume,
                 S.unpaced, S.out_alsa ? "alsa" : "mtk",
-                mono_ms() - g_started_ms);
+                mono_ms() - g_started_ms,
+                S.external_active, S.external_done,
+#ifdef AUDIOOUT_WITH_LIBAV
+                1
+#else
+                0
+#endif
+                );
     } else if (!strcmp(cmd, "volume")) {
         long long v = json_num(line, "value_x1000", 1000);
         double vol = (double)v / 1000.0;
         if (vol < 0) vol = 0;
         if (vol > 4) vol = 4;
         S.volume = vol;
+        if (S.out_alsa) {
+            /* Applied in software to every byte written after this point;
+             * only the fifo tail already handed to the driver is not
+             * retroactive. */
+            respond("{\"ok\":true,\"volume\":%.2f,\"live\":true}", vol);
+            return;
+        }
         if (G.g_object_set && S.pipe) {
             GstElement *el = G.gst_bin_get_by_name(GST_BIN(S.pipe), "vol");
             if (el) {
@@ -1124,8 +1714,12 @@ tick_bookkeeping(void) {
         S.pace_fast_ticks = 0;
     }
 
-    /* Clip completion: the rendered estimate crossed the clip's end. */
-    long long rend = rendered_ms();
+    /* Clip completion: the rendered estimate crossed the clip's end.  In
+     * external mode that estimate is the audible clock: the intake-based
+     * rendered_ms() sweeps past every clip end at queue time on a sink
+     * that accepts without pacing, completing clips that are still
+     * playing (see dev/audioout/FINDING-2026-10-19-instant-completion.md). */
+    long long rend = S.out_alsa ? alsa_pos_ms() : audible_ms();
     while (S.queue_len > 0 && rend >= S.queue[0].end_ms) {
         log_line("clip done: %s (end_ms=%lld)", S.queue[0].path,
                  S.queue[0].end_ms);
@@ -1145,6 +1739,18 @@ tick_bookkeeping(void) {
         log_line("queue drained; idle keepalive (pos=%lldms)", rend);
         respond("{\"event\":\"idle\",\"pos_ms\":%lld,\"done_count\":%llu}",
                 rend, S.done_count);
+    }
+
+    /* External stream completion, on the client's timeline. Latched: the
+     * push only reaches a client that happens to be connected, so status
+     * carries external_done until the next external/seek/resume-with-pos
+     * clears it. The 30 ms tolerance absorbs clock-vs-length rounding. */
+    if (S.external_active && !S.paused && !S.external_done &&
+        S.external_total_ms > 0 && rend >= S.external_total_ms - 30) {
+        S.external_done = 1;
+        log_line("external stream complete (pos=%lldms total=%lldms)",
+                 rend, S.external_total_ms);
+        respond("{\"event\":\"external_done\",\"pos_ms\":%lld}", rend);
     }
 
     /* Bus: errors only. Our O_RDWR fifo never produces a natural EOS. */

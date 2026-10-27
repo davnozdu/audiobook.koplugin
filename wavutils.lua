@@ -301,6 +301,151 @@ function WavUtils.appendSilence(path, duration_ms)
 end
 
 --[[--
+Trim leading and trailing silence from a WAV file, in place.
+
+Some engines bake a long silence tail (and occasionally a silent lead-in)
+into every synthesized clip.  Trimming it at fill time shortens the audible
+gap between sentences; no plugin-side pause setting can reach silence that is
+already part of the audio.  Only canonical 44-byte-header 16-bit PCM files
+are touched; anything else is left unchanged so a failure can never corrupt
+an unparseable format.
+
+@param path string  WAV file path
+@param opts table|nil  { threshold (sample amplitude, default 300),
+                         min_trim_ms (default 60 per edge),
+                         keep_lead_ms (default 20), keep_tail_ms (default 40) }
+@return boolean  true when the file was rewritten
+--]]
+function WavUtils.trimSilence(path, opts)
+    if not path then return false end
+    opts = opts or {}
+    local threshold = opts.threshold or 300
+    local min_trim_ms = opts.min_trim_ms or 60
+    local keep_lead_ms = opts.keep_lead_ms or 20
+    local keep_tail_ms = opts.keep_tail_ms or 40
+
+    local f = io.open(path, "rb")
+    if not f then return false end
+    local size = f:seek("end")
+    if not size or size <= WavUtils.HEADER_SIZE then f:close(); return false end
+    f:seek("set", WavUtils.BITS_PER_SAMPLE_OFFSET)
+    local bits = WavUtils.readLE16(f:read(2))
+    f:seek("set", WavUtils.BLOCK_ALIGN_OFFSET)
+    local block_align = WavUtils.readLE16(f:read(2))
+    f:seek("set", WavUtils.BYTE_RATE_OFFSET)
+    local byte_rate = WavUtils.readLE32(f:read(4))
+    f:seek("set", 36)
+    local data_tag = f:read(4)
+    if bits ~= 16 or not block_align or block_align < 2 or byte_rate <= 0
+            or data_tag ~= "data" then
+        f:close()
+        return false
+    end
+    local data_bytes = size - WavUtils.HEADER_SIZE
+    if data_bytes <= 0 or data_bytes % block_align ~= 0 then
+        f:close()
+        return false
+    end
+
+    -- Max |sample| per frame, walked in chunks to bound memory.
+    local frame_max = {}
+    local CHUNK = 65536
+    local pos = WavUtils.HEADER_SIZE
+    local fi = 0
+    while pos < size do
+        local n = math.min(CHUNK, size - pos)
+        f:seek("set", pos)
+        local buf = f:read(n)
+        if not buf then break end
+        -- align the chunk end to a sample boundary
+        if #buf % 2 == 1 then buf = buf:sub(1, -2) end
+        for i = 1, #buf, 2 do
+            local v = buf:byte(i) + buf:byte(i + 1) * 256
+            if v >= 32768 then v = v - 65536 end
+            local a = v < 0 and -v or v
+            local frame = math.floor((pos + i - 1 - WavUtils.HEADER_SIZE) / block_align)
+            while fi <= frame do
+                frame_max[fi] = 0
+                fi = fi + 1
+            end
+            if a > frame_max[frame] then frame_max[frame] = a end
+        end
+        pos = pos + #buf
+    end
+    f:close()
+    local frames = fi
+    if frames == 0 then return false end
+
+    local ms_per_frame = 1000 / (byte_rate / block_align)
+    local min_trim = math.max(1, math.floor(min_trim_ms / ms_per_frame))
+    local lead_keep = math.max(0, math.floor(keep_lead_ms / ms_per_frame))
+    local tail_keep = math.max(0, math.floor(keep_tail_ms / ms_per_frame))
+
+    local first = 0
+    while first < frames and frame_max[first] <= threshold do first = first + 1 end
+    if first >= frames then return false end   -- entirely silent
+    local last = frames - 1
+    while last > first and frame_max[last] <= threshold do last = last - 1 end
+    local lead = first - lead_keep
+    local tail = (frames - 1 - last) - tail_keep
+    if lead < min_trim then lead = 0 end
+    if tail < min_trim then tail = 0 end
+    -- Never remove more than half the clip per edge: a quiet onset or decay
+    -- must not be mistaken for silence.
+    if lead > math.floor(frames / 2) then lead = 0 end
+    if tail > math.floor(frames / 2) then tail = 0 end
+    if lead + tail <= 0 then return false end
+
+    local new_start = WavUtils.HEADER_SIZE + lead * block_align
+    local new_len = data_bytes - (lead + tail) * block_align
+    if new_len <= 0 then return false end
+
+    local tmp = path .. ".trim"
+    local out = io.open(tmp, "wb")
+    if not out then return false end
+    local h = io.open(path, "rb")
+    if not h then
+        out:close()
+        os.remove(tmp)
+        return false
+    end
+    h:seek("set", 0)
+    out:write(h:read(WavUtils.HEADER_SIZE))
+    h:seek("set", new_start)
+    local written = 0
+    while written < new_len do
+        local n = math.min(CHUNK, new_len - written)
+        local buf = h:read(n)
+        if not buf then break end
+        out:write(buf)
+        written = written + #buf
+    end
+    h:close()
+    out:seek("set", WavUtils.RIFF_SIZE_OFFSET)
+    out:write(WavUtils.le32(WavUtils.HEADER_SIZE + new_len - 8))
+    out:seek("set", WavUtils.DATA_SIZE_OFFSET)
+    out:write(WavUtils.le32(new_len))
+    out:close()
+    if written ~= new_len then
+        os.remove(tmp)
+        return false
+    end
+    local ok_rename = os.rename(tmp, path)
+    if not ok_rename then
+        -- Some filesystems (FUSE mounts) refuse rename; fall back to replace.
+        local ok_rm = os.remove(path)
+        local ok_move = ok_rm and os.rename(tmp, path)
+        if not ok_move then
+            os.remove(tmp)
+            return false
+        end
+    end
+    logger.dbg("WavUtils: trimmed", lead * ms_per_frame, "+", tail * ms_per_frame,
+        "ms silence from", path)
+    return true
+end
+
+--[[--
 Apply a short linear fade-in at the start and fade-out at the end of a
 WAV file.  This eliminates click/pop artifacts caused by PCM
 discontinuities when the persistent pipeline switches between silence

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host-side protocol test for the audioout daemon (x86, fakesink, no
-# audio). Same 14 checks as the on-device run; use for fast iteration on
+# audio). Same 22 checks as the on-device run; use for fast iteration on
 # the daemon and its Lua client.
 #
 # Usage: bash dev/audioout/host-test.sh

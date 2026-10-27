@@ -225,11 +225,12 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
     end
 
     -- Tier 2 audio output daemon (Kobo MTK Bluetooth only), also reachable
-    -- from the read-along overlay's TTS settings picker.  Default off;
-    -- failures fall back to the legacy pipeline for the session.
+    -- from the read-along overlay's TTS settings picker.  Default on: it
+    -- is the only MTK pipeline since the wrapper removal; a failure
+    -- degrades the session to the legacy path.
     if plugin.bt_manager and plugin.bt_manager:isMtkKobo() then
         table.insert(menu, {
-            text = _("Use audio output daemon (experimental)"),
+            text = _("Use audio output daemon"),
             checked_func = function()
                 return plugin:getSetting("audioout_enabled", true)
             end,
@@ -239,7 +240,8 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
             help_text = _(
                 "Routes read-aloud audio through a background daemon that "
                 .. "keeps the Bluetooth pipeline open between sentences and "
-                .. "tracks real playback position. Experimental."
+                .. "tracks real playback position. On by default; turning "
+                .. "it off uses the legacy per-play pipeline."
             ),
         })
     end
@@ -424,7 +426,7 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
     elseif plugin.tts_engine.backend == plugin.tts_engine.BACKENDS.SANOTTS then
         table.insert(menu, {
             text_func = function()
-                local name = plugin.tts_engine.sanotts_voice_name or "amy"
+                local name = plugin.tts_engine.sanotts_voice_name or "kristin"
                 return T(_("sanoTTS voice: %1"), name)
             end,
             sub_item_table_func = function()
@@ -1120,7 +1122,7 @@ function MenuBuilder.buildSanottsVoiceMenu(plugin)
         table.insert(menu, {
             text = voice.label,
             checked_func = function()
-                return (plugin.tts_engine.sanotts_voice_name or "amy") == voice.name
+                return (plugin.tts_engine.sanotts_voice_name or "kristin") == voice.name
             end,
             callback = function()
                 plugin.tts_engine:setSanottsVoice(voice.name)
@@ -1128,6 +1130,37 @@ function MenuBuilder.buildSanottsVoiceMenu(plugin)
             end,
         })
     end
+
+    -- Phonemizer for English sanoTTS voices: the in-process lexicon G2P
+    -- (no espeak process per clause) vs the espeak path. Applies from the
+    -- next server spawn, so a change restarts the servers; French voices
+    -- keep espeak until they have their own lexicon.
+    table.insert(menu, {
+        text = _("Word phonemization: dictionary (no espeak)"),
+        checked_func = function()
+            local explicit = plugin:getSetting("sanotts_g2p", nil)
+            if explicit then return explicit == "nano" end
+            local cfg = plugin.tts_engine and plugin.tts_engine.sanotts_voice_cfg
+            return (cfg and cfg.g2p or "espeak") == "nano"
+        end,
+        callback = function()
+            -- toggle the EXPLICIT override against the current effective
+            -- value, so the checkbox always moves and the choice sticks
+            local explicit = plugin:getSetting("sanotts_g2p", nil)
+            local cfg = plugin.tts_engine and plugin.tts_engine.sanotts_voice_cfg
+            local effective = explicit or (cfg and cfg.g2p) or "espeak"
+            plugin:setSetting("sanotts_g2p",
+                effective == "nano" and "espeak" or "nano")
+            local pq = plugin.tts_engine and plugin.tts_engine._piper
+            if pq and pq.stopServers then pq:stopServers() end
+        end,
+        help_text = _(
+            "Reads the pronunciation dictionary directly instead of running "
+            .. "the espeak helper for every clause: faster and it keeps word "
+            .. "boundaries exact. Hard-to-read words (names) still fall back "
+            .. "to espeak per clause. On by default for all sanoTTS voices."
+        ),
+    })
     return menu
 end
 
@@ -2038,7 +2071,7 @@ function MenuBuilder._sanottsVoicePickerItems(plugin)
         and plugin.tts_engine:listSanottsVoices() or {}
     local selected = plugin:getSetting("sanotts_voice", nil)
         or (plugin.tts_engine and plugin.tts_engine.sanotts_voice_name)
-        or "amy"
+        or "kristin"
     for _, voice in ipairs(voices) do
         local name, label = voice.name, voice.label
         table.insert(items, {
@@ -2213,7 +2246,7 @@ function MenuBuilder.showTtsSettingsPicker(plugin)
     elseif backend == plugin.tts_engine.BACKENDS.SANOTTS then
         -- Name the sanoTTS voice actually selected, not an espeak language.
         local name = plugin:getSetting("sanotts_voice", nil)
-            or plugin.tts_engine.sanotts_voice_name or "amy"
+            or plugin.tts_engine.sanotts_voice_name or "kristin"
         voice_label = name
         if plugin.tts_engine.listSanottsVoices then
             for _, v in ipairs(plugin.tts_engine:listSanottsVoices()) do
@@ -2271,11 +2304,12 @@ function MenuBuilder.showTtsSettingsPicker(plugin)
     })
     -- Tier 2 audio output daemon (Kobo MTK Bluetooth only).  Owns the
     -- pipeline across sentences: no restart churn, real playback clock,
-    -- deterministic completion.  Default off; failures fall back to the
-    -- legacy pipeline for the rest of the session.
+    -- deterministic completion.  Default on (the only MTK pipeline since
+    -- the wrapper removal); a failure degrades the session to the legacy
+    -- path.
     if plugin.bt_manager and plugin.bt_manager:isMtkKobo() then
         table.insert(items, {
-            text = _("Use audio output daemon (experimental)"),
+            text = _("Use audio output daemon"),
             checked_func = function()
                 return plugin:getSetting("audioout_enabled", true)
             end,
@@ -2285,7 +2319,8 @@ function MenuBuilder.showTtsSettingsPicker(plugin)
             help_text = _(
                 "Routes read-aloud audio through a background daemon that " ..
                 "keeps the Bluetooth pipeline open between sentences and " ..
-                "tracks real playback position. Experimental.")
+                "tracks real playback position. On by default; turning " ..
+                "it off uses the legacy per-play pipeline.")
         })
     end
     if backend == plugin.tts_engine.BACKENDS.PIPER then

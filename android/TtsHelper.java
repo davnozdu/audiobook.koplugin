@@ -684,7 +684,15 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
         worker.post(new Runnable() {
             @Override
             public void run() {
-                startPlayback(path, attrs);
+                // PCM stream mode: feed the persistent AudioTrack instead of
+                // building a fresh MediaPlayer per clip, same as the
+                // pipeline's play transition.  Removes the per-sentence
+                // prepare/start latency from the inter-sentence gap.
+                if (pcmMode) {
+                    startPcmPlayback(path);
+                } else {
+                    startPlayback(path, attrs);
+                }
             }
         });
         return 0;

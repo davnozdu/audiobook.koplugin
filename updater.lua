@@ -28,7 +28,6 @@ local CRITICAL_FILES = {
     "main.lua",
     "mediaengine.lua",
     "mediasync.lua",
-    "transcoder.lua",
     "abssync.lua",
     "abscache.lua",
     "audiobookplayer.lua",

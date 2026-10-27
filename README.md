@@ -42,12 +42,21 @@ Text-to-speech for [KOReader](https://github.com/koreader/koreader) with synchro
 * [Books] Play audiobooks with scrubber seek, chapter navigation, and sleep timer
 * [Audiobookshelf] Browse, download, and sync playback progress with an [Audiobookshelf](https://www.audiobookshelf.org/) server (see [setup guide](docs/AUDIOBOOKSHELF.md))!
 * [Sync] Storyteller compatibility; EPUB 3 Media Overlays support (work in progress)
+* [Sync] BookOrbit friendly: read-along EPUBs play their embedded narration, and narration-free copies from BookOrbit are detected with guidance (see [BookOrbit](#bookorbit))
 
 ## Audiobookshelf integration
 
 Connect to an [Audiobookshelf](https://www.audiobookshelf.org/) server to browse your library, download audiobooks for offline playback, and sync progress across devices. All configuration is done through the KOReader menu; no file editing is required.
 
 For setup instructions, see [docs/AUDIOBOOKSHELF.md](docs/AUDIOBOOKSHELF.md).
+
+## BookOrbit
+
+[BookOrbit](https://github.com/bookorbit/bookorbit) is a self-hosted library server whose read-along books use the same EPUB 3 Media Overlay format as Storyteller exports. This plugin plays the embedded narration: open the book in KOReader and start the read-aloud as usual, and the publisher's own sentence timing drives the highlights. Reading progress syncs through BookOrbit's own KOReader plugin, which follows the page position that the narration moves.
+
+One thing to know: by default, BookOrbit's KOReader delivery strips the narration to keep downloads small. The plugin detects those narration-free copies and tells you what to do. To get the audio, set the read-along delivery to **Original** for your KOReader credential and download the book again.
+
+For the full walkthrough, see [docs/BOOKORBIT.md](docs/BOOKORBIT.md).
 
 ## Quick start
 
@@ -151,14 +160,15 @@ Browse all available voices: [huggingface.co/rhasspy/piper-voices](https://huggi
 
 ## Optional: sanoTTS lightweight neural TTS
 
-[sanoTTS](https://github.com/ampixa/sanoTTS) is a tiny neural engine that slots between Piper and espeak-ng: much more natural than espeak-ng, and far lighter than Piper. The bundled voices are fully int8, roughly 5 MB of RAM, where Piper wants a ~15-60 MB voice and ~100 MB of RAM. Synthesis runs faster than real time even on single-core e-ink hardware, so sentences keep coming without the gaps Piper needs on slow devices.
+[sanoTTS](https://github.com/ampixa/sanoTTS) is a tiny neural engine that slots between Piper and espeak-ng: much more natural than espeak-ng, and far lighter than Piper. The bundled voices are small (kristin and amy are fully int8 at roughly 5 MB of RAM; the French fr voice is fp32 at ~6.3 MB), where Piper wants a ~15-60 MB voice and ~100 MB of RAM. kristin synthesizes faster than real time even on single-core e-ink hardware, so sentences keep coming without the gaps Piper needs on slow devices.
 
-The pre-built release bundles two English voices, switchable from **Tools > Audiobook Read-Along > Voice settings > sanoTTS voice**:
+The pre-built release bundles three voices, switchable from **Tools > Audiobook Read-Along > Voice settings > sanoTTS voice**:
 
-- **amy** (default, ~1.5 MB): the fully-int8 piperlite stack, the most natural-sounding of the small voices.
-- **kristin** (light, ~700 KB): the original R7 voice, for the tightest storage and RAM budgets.
+- **kristin** (default, ~700 KB): the R7 int8 voice -- the fastest neural option, comfortably real time even on single-core hardware.
+- **amy** (~1.5 MB): the fully-int8 piperlite stack, the most natural-sounding of the small voices; slower than kristin (not real time on single-core devices).
+- **fr** (~6.3 MB, fp32): the French voice (fr-siwis), for French books. Runs the fp32 decoder, so it is the slowest of the three on e-ink hardware.
 
-The engine is punctuation-aware in two layers: the punctuation mark's own phoneme token is kept in the stream so questions get their rising contour and periods their falling one, and short silence gaps are inserted at clause boundaries (150 ms after a comma, 350 ms after a sentence end).
+Word phonemization runs in-process by default: a pronunciation dictionary (misaki-derived for English, espeak-derived French lexicon) turns text into phonemes directly, with no espeak process per clause, and keeps word boundaries exact for the word highlight. Hard-to-read words (names) still fall back to espeak per clause, and the **Word phonemization** toggle in the same menu switches back to espeak entirely. The engine is punctuation-aware in two layers: the punctuation mark's own phoneme token is kept in the stream so questions get their rising contour and periods their falling one, and short silence gaps are inserted at clause boundaries (150 ms after a comma, 350 ms after a sentence end).
 
 > sanoTTS trades some naturalness for its footprint; where Piper runs comfortably it sounds better. sanoTTS is the pick on devices where Piper is too slow or too large.
 
@@ -212,7 +222,7 @@ On BlueZ devices, KOReader's startup script kills `bluetoothd` and `bluealsa` wh
 > On MTK Kobo devices, the mtkbtmwrpc daemon binds a single abstract socket. Only one GStreamer pipeline can hold it at a time. The plugin keeps one persistent pipeline alive across sentences to avoid reconnection gaps. On BlueZ devices, the plugin starts `bluetoothd` and resets the HCI adapter automatically when you power on Bluetooth.
 > **Known issue on MTK devices:** MBROLA voices other than `mb-en1` (UK English Male 1) may produce mid-sentence audio repeats due to a firmware bug in the MTK Bluetooth SBC encoder. This affects all MBROLA voices except `mb-en1`. See [docs/MBROLA_MTK_REPEAT_BUG.md](docs/MBROLA_MTK_REPEAT_BUG.md) for the full diagnostic report.
 
-**The `audioout` daemon (Kobo MTK, experimental on BlueZ).** On MTK devices the plugin now routes all read-aloud and audiobook audio through a small background daemon (`audioout`) that owns the Bluetooth pipeline for the whole session: sentences play without reconnection gaps, pause keeps the link alive with silence, position comes from the sink itself (so the highlight tracks the real audio), and volume changes apply without a pipeline rebuild. It is on by default on MTK; the toggle lives in **Voice settings** (and in the read-along bar's TTS settings). If the daemon cannot start or the Bluetooth link dies mid-read, playback fails with the usual Bluetooth message -- there is no second implementation behind it anymore. On BlueZ devices the same daemon drives the bluealsa PCM when enabled; audiobook file playback on BlueZ still uses the direct aplay path.
+**The `audioout` daemon (Kobo MTK and BlueZ).** On MTK devices the plugin now routes all read-aloud and audiobook audio through a small background daemon (`audioout`) that owns the Bluetooth pipeline for the whole session: sentences play without reconnection gaps, pause keeps the link alive with silence, position comes from the sink itself (so the highlight tracks the real audio), and volume changes apply without a pipeline rebuild. It is on by default on MTK; the toggle lives in **Voice settings** (and in the read-along bar's TTS settings). If the daemon cannot start or the Bluetooth link dies mid-read, playback fails with the usual Bluetooth message -- there is no second implementation behind it anymore. On BlueZ devices the same daemon drives the bluealsa PCM for read-aloud and audiobook playback; if the daemon refuses, playback falls back to the direct aplay pipe. Seek, position and completion on the daemon path all come from the daemon's audible clock (no stop/restart gap on seek, no wall-clock completion estimates). At normal speed the daemon also decodes compressed audiobook files (MP3, M4B/M4A, FLAC, OGG/Vorbis, Opus) in-process -- no ffmpeg feeder process per track; speed changes fall back to the ffmpeg feeder, whose filter chain carries the tempo adjustment.
 
 For the full platform audio and Bluetooth architecture (Kobo generations, Kindle, Android), see [docs/PLATFORM_AUDIO.md](docs/PLATFORM_AUDIO.md). AirPods Pro 3 on Kindle Paperwhite 11 (what works, pause/resume keepalive, stem Play/Pause limitation): [docs/AIRPODS_PRO3_KINDLE.md](docs/AIRPODS_PRO3_KINDLE.md).
 
@@ -244,6 +254,7 @@ All settings are under **Tools > Audiobook Read-Along**:
   - **Highlight style** - background (default), invert (best for e-ink), underline, box
   - **Auto-advance pages** - turn pages automatically
   - **Highlight sentences** - draw highlight on the active sentence
+  - **Highlight words** - draw a small inverted box on the spoken word inside the sentence highlight (EPUB read-along; the box position comes from real word timing and the rendered line map)
   - **Group short cues (e-ink)** - for Media Overlay read-aloud books, merge consecutive short phrases into one highlight that stays on screen at least half a second, so slow e-ink refreshes do not skip between words; audio is unaffected
 - **Generate bug report** - save a diagnostic report to share when reporting issues
 - **Run device benchmark** - run a TTS performance benchmark on this device

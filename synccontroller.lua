@@ -130,6 +130,10 @@ Parses text into sentences and reads them one-by-one, chaining automatically.
 function SyncController:start(text, opts)
     opts = opts or {}
     local keep_text = opts.keep_text and true or false
+    -- XPointer of the selection a from-here start should anchor at.  Text
+    -- matching alone can lose the selection when the playback bar re-lays
+    -- the page out; the xpointer survives the reflow (issue #96).
+    self._from_here_anchor_xp = opts.anchor_xp or nil
     -- If already playing/paused, stop TTS+highlights but keep the playback bar
     if self.state == self.STATE.PLAYING or self.state == self.STATE.PAUSED then
         pcall(function() self.tts_engine:stop() end)
@@ -156,29 +160,57 @@ function SyncController:start(text, opts)
         self:showPlaybackBar()
         if self._bar_space_reflowed
            and self.plugin and self.plugin.getCurrentPageText then
-            local controller = self
-            UIManager:scheduleIn(0.25, function()
-                if controller.state ~= controller.STATE.LOADING then
-                    logger.dbg("SyncController: start deferral aborted, state=", controller.state)
-                    return
-                end
-                -- keep_text: a from-here suffix must not be replaced by
-                -- the full page after the bar reflow.
-                if not keep_text then
-                    local fresh = controller.plugin:getCurrentPageText()
-                    if fresh and fresh ~= "" then
-                        logger.dbg("SyncController: re-fetched page text after margin reflow settle (",
-                            #text, "->", #fresh, "chars)")
-                        text = fresh
-                    end
-                end
-                controller:_beginReading(text, created_bar, keep_text)
-            end)
+            -- Settle token: a second start() while this loop waits must
+            -- retire the first loop, or both would begin playback.
+            self._settle_token = (self._settle_token or 0) + 1
+            self:_settleThenBegin(text, created_bar, keep_text, 0,
+                nil, self._settle_token)
             return
         end
     end
 
     self:_beginReading(text, created_bar, keep_text)
+end
+
+--- Wait for the post-reflow layout to settle before reading the page: start
+--- once two consecutive page captures agree (the single fixed delay raced
+--- slow re-typesetting and captured a half-reflowed page, issue #96).
+function SyncController:_settleThenBegin(text, created_bar, keep_text, attempt, prev_norm, token)
+    if self.state ~= self.STATE.LOADING
+            or (token and self._settle_token ~= token) then
+        logger.dbg("SyncController: start deferral aborted, state=", self.state)
+        return
+    end
+    local controller = self
+    local fresh
+    if self.plugin and self.plugin.getCurrentPageText then
+        pcall(function() fresh = self.plugin:getCurrentPageText() end)
+    end
+    local norm = Utils.ws(fresh or "")
+    -- keep_text: a from-here suffix must not be replaced by the full page
+    -- after the bar reflow.
+    local function begin_with_fresh()
+        if not keep_text and fresh and fresh ~= "" then
+            logger.dbg("SyncController: re-fetched page text after margin reflow settle (",
+                #text, "->", #fresh, "chars)")
+            text = fresh
+        end
+        self:_beginReading(text, created_bar, keep_text)
+    end
+    if norm ~= "" and prev_norm and norm == prev_norm then
+        dlog("page-settle", "attempt", attempt, "chars", #norm)
+        begin_with_fresh()
+        return
+    end
+    if attempt >= 8 then
+        dlog("page-settle-timeout", attempt)
+        begin_with_fresh()
+        return
+    end
+    UIManager:scheduleIn(0.2, function()
+        controller:_settleThenBegin(text, created_bar, keep_text,
+            attempt + 1, norm ~= "" and norm or nil, token)
+    end)
 end
 
 local function _stripTrailingClosers(s)
@@ -201,29 +233,6 @@ local function _sentenceHasTerminator(s)
     return tail == "\227\128\130" -- 。 U+3002
         or tail == "\239\188\129" -- ！ U+FF01
         or tail == "\239\188\159" -- ？ U+FF1F
-end
-
-local function _startsLowercase(s)
-    if not s then return false end
-    s = s:gsub("^[%s\"']+", "")
-    s = s:gsub("^\194[\171\187]+", "") -- « »
-    s = s:gsub("^\226\128[\147-\159]+", "") -- dashes / curly quotes
-    s = s:gsub("^[%-%s]+", "")
-    local b1, b2 = s:byte(1, 2)
-    if not b1 then return false end
-    if b1 >= 97 and b1 <= 122 then return true end
-    -- Latin-1 lowercase: à â ä ç é è ê ë ï î ô ù û ü œ…
-    if b1 == 195 and b2 and b2 >= 160 and b2 <= 191 and b2 ~= 183 then
-        return true
-    end
-    return false
-end
-
-local function _wordCount(s)
-    local n = 0
-    if not s then return 0 end
-    for _ in s:gmatch("%S+") do n = n + 1 end
-    return n
 end
 
 local function _reindexSentences(parsed)
@@ -379,8 +388,14 @@ function SyncController:_wasSpoken(t)
     -- and word-overlap checks above cannot see it: the two extractions start
     -- at different points inside the sentence, and spaceless scripts make
     -- every sentence a single "word", so the >= 2 word threshold never
-    -- fires.  A whitespace-stripped containment match closes that gap.
+    -- fires.  A whitespace-stripped containment match closes that gap.  CJK
+    -- fragments are allowed shorter than Latin ones: three characters are
+    -- nine bytes but are a real sentence tail, and the floor must stay at or
+    -- above findIgnoringSpaces' own 6-byte rejection limit.
     if #t >= 12 and Utils.findIgnoringSpaces(s, t) then
+        return true
+    end
+    if #t >= 6 and Utils.hasCJKScript(t) and Utils.findIgnoringSpaces(s, t) then
         return true
     end
     return false
@@ -431,14 +446,18 @@ function SyncController:_extendIncompleteLastSentence(parsed)
     end
     local first = next_parsed.sentences[1]
     if not first.text or first.text == "" then return end
-    -- Headings / new sentences usually start with a capital and a short last line.
-    -- A lowercase start is a wrapped clause ("pouvoir : d'un côté…").
-    if not _startsLowercase(first.text) and _wordCount(last.text) < 4 then
+    -- Headings / new sentences usually start with a capital and a short last
+    -- line; spaceless scripts get a character-count threshold instead (the
+    -- old Latin-only guard refused the carry for every CJK page, cutting each
+    -- sentence straddling the page break, issue #96).
+    if not Utils.shouldCarryPageBoundary(last.text, first.text) then
         return
     end
     local cont = first.text
     local joiner = " "
-    if last.text:find("%-$") or last.text:find("\194\173$") then
+    if Utils.hasCJKScript(last.text) or Utils.hasCJKScript(cont) then
+        joiner = ""   -- a joining space would make the engine pause mid-word
+    elseif last.text:find("%-$") or last.text:find("\194\173$") then
         last.text = last.text:gsub("\194\173$", ""):gsub("%-$", "")
         joiner = ""
     end
@@ -452,6 +471,116 @@ function SyncController:_extendIncompleteLastSentence(parsed)
         table.insert(last.words, w)
     end
     logger.warn("SyncController: wrapped last sentence across page (+", #cont, "chars)")
+end
+
+--- Extract the page text from the anchor xpointer's position down to the end
+--- of the visible page.  Returns nil when the xpointer is not on the current
+--- view or extraction fails.
+function SyncController:_extractFromXPointerOnView(xp, captured)
+    local plugin = self.plugin
+    local ui = plugin and plugin.ui
+    local doc = ui and ui.document
+    if not (doc and ui.rolling and doc.getScreenPositionFromXPointer
+                and doc.getTextFromPositions) then
+        return nil
+    end
+    local Screen = require("device").screen
+    local sh = Screen:getHeight()
+    local sw = Screen:getWidth()
+    local ok, sy = pcall(doc.getScreenPositionFromXPointer, doc, xp)
+    if not ok or type(sy) ~= "number" or sy < 0 or sy > sh then
+        dlog("from-here-xp-offpage", tostring(sy))
+        return nil
+    end
+    local ok2, res = pcall(doc.getTextFromPositions, doc,
+        {x = 0, y = math.max(0, sy)}, {x = sw, y = sh}, true)
+    local extracted = (ok2 and res and res.text) or ""
+    if Utils.ws(extracted) == "" then
+        return nil
+    end
+    -- The extraction starts at the anchor's whole line; the captured suffix
+    -- starts at a sentence inside that line.  Align on the suffix's opening
+    -- when it is recognizable, so the characters before the selection on
+    -- that line are not re-read.
+    if captured and #captured > 0 then
+        local probe = captured:sub(1, Utils.snapToCharBoundary(captured, 40))
+        if #Utils.ws(probe) >= 6 then
+            local a = Utils.findIgnoringSpaces(extracted, Utils.ws(probe))
+            if a then
+                return extracted:sub(a)
+            end
+        end
+    end
+    return extracted
+end
+
+--- Continue a from-here start after the view jumped to the selection's page:
+--- re-extract from the anchor once the new page's text stabilizes.
+function SyncController:_settleThenBeginAfterJump(xp, captured, created_bar, attempt, token)
+    if self.state == self.STATE.STOPPED
+            or (token and self._settle_token ~= token) then
+        return
+    end
+    local controller = self
+    local fresh
+    if self.plugin and self.plugin.getCurrentPageText then
+        pcall(function() fresh = self.plugin:getCurrentPageText() end)
+    end
+    local norm = Utils.ws(fresh or "")
+    local anchored = norm ~= "" and self:_extractFromXPointerOnView(xp, captured) or nil
+    if anchored then
+        dlog("from-here-xp-anchor-jump", "chars", #anchored, "attempt", attempt)
+        self:_beginReadingParsed(anchored, created_bar, true)
+        return
+    end
+    if attempt < 8 then
+        UIManager:scheduleIn(0.2, function()
+            controller:_settleThenBeginAfterJump(xp, captured, created_bar, attempt + 1, token)
+        end)
+        return
+    end
+    dlog("from-here-page-top", "jump", "chars", fresh and #fresh or 0)
+    self:_fromHereFallbackNotice()
+    self:_beginReadingParsed((fresh and fresh ~= "" and fresh) or captured, created_bar, true)
+end
+
+--- Anchor a from-here start at the selection's xpointer.  Text matching
+--- cannot follow a selection through the playback-bar reflow: the settled
+--- page may no longer contain it (its first characters sit on a different
+--- page), and the old fallback then read the whole page from the top
+--- (issue #96).  The xpointer survives the reflow, so the reading position
+--- is geometry, not text.
+--- @return string|nil anchored text
+--- @return boolean    true when a view jump was started (async continuation)
+function SyncController:_anchorFromHereByXPointer(xp, captured, created_bar)
+    local anchored = self:_extractFromXPointerOnView(xp, captured)
+    if anchored then
+        return anchored
+    end
+    -- Not on the current view: the reflow pushed the selection to another
+    -- page.  Move the view to it and extract once the layout settles.
+    local plugin = self.plugin
+    local ui = plugin and plugin.ui
+    if not (ui and ui.rolling and ui.document) then
+        return nil
+    end
+    ui:handleEvent(Event:new("GotoXPointer", xp))
+    local controller = self
+    local token = self._settle_token
+    UIManager:scheduleIn(0.25, function()
+        controller:_settleThenBeginAfterJump(xp, captured, created_bar, 0, token)
+    end)
+    return nil, true
+end
+
+--- Tell the user a from-here start could not honor the selection and fell
+--- back to the visible page top.
+function SyncController:_fromHereFallbackNotice()
+    local InfoMessage = require("ui/widget/infomessage")
+    UIManager:show(InfoMessage:new{
+        text = _("The selected text moved when the page re-laid out; starting from the top of the visible page."),
+        timeout = 4,
+    })
 end
 
 --[[--
@@ -481,11 +610,31 @@ function SyncController:_beginReading(text, created_bar, keep_text)
             pcall(function() fresh = self.plugin:getCurrentPageText() end)
         end
         local reanchored = Utils.reanchorFromHere(fresh, text)
-        if reanchored then
-            dlog("from-here-reanchor", #text, #reanchored)
-            text = reanchored
-        else
+        if not reanchored then
             dlog("from-here-keep", "chars", text and #text or 0)
+        else
+            local anchor_xp = self._from_here_anchor_xp
+            -- reanchored == fresh means the text anchor was NOT found in the
+            -- settled page and reanchorFromHere fell back to the whole page.
+            -- With an xpointer available, follow the selection instead.
+            if anchor_xp and fresh and reanchored == fresh then
+                local anchored, jumped = self:_anchorFromHereByXPointer(
+                    anchor_xp, text, created_bar)
+                if jumped then
+                    return  -- continuation runs once the jumped view settles
+                end
+                if anchored then
+                    dlog("from-here-xp-anchor", #text, #anchored)
+                    text = anchored
+                else
+                    dlog("from-here-page-top", "chars", #reanchored)
+                    text = reanchored
+                    self:_fromHereFallbackNotice()
+                end
+            else
+                dlog("from-here-reanchor", #text, #reanchored)
+                text = reanchored
+            end
         end
     elseif self.plugin and self.plugin.getCurrentPageText then
         local fresh
@@ -499,6 +648,15 @@ function SyncController:_beginReading(text, created_bar, keep_text)
         end
     end
 
+    return self:_beginReadingParsed(text, created_bar, keep_text)
+end
+
+--[[--
+Parse the anchored page text and begin sentence playback.  Split out of
+_beginReading so the xpointer-anchored paths can land here after their own
+view settles.
+--]]
+function SyncController:_beginReadingParsed(text, created_bar, keep_text)
     -- Parse the full text into sentences and words
     self.parsed_data = self.text_parser:parse(text)
 
@@ -689,6 +847,10 @@ function SyncController:readNextSentence()
         -- Audio is ready — apply timing and start playback immediately
         logger.warn("SyncController: Using prefetched audio for sentence", self.reading_sentence_idx)
         self._piper_warmed_up = true
+        if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
+            self._android_slot_hits = (self._android_slot_hits or 0) + 1
+            dlog("android-sentence", "slot-hit", "idx", self.reading_sentence_idx)
+        end
         controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
         controller:beginSentencePlayback(sentence)
         return
@@ -712,6 +874,9 @@ function SyncController:readNextSentence()
                 if self.tts_engine:usePrefetched(sentence.text) then
                     logger.warn("SyncController: Android lookahead consumed after",
                         waited_ms, "ms wait")
+                    controller._android_lookahead_waits = (controller._android_lookahead_waits or 0) + 1
+                    controller._android_lookahead_wait_ms = (controller._android_lookahead_wait_ms or 0) + waited_ms
+                    dlog("android-lookahead", "waited", waited_ms, "ms")
                     controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
                     controller:beginSentencePlayback(sentence)
                 end
@@ -725,6 +890,7 @@ function SyncController:readNextSentence()
                 self.tts_engine:_androidPrefetchInvalidate()
                 logger.warn("SyncController: Android lookahead not ready after",
                     waited_ms, "ms, synthesizing on demand")
+                dlog("android-lookahead", "miss", waited_ms, "ms")
                 controller.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)
                     if not synth_success then
                         controller:_onAndroidSynthFailed("lookahead fallback")
@@ -1050,6 +1216,10 @@ function SyncController:readNextSentence()
 
     -- No prefetch available — synthesize now (first sentence, or prefetch missed)
     logger.warn("SyncController: Synthesizing sentence", self.reading_sentence_idx, "(", sentence.text:sub(1,40), ")")
+    if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
+        self._android_ondemand = (self._android_ondemand or 0) + 1
+        dlog("android-sentence", "ondemand", "idx", self.reading_sentence_idx)
+    end
 
     local success = self.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)
         if not synth_success then
@@ -1167,8 +1337,6 @@ function SyncController:beginSentencePlayback(sentence)
             self._bt_fw_error_shown = true
             if self.plugin and self.plugin.bt_manager then
                 self.plugin.bt_manager:_showFirmwareError()
-            elseif self.tts_engine._showMtkFirmwareError then
-                self.tts_engine:_showMtkFirmwareError()
             end
         end
         -- Emit stop event so the playback bar reflects the stopped state
@@ -1603,6 +1771,13 @@ function SyncController:beginSentencePlayback(sentence)
                 end
             else
                 self:_prefetchNextSentence()
+                -- Android: queue the sentence after next as well; the second
+                -- request waits behind the in-flight synthesis and launches
+                -- the moment the engine frees, so a slow engine never idles
+                -- between lookaheads (issue #96).
+                if self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
+                    self:_prefetchNextSentence(self.reading_sentence_idx + 2)
+                end
             end
         end
 
@@ -2573,8 +2748,9 @@ function SyncController:highlightCurrentWord(word)
 
     -- Android synthesizeToFile has no word timestamps, so estimated word
     -- boxes would drift off the spoken text on neural engines.  Keep the
-    -- sentence-level underline only (highlightWord draws nothing today,
-    -- but skipping keeps estimated word boxes from being treated as truth).
+    -- sentence-level underline only (skipping keeps estimated word boxes
+    -- from being treated as truth; rolling platforms paint the real word
+    -- box from the cached line map instead).
     local android_tts = self.tts_engine
         and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
     if not android_tts
@@ -3152,7 +3328,13 @@ function SyncController:stop(opts)
         dlog("stop", "from_state", self.state,
             "idx", self.reading_sentence_idx, "total", self.total_sentences,
             "android_fails", self._android_tts_fail_count or 0,
-            "player_error", self.tts_engine and self.tts_engine.player_error or "none")
+            "player_error", self.tts_engine and self.tts_engine.player_error or "none",
+            "slot_hits", self._android_slot_hits or 0,
+            "ondemand", self._android_ondemand or 0,
+            "lookahead_waits", self._android_lookahead_waits or 0,
+            "lookahead_wait_ms", self._android_lookahead_wait_ms or 0,
+            "lookahead_disabled", self.tts_engine
+                and self.tts_engine._android_prefetch_session_disabled or false)
     end
     self.state = self.STATE.STOPPED
 

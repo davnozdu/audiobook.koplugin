@@ -206,6 +206,7 @@ AO_RUNNING=$(pgrep -c audioout 2>/dev/null || echo 0)
 AO_SOCKET="absent"
 [ -S /tmp/audiobook_audioout.sock ] && AO_SOCKET="present"
 AO_LOG=$(tail -c 1200 /tmp/audiobook_audioout.log 2>/dev/null || echo "no log")
+SNT_LOG=$(tail -c 1200 /tmp/piper_server_1.log 2>/dev/null || echo "no log")
 
 # ALSA PCM devices (may reveal BT sinks not in /proc/asound/cards)
 ALSA_PCM_DEVICES="n/a"
@@ -975,7 +976,7 @@ for d in \
 do
     SETTINGS_FILE="${d}audiobook.lua"
     if [ -f "$SETTINGS_FILE" ]; then
-        SETTINGS_SECTION=$(grep -E '(tts_backend|speech_rate|speech_pitch|speech_volume|highlight_style|auto_advance|highlight_words|highlight_sentences|espeak_cold_start|keep_playing_on_lid_close|bt_media_control|piper_model|android_prefetch|android_pcm_stream|sentence_pause|paragraph_pause|piper_sentence_gap)' "$SETTINGS_FILE" 2>/dev/null | sed 's/^/  /' || echo "  (parse error)")
+        SETTINGS_SECTION=$(grep -E '(tts_backend|speech_rate|speech_pitch|speech_volume|highlight_style|auto_advance|highlight_words|highlight_sentences|espeak_cold_start|keep_playing_on_lid_close|bt_media_control|piper_model|android_prefetch|android_pcm_stream|sentence_pause|paragraph_pause|piper_sentence_gap|piper_paragraph_gap|sanotts_g2p|sanotts_voice|audioout_enabled)' "$SETTINGS_FILE" 2>/dev/null | sed 's/^/  /' || echo "  (parse error)")
         break
     fi
 done
@@ -1008,7 +1009,14 @@ ${SETTINGS_SECTION}
 
 ── Audio & TTS ──
 audioout daemon: binary=$AO_BINARY running=$AO_RUNNING socket=$AO_SOCKET
+g2p phonemizer: the dictionary G2P is the default for all sanoTTS voices
+since v0.5.0; per-request g2p counters (nano=N espeak_fb=N oov=X/Y) appear
+in the server log tail below, and an explicit sanotts_g2p setting in the
+settings section overrides the voice default.
 $AO_LOG
+
+── sanoTTS server log tail (g2p counters, synthesis errors) ──
+$SNT_LOG
 
   tts_in_path:
 $(printf '%b' "$TTS_CMDS")  players_in_path:

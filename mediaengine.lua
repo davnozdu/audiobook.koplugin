@@ -77,14 +77,9 @@ function MediaEngine:new(o)
     -- Kindle-specific state
     o._gst_play_cmd = nil
     o._lipc_fallback_tried = false
-    -- Persistent GStreamer pipeline state (MTK Bluetooth path)
+    -- True when playback routes through the audioout daemon instead of the
+    -- one-shot backend chain (the daemon owns its pipeline internally).
     o._use_persistent_pipeline = false
-    o._pipeline_gst_pid = nil
-    o._pipeline_wrapper_pid = nil
-    o._media_ctrl_dir = "/tmp/audiobook_media_ctrl"
-    o._media_fifo = "/tmp/audiobook_media_fifo"
-    o._media_script = "/tmp/audiobook_media_pipeline.sh"
-    o._current_pcm_file = nil
     -- Digital playback volume (0.0..1.0).  Applied as an ffmpeg `volume`
     -- filter in the decode pipeline, so it works without depending on
     -- Amazon's (model-specific) LIPC volume property.  1.0 = unchanged.
@@ -768,8 +763,7 @@ function MediaEngine:_detectKindleLipc()
         if not has_wavparse then
             -- No wavparse -- playermgr cannot decode WAV natively.
             -- Only use kindle-lipc if we can detect the bundled gst-play
-            -- as a fallback, since the file is already transcoded to WAV
-            -- by the plugin's transcoder before reaching MediaEngine.
+            -- as a fallback player for plain WAV files.
             -- If gst-play exists, we prefer KINDLE_GST_PLAY; if not,
             -- try kindle-lipc anyway (the file may be MP3 which playermgr
             -- handles natively via decodebin).
@@ -2301,12 +2295,20 @@ function MediaEngine:_playAudiooutExternal(gen)
         logger.warn("MediaEngine: audioout daemon did not start")
         return false
     end
-    local resp = ao:externalStart(44100, 2)
+    -- In-process decode (Tier 5b): at 1.0x speed the daemon demuxes and
+    -- decodes the file itself -- no ffmpeg feeder process at all. Speed
+    -- changes fall back to the feeder, whose filter chain carries atempo.
+    local use_dec = ao:hasDecoder() and (self._playback_speed or 1.0) == 1.0
+    local resp = ao:externalStart(44100, 2, nil,
+        (self._seek_offset or 0) * 1000,
+        (self.current_duration or 0) * 1000,
+        use_dec and self.current_path or nil)
     if not resp or not resp.ok then
         logger.warn("MediaEngine: audioout external start refused:",
             resp and resp.error or "timeout")
         return false
     end
+    self._audioout_ext_dec = use_dec or nil
     self._audioout_external = true
     self._killAudiooutFeeder()
 
@@ -2347,6 +2349,17 @@ function MediaEngine:_startPersistentCompletionWatcher(gen, duration)
     duration = duration or 0
     local pipe_delay_ms = self._pipe_buffer_delay_ms or 400
     local engine = self
+    local status_failures = 0
+    local function complete()
+        logger.warn("MediaEngine: persistent pipeline playback complete")
+        engine.is_playing = false
+        engine.is_paused = false
+        if engine._on_complete then
+            local cb = engine._on_complete
+            engine._on_complete = nil
+            cb()
+        end
+    end
     local function check()
         if engine.play_generation ~= gen then return end
         if not engine.is_playing then return end
@@ -2354,6 +2367,33 @@ function MediaEngine:_startPersistentCompletionWatcher(gen, duration)
             UIManager:scheduleIn(0.5, check)
             return
         end
+        -- The daemon's audible clock decides completion (the latched
+        -- external_done flag, or the position reaching the end). Intake and
+        -- wall clocks both run ahead on the firehose mtk sink and completed
+        -- tracks that were still playing; see
+        -- dev/audioout/FINDING-2026-10-19-instant-completion.md.
+        local ao = engine._audioout_client
+        if ao then
+            local ok_st, st = pcall(function() return ao:status(300) end)
+            if ok_st and st then
+                status_failures = 0
+                if st.external_done == 1
+                        or (duration > 0
+                            and (st.pos_ms or 0) >= duration * 1000 - 250) then
+                    complete()
+                    return
+                end
+                UIManager:scheduleIn(0.5, check)
+                return
+            end
+            status_failures = status_failures + 1
+            if status_failures < 8 then
+                UIManager:scheduleIn(0.5, check)
+                return
+            end
+        end
+        -- Wall-clock backstop: the daemon is unreachable (or absent). The
+        -- old pure-wall behavior, kept for that failure case only.
         if engine._play_start_time then
             local wall_ms = time.to_ms(UIManager:getTime() - engine._play_start_time)
             local real_ms = wall_ms - (engine._total_pause_ms or 0)
@@ -2365,17 +2405,9 @@ function MediaEngine:_startPersistentCompletionWatcher(gen, duration)
                 return
             end
         end
-        logger.warn("MediaEngine: persistent pipeline playback complete")
-        engine.is_playing = false
-        engine.is_paused = false
-        if engine._on_complete then
-            local cb = engine._on_complete
-            engine._on_complete = nil
-            cb()
-        end
+        complete()
     end
-    local initial_delay_s = duration + (pipe_delay_ms / 1000) + 0.5
-    UIManager:scheduleIn(initial_delay_s, check)
+    UIManager:scheduleIn(0.5, check)
 end
 
 function MediaEngine:_playKindleGstPlay(gen)
@@ -2456,8 +2488,6 @@ function MediaEngine:_playKindleLipc(gen)
     --
     -- Supported file formats: MP3, AAC, possibly WAV (depends on
     -- wavparse availability in the device's GStreamer installation).
-    -- The transcoder in main.lua already converts unsupported formats
-    -- to MP3 or WAV before reaching MediaEngine.
 
     local file_path = self.current_path
 
@@ -2944,8 +2974,10 @@ function MediaEngine:resume()
             self._total_pause_ms = self._total_pause_ms + time.to_ms(UIManager:getTime() - self._pause_start_time)
             self._pause_start_time = nil
         end
-        self._audioout_client:resume()
-        self:_spawnAudiooutFeeder(resume_pos, self:_persistentFilterChain(), "")
+        self._audioout_client:resume((resume_pos or 0) * 1000)
+        if not self._audioout_ext_dec then
+            self:_spawnAudiooutFeeder(resume_pos, self:_persistentFilterChain(), "")
+        end
         logger.warn("MediaEngine: resumed audioout external stream at", resume_pos)
         return
     end
@@ -3335,26 +3367,39 @@ function MediaEngine:seek(seconds, mode)
             self._seek_offset = target
             self._paused_position = target
             self:_killAudiooutFeeder()
-            self:_nextGeneration()
-            local new_gen = self.play_generation
-            if was_playing then
-                self._audioout_client:resume()
-                self:_spawnAudiooutFeeder(target, self:_persistentFilterChain(), "")
-                self._play_start_time = UIManager:getTime()
-                self._total_pause_ms = 0
-                self._pause_start_time = nil
-                self.is_playing = true
-                self.is_paused = false
-            else
-                -- Seeking while paused must not start audio; resume() will
-                -- restart the feeder from the new offset.
-                self._audioout_client:pause()
-                self.is_playing = true
-                self.is_paused = true
-                self._pause_start_time = UIManager:getTime()
+            -- The daemon drops the old stream's bytes and re-epochs its
+            -- clock; the pipeline and the A2DP link stay up and the
+            -- stop/play generation churn is gone. In decode mode there is
+            -- no feeder to respawn at all: the seek re-positions the
+            -- decoder in-place (the Tier 5b payoff).
+            local ok_seek = self._audioout_client:seek(target * 1000,
+                (self.current_duration or 0) * 1000)
+            if ok_seek and ok_seek.ok then
+                local new_gen = self.play_generation
+                if was_playing then
+                    self._play_start_time = UIManager:getTime()
+                    self._total_pause_ms = 0
+                    self._pause_start_time = nil
+                    self.is_playing = true
+                    self.is_paused = false
+                    if not self._audioout_ext_dec then
+                        self:_spawnAudiooutFeeder(target,
+                            self:_persistentFilterChain(), "")
+                    end
+                else
+                    -- Seeking while paused must not start audio; the daemon
+                    -- stays paused at the new position and resume() will
+                    -- restart the feeder from it.
+                    self.is_playing = true
+                    self.is_paused = true
+                    self._pause_start_time = UIManager:getTime()
+                end
+                self:_startPersistentCompletionWatcher(new_gen, self.current_duration)
+                return true
             end
-            self:_startPersistentCompletionWatcher(new_gen, self.current_duration)
-            return true
+            logger.warn("MediaEngine: audioout seek refused:",
+                ok_seek and ok_seek.error or "timeout", "; falling back to restart")
+            -- fall through to the generic seek-by-restart below
         end
         -- Seek via process restart with time offset.
         logger.warn("MediaEngine: seek-by-restart mode=", mode, "req=", seconds,
@@ -3534,6 +3579,25 @@ function MediaEngine:getPosition()
     -- Android: use the same wall-clock path as other non-IPC backends.
     -- Do NOT trust MediaPlayer.getCurrentPosition() alone via JNI (often
     -- stuck at 0 on Boox).  MediaEngine._play_start_time is real wall time.
+
+    -- audioout daemon (media external mode): the daemon's audible clock,
+    -- anchored on what the listener actually hears (intake and wall clocks
+    -- both run ahead on the firehose mtk sink; see
+    -- dev/audioout/FINDING-2026-10-19-instant-completion.md). Serves the
+    -- UI, the sync engine and the completion watcher alike.
+    if self._audioout_external and self._audioout_client then
+        local ok_st, st = pcall(function()
+            return self._audioout_client:status(300)
+        end)
+        if ok_st and st and st.pos_ms then
+            local pos = st.pos_ms / 1000
+            if not self.is_paused then
+                self._seek_offset = pos
+            end
+            return pos
+        end
+        -- status unreachable: fall through to the wall-clock estimate
+    end
 
     -- mpv answers time-pos over IPC: the real decoder clock, which
     -- accounts for pause, seek and speed natively.  It must be consulted

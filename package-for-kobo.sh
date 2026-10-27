@@ -278,6 +278,25 @@ if [ "$WITH_SANOTTS" = true ]; then
         ( cd "$SANO_CORE_DIR" && patch -p1 < "$SANO_PATCH2" )
     fi
 
+    # ARMv7 NEON kernels + pthread par port (ports/arm-neon/, see the patch
+    # header for the bit-exactness argument and the vpadalq_s16 note).  The
+    # NEON code is #ifdef'd with scalar fallbacks; SNT_THREADS selects
+    # threading at runtime (unset = serial, no worker).
+    SANO_PATCH3="$SCRIPT_DIR/sanotts/patches/0003-arm-neon-kernels.patch"
+    if [ -f "$SANO_PATCH3" ] && ! grep -q "__ARM_NEON" "$SANO_CORE_DIR/src/snt_piperlite_q8.c"; then
+        echo "Applying sanoTTS core patch: ARM NEON kernels + pthread par port..."
+        ( cd "$SANO_CORE_DIR" && patch -p1 < "$SANO_PATCH3" )
+    fi
+
+    # pq8 decoder dual-core split (per-output-channel snt_par_run ranges,
+    # per-core rowbuf scratch; bit-exact by construction, see the patch
+    # header).  Runtime-selected via SNT_THREADS; unset stays fully serial.
+    SANO_PATCH4="$SCRIPT_DIR/sanotts/patches/0004-arm-pq8-par.patch"
+    if [ -f "$SANO_PATCH4" ] && ! grep -q "snt_par_run" "$SANO_CORE_DIR/src/snt_piperlite_q8.c"; then
+        echo "Applying sanoTTS core patch: pq8 decoder dual-core split..."
+        ( cd "$SANO_CORE_DIR" && patch -p1 < "$SANO_PATCH4" )
+    fi
+
     echo "Cross-compiling snt_server (static musl, armv7hf)..."
     SANO_OUT=$(nix-build "$SCRIPT_DIR/cross-build-snt-server.nix" --no-out-link)
     if [ -f "$SANO_OUT/bin/snt_server" ]; then

@@ -38,7 +38,19 @@ mechanism, failure detection, and known limitations per device generation.
 
 ### Audio Pipeline
 
-GStreamer persistent pipeline over FIFO:
+Since v0.3.0 this pipeline is owned by the **`audioout` daemon** (repo root
+`audioout.c`, design and on-device measurements in `dev/audioout/PLAN.md`):
+one long-lived process builds the GStreamer pipeline once per session and
+takes clip commands over an AF_UNIX socket (`/tmp/audiobook_audioout.sock`,
+line JSON). The plugin no longer spawns `gst-launch-1.0` wrappers or keeps
+PID files; the wrapper-era control dir, PID files and one-shot
+`gst-launch` command below are legacy-fallback material only. The daemon
+also owns gapless clip queuing, a real audible-clock position report
+(anchor-based; see `dev/audioout/FINDING-2026-10-19-instant-completion.md`
+for why intake clocks lie on this sink), a seek command, and a latched
+completion flag.
+
+Pipeline topology (unchanged, fed by the daemon's FIFO):
 
 ```
 ┌──────────┐    ┌──────────────┐    ┌──────────────┐    ┌───────────────┐    ┌─────────────────────┐
@@ -49,33 +61,22 @@ GStreamer persistent pipeline over FIFO:
 
 | Property | Value |
 |----------|-------|
-| Input format | S16LE mono (Piper output, typically 22050 Hz) |
+| Input format | S16LE mono (TTS output, typically 22050 Hz; media external mode streams 44100 stereo) |
 | Output format | S16LE stereo 48 kHz (A2DP standard) |
-| FIFO path | `/tmp/audiobook_fifo` |
-| Control dir | `/tmp/audiobook_ctrl/` |
-| GStreamer PID file | `/tmp/audiobook_ctrl/gst_pid` |
-| Pipe buffer | 16 KB (370ms latency) or 64 KB (1500ms latency) |
-| `sync` property | `false` (uses socket backpressure, not GStreamer clock) |
+| FIFO path | `/tmp/audiobook_audioout_fifo` (16 KB pipe buffer) |
+| `sync` property | `false` (the daemon paces feeding against the audible clock) |
 
-**One-shot pipeline** (first sentence or retry):
-
-```
-gst-launch-1.0 filesrc location="{WAV}" \
-  ! wavparse ! audioconvert ! audioresample \
-  ! "audio/x-raw,format=S16LE,rate=48000,channels=2" \
-  ! mtkbtmwrpcaudiosink
-```
-
-**Keepalive silence** (holds A2DP socket between sentences):
-- 120 seconds of silence streamed through the persistent pipeline
-- Prevents BT A2DP idle timeout (~1-2s)
-- Cancelled immediately when the next sentence is ready
+**Keepalive silence** (holds the A2DP socket between sentences and tracks):
+the daemon feeds silence from inside its feed loop whenever no clip is due
+and after the queue drains, replacing the old 120-second keepalive WAV. It
+is never paced against the lead window: a starved `filesrc` blocking on the
+O_RDWR fifo would deadlock the next pipeline teardown.
 
 ### Socket Management
 
 The `@kobo:mtkbtmwrpc` abstract socket is exclusive. Only one GStreamer
-pipeline can hold it. On startup the plugin kills orphan `gst-launch-1.0`
-processes from previous sessions:
+pipeline can hold it. The daemon claims it once at startup (killing orphan
+`gst-launch-1.0` processes from crashed previous sessions):
 
 ```
 1. Read /proc/net/unix for @kobo:mtkbtmwrpc
@@ -83,17 +84,12 @@ processes from previous sessions:
 3. Retry up to 5 times
 ```
 
-`_socket_clean` flag tracks whether the socket was released cleanly:
-- `true` after normal completion -- next pipeline launches immediately
-- `false` after SIGKILL -- adds 300ms delay before re-launch
-
 ### Failure Detection
 
-| Condition | Threshold | Action |
-|-----------|-----------|--------|
-| Early death | <500ms | Retry once (0.5s delay), then retry with skip-on-fail (2s delay), then stop |
-| Premature exit | <40% of expected duration (sentences >2s) | Retry with 2s delay for A2DP re-negotiation |
-| Socket still held | 5 retries | `killall -9 gst-launch-1.0` between attempts |
+The legacy wrapper paths (still available as fallback) retry on early death
+(<500 ms) and premature exit (<40% of expected duration). Inside the
+daemon, a teardown that cannot complete because the sink wedges self-heals
+by exiting after a bounded wait, and the client respawns a fresh daemon.
 
 ### Pairing
 
@@ -340,9 +336,12 @@ glibc floor, VFPv3-D16 FPU pin):
   `espeak-ng/share` voice data via `ESPEAK_DATA_PATH`; the TTS route on these
   models is the ESPEAK backend played through the device `aplay`.
 
-Detection is `Utils.isLegacyKindleModel()` (KOReader `Device.model` against
-the six-model list) plus one cached `aplay -l` probe
-(`Utils.probeKindleAlsaCard()` → `plughw:N,M`). On legacy models the plugin
+Detection is `Utils.isLegacyKindleModel()`: KOReader `Device.model` against
+the six-model list, plus, when KOReader cannot name the device at all
+(nil or "unknown" model, seen on a KT4 with fw 5.3.x), an evidence
+fallback that requires both a real ALSA card (`Utils.probeKindleAlsaCard()`
+→ `plughw:N,M`) and a 2.6 kernel; PW2+ hardware has neither, so the
+fallback cannot false-positive there. On legacy models the plugin
 skips the BT-only gates (`_audioOutputReady`, the "no built-in speaker"
 refusals, the BT pre-flight toast) and the TTS audio player resolves to
 `aplay -q -D plughw:N,M`. A one-shot `lipc-set-prop com.lab126.audiomgrd

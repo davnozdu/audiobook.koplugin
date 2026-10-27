@@ -1,0 +1,821 @@
+# 0003-arm-neon-kernels.patch -- ARMv7 NEON kernels + pthread par port.
+#
+# Adds ports/arm-neon/ (snt_port_arm.c: NEON int kernels + condvar-blocked
+# pthread snt_par_run, scalar fallbacks under #ifndef __ARM_NEON; kernel byte
+# test; Makefile.arm; README) and vectorizes the integer conv kernels in the
+# pq8 (q16_conv1d_row, q16_convtr1d_row) and front (fq_conv_row int path)
+# engines.  Bit-exactness: the vector axis is always the disjoint t/lane
+# axis, so no integer addition is ever reordered; lrintf requant epilogues
+# and fp32 mixing stay scalar.  NOTE: GCC 15.2 armv7 miscompiles chained
+# vpadalq_s16 for some -frandom-seed values; the kernels use
+# vaddq_s32(acc, vpaddlq_s16(...)) instead (see snt_dot_s8).
+#
+# Guard (package-for-kobo.sh): grep -q "__ARM_NEON" src/snt_piperlite_q8.c
+# Applied: patch -p1 from inside mcu/.
+diff -ruN a/Makefile b/Makefile
+--- a/Makefile	2026-10-18 23:28:24.866345689 +0200
++++ b/Makefile	2026-10-18 23:28:24.869278692 +0200
+@@ -228,3 +228,42 @@
+ 	rm -f snt_golden_test piperlite_golden_test front_golden_test piperlite_q8_golden_test \
+ 	      front_q8_golden_test front_q8_f32act_test front_q8_negative_test piperlite_e2e \
+ 	      snt_nano_golden_test snt_nano_fastmath_test
++
++# ---- ARM NEON port (Kobo) --------------------------------------------------
++# Golden gates linked through ports/arm-neon/snt_port_arm.c, cross-built and
++# run under qemu.  Byte-equivalence vs the scalar build is checked by diffing
++# the gate OUTPUT (corr/rms print from the same bytes), plus the nano FNV PCM
++# hash.  Requires an armv7l cross gcc (-mfpu=neon) and qemu-arm.
++CROSS_CC ?= armv7l-unknown-linux-musleabihf-gcc
++CROSS_CFLAGS ?= $(CFLAGS) -mfpu=neon -mfloat-abi=hard -static
++QEMU ?= qemu-arm
++QEMU_CPU ?= cortex-a9
++
++snt_golden_test_arm: src/snt_tts.c ports/arm-neon/snt_port_arm.c test/golden_main.c
++	$(CROSS_CC) $(CROSS_CFLAGS) $(filter %.c,$^) -lm -o $@
++
++test-arm-r7: snt_golden_test_arm
++	$(QEMU) -cpu $(QEMU_CPU) ./snt_golden_test_arm $(GOLDEN)
++
++snt_nano_golden_test_arm: src/snt_nano.c ports/arm-neon/snt_port_arm.c test/nano_golden_main.c $(NANO_HDR) $(NANO_STAMP)
++	$(CROSS_CC) $(CROSS_CFLAGS) -I$(NANO_MODEL) $(filter %.c,$^) -lm -o $@
++
++test-arm-nano: snt_nano_golden_test_arm
++	$(QEMU) -cpu $(QEMU_CPU) ./snt_nano_golden_test_arm $(NANO_GOLDEN)
++
++# Byte equivalence is checked ARM-vs-ARM (both under the cross compiler):
++# x86 host and ARM differ in fp32 contraction for the engine's float paths
++# even with the reference kernels, so the reference side of this gate must
++# use the same architecture.  ARM-scalar vs ARM-NEON must match exactly.
++snt_nano_pcm_hash_arm_scalar: src/snt_nano.c src/snt_kernels_ref.c ports/host/snt_port_host.c test/nano_pcm_hash_main.c $(NANO_HDR) $(NANO_STAMP)
++	$(CROSS_CC) $(CROSS_CFLAGS) -I$(NANO_MODEL) $(filter %.c,$^) -lm -o $@
++
++snt_nano_pcm_hash_arm: src/snt_nano.c ports/arm-neon/snt_port_arm.c test/nano_pcm_hash_main.c $(NANO_HDR) $(NANO_STAMP)
++	$(CROSS_CC) $(CROSS_CFLAGS) -I$(NANO_MODEL) $(filter %.c,$^) -lm -o $@
++
++test-arm-nano-pcm: snt_nano_pcm_hash_arm_scalar snt_nano_pcm_hash_arm
++	mkdir -p pcm_ref pcm_arm
++	$(QEMU) -cpu $(QEMU_CPU) ./snt_nano_pcm_hash_arm_scalar $(NANO_GOLDEN) pcm_ref > pcm_ref/hash.txt
++	$(QEMU) -cpu $(QEMU_CPU) ./snt_nano_pcm_hash_arm $(NANO_GOLDEN) pcm_arm > pcm_arm/hash.txt
++	diff pcm_ref/hash.txt pcm_arm/hash.txt
++.PHONY: test-arm-r7 test-arm-nano test-arm-nano-pcm
+diff -ruN a/ports/arm-neon/Makefile.arm b/ports/arm-neon/Makefile.arm
+--- a/ports/arm-neon/Makefile.arm	1970-01-01 01:00:00.000000000 +0100
++++ b/ports/arm-neon/Makefile.arm	2026-10-18 23:28:24.899396238 +0200
+@@ -0,0 +1,39 @@
++# Makefile.arm -- build + run the NEON kernel byte test.
++#
++#   make -f Makefile.arm host            # x86 scalar-fallback branch
++#   make -f Makefile.arm cross           # armv7 NEON build (needs cross gcc)
++#   make -f Makefile.arm qemu            # cross build + run cortex-a7/a9
++#   make -f Makefile.arm clean
++#
++# The cross compiler comes from the repo's pinned nixpkgs toolchain; on this
++# repo's dev host: nix shell nixpkgs#qemu-user plus the pkgsCross gcc, or run
++# `cross` on any armv7l machine.  CROSS/CROSS_CFLAGS are overridable.
++
++CROSS      ?= armv7l-unknown-linux-musleabihf-
++CROSS_CFLAGS ?= -O2 -std=c99 -Wall -mfpu=neon -mfloat-abi=hard -static
++QEMU       ?= qemu-arm
++
++CFLAGS  = -O2 -std=c99 -Wall -I../../include
++LDLIBS  =
++
++all: host cross
++
++test_neon_host: test_neon_kernels.c snt_port_arm.c ../../include/snt_port.h
++	cc $(CFLAGS) -o $@ test_neon_kernels.c snt_port_arm.c $(LDLIBS)
++
++host: test_neon_host
++	./test_neon_host
++
++test_neon_arm: test_neon_kernels.c snt_port_arm.c ../../include/snt_port.h
++	$(CROSS)gcc $(CFLAGS) $(CROSS_CFLAGS) -o $@ test_neon_kernels.c snt_port_arm.c $(LDLIBS)
++
++cross: test_neon_arm
++
++qemu: test_neon_arm
++	$(QEMU) -cpu cortex-a7 ./test_neon_arm
++	$(QEMU) -cpu cortex-a9 ./test_neon_arm
++
++clean:
++	rm -f test_neon_host test_neon_arm
++
++.PHONY: all host cross qemu clean
+diff -ruN a/ports/arm-neon/README.md b/ports/arm-neon/README.md
+--- a/ports/arm-neon/README.md	1970-01-01 01:00:00.000000000 +0100
++++ b/ports/arm-neon/README.md	2026-10-18 23:28:24.904017656 +0200
+@@ -0,0 +1,53 @@
++# ports/arm-neon -- ARMv7 NEON kernels + pthread par port (Kobo)
++
++One TU (`snt_port_arm.c`) providing the full `snt_port.h` surface for the
++Kobo SoCs (Cortex-A7/A9, NEON-VFPv3, hard-float).  It replaces
++`src/snt_kernels_ref.c` and `ports/host/snt_port_host.c` on the link line
++(see the repo's `cross-build-snt-server.nix`).  Everything is guarded by
++`#if defined(__ARM_NEON)` with the scalar reference bodies as `#else`, so the
++same TU compiles on x86 and passes the same gates.
++
++## Kernels
++
++| symbol | approach | exactness |
++|---|---|---|
++| `snt_dot_s8` | `vmull_s8` (int8xint8 -> int16) + `vpadalq_s16` (pairwise add, extended precision) | integer adds, order-free |
++| `snt_matvec_s8` | 4-row blocking, one int32 accumulator per row | same |
++| `snt_dot_s16s8` / `snt_matvec_s16s8` | `vmovl_s8` widen + `vmlal_s16` per disjoint lane | same |
++
++Rounding-sensitive work (`lrintf` requant epilogues, fp32 branch mixing,
++`tanhf`) is deliberately NOT vectorized; it stays scalar in the engines.
++`-mfpu=neon` (not `neon-vfpv4`): the Cortex-A8/A9 targets lack scalar VFPv4
++FMA and would trap on `vfma`.
++
++## Parallelism (`snt_par_run`)
++
++One pthread worker, condvar-blocked while idle (busy-wait poisons the
++memory bus; measured ~10% on the ESP32-S3 port with the same handoff).
++Half-split; every `snt_par_run` call site is column-disjoint by upstream
++design, so no model knowledge is needed.
++
++- `SNT_THREADS` env: unset or `<=1` -> fully serial, worker never created
++  (default; zero behavior change).  `2` -> one worker pinned to cpu 1.
++- Read ONCE on the main thread at the first `snt_par_run`.  The worker never
++  calls getenv/setenv: the espeak-ng phonemize child forks from the main
++  thread and execs immediately, and a worker holding the environ lock at fork
++  time would deadlock the child (musl setenv takes the environ lock).
++- `snt_scratch_id()` is TLS: 0 on the main thread, 1 on the worker.  The
++  engines' `g_scr[2]` per-core scratch indexes it directly.
++- Serial degenerate: `n < 16`, threads <= 1, or worker start failure.
++
++## Gates
++
++```
++make -f Makefile.arm host     # x86 scalar-fallback branch, 400 byte cases
++make -f Makefile.arm qemu     # armv7 NEON build under qemu cortex-a7 + a9
++make test-arm-r7              # R7 golden through the NEON TU (qemu)
++make test-arm-nano            # nano golden through the NEON TU (qemu)
++make test-arm-nano-pcm        # FNV hash: scalar host vs ARM NEON, must match
++```
++
++plus the server-level A/B differential (`dev/snt-ab.sh --cross --with-tu ...
++--ref-tree <pristine mcu>`) for byte identity of the int8/pq8/f32 voices
++through the real server path, and `SNT_THREADS=2` runs of the same for the
++thread split.
+diff -ruN a/ports/arm-neon/snt_port_arm.c b/ports/arm-neon/snt_port_arm.c
+--- a/ports/arm-neon/snt_port_arm.c	1970-01-01 01:00:00.000000000 +0100
++++ b/ports/arm-neon/snt_port_arm.c	2026-10-18 23:28:24.888559889 +0200
+@@ -0,0 +1,327 @@
++/* snt_port_arm.c -- ARMv7 NEON kernels + pthread par port for Kobo
++ * (Cortex-A7/A9, NEON-VFPv3, hard-float).  One TU replacing both
++ * snt_kernels_ref.c and ports/host/snt_port_host.c on the link line.
++ *
++ * Bit-exactness argument, per kernel (the port contract in snt_port.h:
++ * every optimized kernel reproduces snt_kernels_ref.c exactly):
++ *   - snt_dot_s8 / snt_matvec_s8: products widen int8*int8 -> int16
++ *     (vmull_s8), pairwise-add at extended precision into int32
++ *     (vpaddlq_s16 + vaddq_s32; never truncates to int16).  Integer
++ *     addition is associative and commutative, so no lane grouping or
++ *     ordering can change the result; the final horizontal add is int32.
++ *   - snt_dot_s16s8 / snt_matvec_s16s8: vmovl widens int8 -> int16, then
++ *     vmlal_s16 accumulates int16*int16 -> int32 per disjoint lane.
++ *   - Rounding-sensitive code (lrintf requant epilogues, fp32 mixing,
++ *     tanhf) is intentionally NOT touched here; it stays scalar in the
++ *     engines.
++ * Accumulator bounds: len <= 512, |a*b| <= 16384 (s8) or 2^15*128 (s16s8)
++ * -- far inside int32; the host build asserts no overflow the same way.
++ *
++ * Fork safety (fork+exec of espeak-ng per sentence in snt_server.c): the
++ * worker thread below never calls getenv/setenv and holds no locks across
++ * the handoff waits it does not own, so the child's immediate exec cannot
++ * deadlock on an environ or malloc lock inherited in a locked state.
++ * SNT_THREADS is read once, on the main thread, at the first par_run.
++ * NEVER move the env read into the worker.
++ */
++#define _GNU_SOURCE /* CLOCK_MONOTONIC under -std=c99, pthread_setaffinity_np */
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include <pthread.h>
++#ifdef __linux__
++#include <sched.h>
++#endif
++#include "snt_port.h"
++
++#if defined(__ARM_NEON)
++#include <arm_neon.h>
++#define SNT_NEON 1
++#endif
++
++/* ---- kernels --------------------------------------------------------- */
++
++#if defined(SNT_NEON)
++
++#ifdef SNT_KERNEL_SELFCHECK
++/* Debug affordance: recompute every result with the scalar reference and
++ * abort on the first mismatch (run the failing workload under this build to
++ * get the exact len/rows/row that diverges). */
++#include <stdio.h>
++#define SNT_SELFCHECK_BOOL(neon_expr, scalar_expr, what, len_arg)          \
++    do {                                                                   \
++        int32_t _n = (neon_expr), _s = (scalar_expr);                      \
++        if (_n != _s) {                                                    \
++            fprintf(stderr, "SELFCHECK %s: neon=%ld scalar=%ld " what "=%d\n", \
++                    what, (long)_n, (long)_s, (int)(len_arg));             \
++            abort();                                                       \
++        }                                                                  \
++    } while (0)
++#else
++#define SNT_SELFCHECK_BOOL(neon_expr, scalar_expr, what, len_arg) ((void)0)
++#endif
++
++static int32_t hsum_s32(int32x4_t v) {
++    return vgetq_lane_s32(v, 0) + vgetq_lane_s32(v, 1)
++         + vgetq_lane_s32(v, 2) + vgetq_lane_s32(v, 3);
++}
++
++int32_t snt_dot_s8(const int8_t *a, const int8_t *b, int len) {
++    int32x4_t acc = vdupq_n_s32(0);
++    int i = 0;
++    /* NOTE: deliberately vaddq_s32(acc, vpaddlq_s16(...)) and NOT
++     * vpadalq_s16(acc, ...).  The accumulate-long form miscompiles under
++     * gcc 15.2 armv7 -O2 for certain -frandom-seed values (observed on the
++     * 4-row block in snt_matvec_s8: silent wrong results for specific
++     * codegen, bit-exact for others).  The explicit pairwise-long + add
++     * form is the same math and robust across every codegen tested. */
++    for (; i + 16 <= len; i += 16) {
++        int8x16_t va = vld1q_s8(a + i);
++        int8x16_t vb = vld1q_s8(b + i);
++        acc = vaddq_s32(acc, vpaddlq_s16(vmull_s8(vget_low_s8(va), vget_low_s8(vb))));
++        acc = vaddq_s32(acc, vpaddlq_s16(vmull_s8(vget_high_s8(va), vget_high_s8(vb))));
++    }
++    int32_t tail = 0;
++    for (; i < len; i++) tail += (int32_t)a[i] * (int32_t)b[i];
++    int32_t r = hsum_s32(acc) + tail;
++#ifdef SNT_KERNEL_SELFCHECK
++    {
++        int32_t s = 0;
++        for (int j = 0; j < len; j++) s += (int32_t)a[j] * (int32_t)b[j];
++        SNT_SELFCHECK_BOOL(r, s, "dot_s8 len", len);
++    }
++#endif
++    return r;
++}
++
++void snt_matvec_s8(const int8_t *act, const int8_t *w, int32_t *out,
++                   int rows, int len) {
++    int r = 0;
++    /* 4-row blocks: the activation strip is loaded once and used four
++     * times, one accumulator per row (disjoint lanes, exact). */
++    for (; r + 4 <= rows; r += 4) {
++        const int8_t *w0 = w + (long)(r + 0) * len;
++        const int8_t *w1 = w + (long)(r + 1) * len;
++        const int8_t *w2 = w + (long)(r + 2) * len;
++        const int8_t *w3 = w + (long)(r + 3) * len;
++        int32x4_t a0 = vdupq_n_s32(0);
++        int32x4_t a1 = vdupq_n_s32(0);
++        int32x4_t a2 = vdupq_n_s32(0);
++        int32x4_t a3 = vdupq_n_s32(0);
++        for (int i = 0; i + 16 <= len; i += 16) {
++            /* vpaddlq+vaddq, not vpadalq: see the note in snt_dot_s8. */
++            int8x16_t va = vld1q_s8(act + i);
++            int8x16_t vw0 = vld1q_s8(w0 + i);
++            int8x16_t vw1 = vld1q_s8(w1 + i);
++            int8x16_t vw2 = vld1q_s8(w2 + i);
++            int8x16_t vw3 = vld1q_s8(w3 + i);
++            a0 = vaddq_s32(a0, vpaddlq_s16(vmull_s8(vget_low_s8(va), vget_low_s8(vw0))));
++            a0 = vaddq_s32(a0, vpaddlq_s16(vmull_s8(vget_high_s8(va), vget_high_s8(vw0))));
++            a1 = vaddq_s32(a1, vpaddlq_s16(vmull_s8(vget_low_s8(va), vget_low_s8(vw1))));
++            a1 = vaddq_s32(a1, vpaddlq_s16(vmull_s8(vget_high_s8(va), vget_high_s8(vw1))));
++            a2 = vaddq_s32(a2, vpaddlq_s16(vmull_s8(vget_low_s8(va), vget_low_s8(vw2))));
++            a2 = vaddq_s32(a2, vpaddlq_s16(vmull_s8(vget_high_s8(va), vget_high_s8(vw2))));
++            a3 = vaddq_s32(a3, vpaddlq_s16(vmull_s8(vget_low_s8(va), vget_low_s8(vw3))));
++            a3 = vaddq_s32(a3, vpaddlq_s16(vmull_s8(vget_high_s8(va), vget_high_s8(vw3))));
++        }
++        out[r + 0] = hsum_s32(a0);
++        out[r + 1] = hsum_s32(a1);
++        out[r + 2] = hsum_s32(a2);
++        out[r + 3] = hsum_s32(a3);
++#ifdef SNT_KERNEL_SELFCHECK
++        for (int rr = 0; rr < 4; rr++) {
++            const int8_t *wr = w + (long)(r + rr) * len;
++            int32_t s = 0;
++            for (int j = 0; j < len; j++) s += (int32_t)act[j] * (int32_t)wr[j];
++            SNT_SELFCHECK_BOOL(out[r + rr], s, "matvec_s8 len", len);
++        }
++#endif
++        /* Defensive tails; the contract guarantees len % 16 == 0. */
++        if (len % 16 != 0) {
++            for (int i = (len / 16) * 16; i < len; i++) {
++                out[r + 0] += (int32_t)act[i] * w0[i];
++                out[r + 1] += (int32_t)act[i] * w1[i];
++                out[r + 2] += (int32_t)act[i] * w2[i];
++                out[r + 3] += (int32_t)act[i] * w3[i];
++            }
++        }
++    }
++    for (; r < rows; r++) out[r] = snt_dot_s8(act, w + (long)r * len, len);
++}
++
++int32_t snt_dot_s16s8(const int16_t *a, const int8_t *b, int len) {
++    int32x4_t acc = vdupq_n_s32(0);
++    int i = 0;
++    for (; i + 8 <= len; i += 8) {
++        int16x8_t va = vld1q_s16(a + i);
++        int16x8_t vb = vmovl_s8(vld1_s8(b + i));
++        acc = vmlal_s16(acc, vget_low_s16(va), vget_low_s16(vb));
++        acc = vmlal_s16(acc, vget_high_s16(va), vget_high_s16(vb));
++    }
++    int32_t tail = 0;
++    for (; i < len; i++) tail += (int32_t)a[i] * (int32_t)b[i];
++    return hsum_s32(acc) + tail;
++}
++
++void snt_matvec_s16s8(const int16_t *act, const int8_t *w, int32_t *out,
++                      int rows, int len) {
++    int r = 0;
++    for (; r + 2 <= rows; r += 2) {
++        const int8_t *w0 = w + (long)(r + 0) * len;
++        const int8_t *w1 = w + (long)(r + 1) * len;
++        int32x4_t a0 = vdupq_n_s32(0);
++        int32x4_t a1 = vdupq_n_s32(0);
++        for (int i = 0; i + 8 <= len; i += 8) {
++            int16x8_t va = vld1q_s16(act + i);
++            int16x8_t v0 = vmovl_s8(vld1_s8(w0 + i));
++            int16x8_t v1 = vmovl_s8(vld1_s8(w1 + i));
++            a0 = vmlal_s16(a0, vget_low_s16(va), vget_low_s16(v0));
++            a0 = vmlal_s16(a0, vget_high_s16(va), vget_high_s16(v0));
++            a1 = vmlal_s16(a1, vget_low_s16(va), vget_low_s16(v1));
++            a1 = vmlal_s16(a1, vget_high_s16(va), vget_high_s16(v1));
++        }
++        out[r + 0] = hsum_s32(a0);
++        out[r + 1] = hsum_s32(a1);
++        if (len % 8 != 0) {
++            for (int i = (len / 8) * 8; i < len; i++) {
++                out[r + 0] += (int32_t)act[i] * w0[i];
++                out[r + 1] += (int32_t)act[i] * w1[i];
++            }
++        }
++    }
++    for (; r < rows; r++) out[r] = snt_dot_s16s8(act, w + (long)r * len, len);
++}
++
++#else /* scalar fallback: exact copies of snt_kernels_ref.c */
++
++int32_t snt_dot_s8(const int8_t *a, const int8_t *b, int len) {
++    int32_t acc = 0;
++    for (int i = 0; i < len; i++) acc += (int32_t)a[i] * (int32_t)b[i];
++    return acc;
++}
++
++void snt_matvec_s8(const int8_t *act, const int8_t *w, int32_t *out,
++                   int rows, int len) {
++    for (int r = 0; r < rows; r++)
++        out[r] = snt_dot_s8(act, w + (long)r * len, len);
++}
++
++int32_t snt_dot_s16s8(const int16_t *a, const int8_t *b, int len) {
++    int32_t acc = 0;
++    for (int i = 0; i < len; i++) acc += (int32_t)a[i] * (int32_t)b[i];
++    return acc;
++}
++
++void snt_matvec_s16s8(const int16_t *act, const int8_t *w, int32_t *out,
++                      int rows, int len) {
++    for (int r = 0; r < rows; r++)
++        out[r] = snt_dot_s16s8(act, w + (long)r * len, len);
++}
++
++#endif /* SNT_NEON */
++
++/* Flat-memory platform: every pointer is readable. */
++int snt_weights_resident(const void *p) {
++    (void)p;
++    return 1;
++}
++
++/* ---- optional parallelism --------------------------------------------
++ * One pthread worker, blocked on a condvar while idle (busy-wait poisons
++ * the memory bus; measured ~10% on ESP32-S3 with the same handoff shape).
++ * Ranges are column-disjoint by design, so a plain half split is safe.
++ * Serial degenerate: SNT_THREADS unset/<=1, n < 16, or worker start
++ * failure -- zero behavior change, instant rollback by unsetting the env.
++ */
++
++static volatile snt_par_fn s_fn;
++static void *volatile s_ctx;
++static volatile int s_lo, s_hi;
++static volatile int s_armed, s_done;
++static pthread_mutex_t s_mu = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t s_cv_work = PTHREAD_COND_INITIALIZER;
++static pthread_cond_t s_cv_done = PTHREAD_COND_INITIALIZER;
++static pthread_t s_worker;
++static int s_up;      /* set once the worker exists */
++static int s_threads; /* resolved once, main thread */
++
++int snt_scratch_id(void) {
++    static __thread int id;
++    return id;
++}
++
++static void *arm_worker(void *arg) {
++    (void)arg;
++    snt_scratch_id(); /* touch the TLS slot */
++    /* Best-effort pin to cpu 1; harmless if it fails or there is one core. */
++#ifdef __linux__
++    cpu_set_t set;
++    CPU_ZERO(&set);
++    CPU_SET(1, &set);
++    pthread_setaffinity_np(pthread_self(), sizeof set, &set);
++#endif
++    pthread_mutex_lock(&s_mu);
++    for (;;) {
++        while (!s_armed) pthread_cond_wait(&s_cv_work, &s_mu);
++        pthread_mutex_unlock(&s_mu);
++        __sync_synchronize();
++        s_fn(s_lo, s_hi, (void *)s_ctx);
++        __sync_synchronize();
++        pthread_mutex_lock(&s_mu);
++        s_done = 1;
++        s_armed = 0;
++        pthread_cond_signal(&s_cv_done);
++    }
++    return NULL;
++}
++
++static int threads_from_env(void) {
++    const char *e = getenv("SNT_THREADS"); /* main thread only (see header) */
++    if (!e || *e == '\0') return 1;
++    return atoi(e);
++}
++
++static void start_worker_once(void) {
++    if (s_threads < 2) return;
++    pthread_attr_t at;
++    pthread_attr_init(&at);
++    pthread_attr_setstacksize(&at, 512 * 1024);
++    if (pthread_create(&s_worker, &at, arm_worker, NULL) == 0) s_up = 1;
++    pthread_attr_destroy(&at);
++}
++
++void snt_par_run(snt_par_fn f, int n, void *ctx) {
++    if (s_threads < 0) s_threads = threads_from_env();
++    if (n < 16 || s_threads < 2) {
++        f(0, n, ctx);
++        return;
++    }
++    if (!s_up) start_worker_once();
++    if (!s_up) {
++        f(0, n, ctx);
++        return;
++    }
++    int mid = n / 2;
++    s_fn = f;
++    s_ctx = ctx;
++    s_lo = mid;
++    s_hi = n;
++    s_done = 0;
++    __sync_synchronize();
++    pthread_mutex_lock(&s_mu);
++    s_armed = 1;
++    pthread_cond_signal(&s_cv_work);
++    pthread_mutex_unlock(&s_mu);
++    f(0, mid, ctx);
++    pthread_mutex_lock(&s_mu);
++    while (!s_done) pthread_cond_wait(&s_cv_done, &s_mu);
++    pthread_mutex_unlock(&s_mu);
++    __sync_synchronize();
++}
++
++int64_t snt_now_us(void) {
++    struct timespec ts;
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
++}
+diff -ruN a/ports/arm-neon/test_neon_kernels.c b/ports/arm-neon/test_neon_kernels.c
+--- a/ports/arm-neon/test_neon_kernels.c	1970-01-01 01:00:00.000000000 +0100
++++ b/ports/arm-neon/test_neon_kernels.c	2026-10-18 23:28:24.894271940 +0200
+@@ -0,0 +1,206 @@
++/* test_neon_kernels.c -- functional validation of the ARM NEON port kernels
++ * against a local scalar reference, bit-exactly.
++ *
++ * Clone of ports/riscv-rvv/test_rvv_kernels.c with s16s8 groups added.
++ * Deterministic (fixed-seed xorshift32 PRNG).  Covers lens
++ * {16, 48, 80, 240, 304, 512} and matvec rows {1, 12, 76, 304}, plus
++ * rows=1539 at len=48.  ~400 randomized cases total.  Prints PASS/FAIL per
++ * group and a final verdict; exit code 0 iff everything matched.
++ *
++ * Buffers are 16-byte aligned and the weight matrix carries >= 16 bytes of
++ * readable padding after the last row, per the snt_port.h contract.
++ * Run on device, under qemu-arm (-cpu cortex-a7 / cortex-a9), or on x86 to
++ * exercise the scalar-fallback branch.
++ */
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "snt_port.h"
++
++/* ---- deterministic PRNG ---------------------------------------------- */
++static uint32_t rng_state = 0x5EED1234u;
++
++static uint32_t rng_next(void) {
++    uint32_t x = rng_state;
++    x ^= x << 13;
++    x ^= x >> 17;
++    x ^= x << 5;
++    rng_state = x;
++    return x;
++}
++
++static int8_t rng_s8(void) { return (int8_t)(rng_next() & 0xFF); }
++
++static int16_t rng_s16(void) {
++    /* 12-bit values like the pq8 activation lane: |x| <= 2047 mostly, with
++     * occasional larger values to exercise the int16 range. */
++    uint32_t r = rng_next();
++    if (r & 1) return (int16_t)(r & 0x7FF);
++    return (int16_t)(int32_t)((int)(r & 0x7FFF) - 16384);
++}
++
++static void fill_s8(int8_t *p, long n) {
++    for (long i = 0; i < n; i++) p[i] = rng_s8();
++}
++
++static void fill_s16(int16_t *p, long n) {
++    for (long i = 0; i < n; i++) p[i] = rng_s16();
++}
++
++/* ---- local scalar reference (mirrors src/snt_kernels_ref.c) ---------- */
++static int32_t ref_dot_s8(const int8_t *a, const int8_t *b, int len) {
++    int32_t acc = 0;
++    for (int i = 0; i < len; i++) acc += (int32_t)a[i] * (int32_t)b[i];
++    return acc;
++}
++
++static void ref_matvec_s8(const int8_t *act, const int8_t *w, int32_t *out,
++                          int rows, int len) {
++    for (int r = 0; r < rows; r++)
++        out[r] = ref_dot_s8(act, w + (long)r * len, len);
++}
++
++static int32_t ref_dot_s16s8(const int16_t *a, const int8_t *b, int len) {
++    int32_t acc = 0;
++    for (int i = 0; i < len; i++) acc += (int32_t)a[i] * (int32_t)b[i];
++    return acc;
++}
++
++static void ref_matvec_s16s8(const int16_t *act, const int8_t *w,
++                             int32_t *out, int rows, int len) {
++    for (int r = 0; r < rows; r++)
++        out[r] = ref_dot_s16s8(act, w + (long)r * len, len);
++}
++
++/* ---- static aligned storage ------------------------------------------ */
++#define MAX_LEN 512
++#define MAX_ROWS 1539
++#define PAD 16
++
++static _Alignas(16) int8_t g_act[MAX_LEN];
++static _Alignas(16) int16_t g_act16[MAX_LEN];
++static _Alignas(16) int8_t g_b[MAX_LEN];
++#define W_BYTES (304L * 512L + PAD)
++static _Alignas(16) int8_t g_w[W_BYTES];
++static int32_t g_out[MAX_ROWS];
++static int32_t g_ref[MAX_ROWS];
++
++static const int k_lens[] = {16, 48, 80, 240, 304, 512};
++#define N_LENS (int)(sizeof(k_lens) / sizeof(k_lens[0]))
++static const int k_rows[] = {1, 12, 76, 304};
++#define N_ROWS (int)(sizeof(k_rows) / sizeof(k_rows[0]))
++
++static int g_total_cases = 0;
++static int g_total_fail = 0;
++
++/* ---- dot groups ------------------------------------------------------ */
++static int run_dot_group(int len) {
++    int fails = 0;
++    for (int c = 0; c < 20; c++) {
++        fill_s8(g_act, len);
++        fill_s8(g_b, len);
++        int32_t got = snt_dot_s8(g_act, g_b, len);
++        int32_t want = ref_dot_s8(g_act, g_b, len);
++        g_total_cases++;
++        if (got != want) {
++            fails++;
++            printf("  dot_s8 len=%d case=%d: got %ld want %ld\n", len, c,
++                   (long)got, (long)want);
++        }
++    }
++    for (int c = 0; c < 20; c++) {
++        fill_s16(g_act16, len);
++        fill_s8(g_b, len);
++        int32_t got = snt_dot_s16s8(g_act16, g_b, len);
++        int32_t want = ref_dot_s16s8(g_act16, g_b, len);
++        g_total_cases++;
++        if (got != want) {
++            fails++;
++            printf("  dot_s16s8 len=%d case=%d: got %ld want %ld\n", len, c,
++                   (long)got, (long)want);
++        }
++    }
++    printf("%s dot (s8 + s16s8) len=%-4d (40 cases)\n",
++           fails ? "FAIL" : "PASS", len);
++    return fails;
++}
++
++/* ---- matvec groups --------------------------------------------------- */
++static int run_matvec_group(int len, int rows, int cases) {
++    int fails = 0;
++    long wbytes = (long)rows * len;
++    for (int c = 0; c < cases; c++) {
++        fill_s8(g_act, len);
++        fill_s8(g_w, wbytes);
++        memset(g_w + wbytes, (int)(rng_next() & 0xFF), PAD); /* junk pad */
++        memset(g_out, 0xA5, sizeof(int32_t) * (size_t)rows);
++        snt_matvec_s8(g_act, g_w, g_out, rows, len);
++        ref_matvec_s8(g_act, g_w, g_ref, rows, len);
++        g_total_cases++;
++        for (int r = 0; r < rows; r++) {
++            if (g_out[r] != g_ref[r]) {
++                fails++;
++                printf("  matvec_s8 len=%d rows=%d case=%d row=%d: "
++                       "got %ld want %ld\n",
++                       len, rows, c, r, (long)g_out[r], (long)g_ref[r]);
++                break;
++            }
++        }
++    }
++    printf("%s matvec_s8 len=%-4d rows=%-5d (%d cases)\n",
++           fails ? "FAIL" : "PASS", len, rows, cases);
++    return fails;
++}
++
++static int run_matvec_s16s8_group(int len, int rows, int cases) {
++    int fails = 0;
++    long wbytes = (long)rows * len;
++    for (int c = 0; c < cases; c++) {
++        fill_s16(g_act16, len);
++        fill_s8(g_w, wbytes);
++        memset(g_w + wbytes, (int)(rng_next() & 0xFF), PAD);
++        memset(g_out, 0xA5, sizeof(int32_t) * (size_t)rows);
++        snt_matvec_s16s8(g_act16, g_w, g_out, rows, len);
++        ref_matvec_s16s8(g_act16, g_w, g_ref, rows, len);
++        g_total_cases++;
++        for (int r = 0; r < rows; r++) {
++            if (g_out[r] != g_ref[r]) {
++                fails++;
++                printf("  matvec_s16s8 len=%d rows=%d case=%d row=%d: "
++                       "got %ld want %ld\n",
++                       len, rows, c, r, (long)g_out[r], (long)g_ref[r]);
++                break;
++            }
++        }
++    }
++    printf("%s matvec_s16s8 len=%-4d rows=%-5d (%d cases)\n",
++           fails ? "FAIL" : "PASS", len, rows, cases);
++    return fails;
++}
++
++int main(void) {
++#if defined(__ARM_NEON)
++    printf("kernel path: ARM NEON intrinsics (__ARM_NEON defined)\n");
++#else
++    printf("kernel path: scalar fallback\n");
++#endif
++
++    /* dot: 6 lens x 40 = 240 cases */
++    for (int i = 0; i < N_LENS; i++) g_total_fail += run_dot_group(k_lens[i]);
++
++    /* matvec: 6 lens x 4 row-counts x 3 = 72 cases each kernel */
++    for (int i = 0; i < N_LENS; i++)
++        for (int j = 0; j < N_ROWS; j++) {
++            g_total_fail += run_matvec_group(k_lens[i], k_rows[j], 3);
++            g_total_fail += run_matvec_s16s8_group(k_lens[i], k_rows[j], 3);
++        }
++
++    /* matvec tall-skinny: rows=1539 at len=48 only, 8 cases each */
++    g_total_fail += run_matvec_group(48, 1539, 8);
++    g_total_fail += run_matvec_s16s8_group(48, 1539, 8);
++
++    printf("----\n%s: %d cases, %d failures\n",
++           g_total_fail ? "FAIL" : "ALL PASS", g_total_cases, g_total_fail);
++    return g_total_fail ? 1 : 0;
++}
+diff -ruN a/src/snt_front_q8.c b/src/snt_front_q8.c
+--- a/src/snt_front_q8.c	2026-10-18 23:28:24.882987226 +0200
++++ b/src/snt_front_q8.c	2026-10-18 23:28:24.884154695 +0200
+@@ -16,6 +16,10 @@
+ #include <math.h>
+ #include <string.h>
+ 
++#if defined(__ARM_NEON)
++#include <arm_neon.h>
++#endif
++
+ #define FQ_QMAX SNT_FRONT_Q8_QMAX
+ 
+ #ifdef SNT_FRONT_Q8_ACT_F32
+@@ -338,8 +342,22 @@
+             int off = k - pad;
+             int lo = off < 0 ? -off : 0;
+             int hi = off > 0 ? T - off : T;
+-            if (wv != 0)
+-                for (t = lo; t < hi; t++) acc[t] += wv * (int32_t)xrow[t + off];
++            if (wv != 0) {
++#if defined(__ARM_NEON)
++                /* fq_t is int16 in this build; lanes accumulate only their
++                 * own t, so the vector path cannot reorder any addition. */
++                const int16x4_t wv4 = vdup_n_s16((int16_t)wv);
++                t = lo;
++                for (; t + 4 <= hi; t += 4) {
++                    int32x4_t av = vld1q_s32(acc + t);
++                    av = vmlal_s16(av, vld1_s16(xrow + t + off), wv4);
++                    vst1q_s32(acc + t, av);
++                }
++#else
++                t = lo;
++#endif
++                for (; t < hi; t++) acc[t] += wv * (int32_t)xrow[t + off];
++            }
+         }
+     }
+     for (t = 0; t < T; t++) orow[t] = (float)acc[t] * mult + bias;
+diff -ruN a/src/snt_piperlite_q8.c b/src/snt_piperlite_q8.c
+--- a/src/snt_piperlite_q8.c	2026-10-18 23:28:24.875440010 +0200
++++ b/src/snt_piperlite_q8.c	2026-10-18 23:28:24.876345747 +0200
+@@ -26,6 +26,10 @@
+ #include <math.h>
+ #include <string.h>
+ 
++#if defined(__ARM_NEON)
++#include <arm_neon.h>
++#endif
++
+ #define PLQ_HOP SNT_PIPERLITE_Q8_HOP
+ #define PLQ_QMAX 2047 /* 12-bit activation lane, int32-safe accumulation */
+ /* meta act scales are calibrated_clip/127; rescale to the 12-bit grid */
+@@ -188,7 +192,9 @@
+     return (int16_t)r;
+ }
+ 
+-/* one output row of Conv1d "same": acc[t] = sum_ic sum_k w*x, w = [in_ch*K] */
++/* one output row of Conv1d "same": acc[t] = sum_ic sum_k w*x, w = [in_ch*K]
++ * NEON: the vector axis is t; each int32 lane accumulates only its own t,
++ * so lane grouping cannot reorder any addition (exact by construction). */
+ static void q16_conv1d_row(int32_t *acc, const int16_t *x, const int8_t *w,
+                            int in_ch, int T, int K, int dil) {
+     int pad = dil * (K / 2);
+@@ -202,13 +208,29 @@
+             int off = k * dil - pad;
+             int lo = off < 0 ? -off : 0;
+             int hi = off > 0 ? T - off : T;
+-            if (wv != 0)
+-                for (t = lo; t < hi; t++) acc[t] += wv * xrow[t + off];
++            if (wv != 0) {
++#if defined(__ARM_NEON)
++                const int16x4_t wv4 = vdup_n_s16((int16_t)wv);
++                t = lo;
++                for (; t + 4 <= hi; t += 4) {
++                    int32x4_t av = vld1q_s32(acc + t);
++                    av = vmlal_s16(av, vld1_s16(xrow + t + off), wv4);
++                    vst1q_s32(acc + t, av);
++                }
++#else
++                t = lo;
++#endif
++                for (; t < hi; t++) acc[t] += wv * xrow[t + off];
++            }
+         }
+     }
+ }
+ 
+-/* one output row of ConvTranspose1d; w base layout [in_ch][out_ch][K] */
++/* one output row of ConvTranspose1d; w base layout [in_ch][out_ch][K]
++ * NEON: stride 4 (the large final upsample stage) scatters with VLD4/VST4:
++ * val[0] of vld4q_s32(acc + t*4 + shift) is exactly {acc[t],acc[t+1],
++ * acc[t+2],acc[t+3] * stride}, and the lanes stay disjoint (exact). Other
++ * strides keep the scalar loop. */
+ static void q16_convtr1d_row(int32_t *acc, const int16_t *x, const int8_t *w,
+                              int oc, int in_ch, int out_ch, int T,
+                              int K, int stride, int pad, int L) {
+@@ -226,7 +248,21 @@
+             if (shift < 0) t_lo = (-shift + stride - 1) / stride;
+             lim = ((long)L - 1 - shift) / stride + 1;
+             if (lim < t_hi) t_hi = (int)lim;
+-            for (t = t_lo; t < t_hi; t++)
++#if defined(__ARM_NEON)
++            if (stride == 4) {
++                const int16x4_t wv4 = vdup_n_s16((int16_t)wv);
++                t = t_lo;
++                for (; t + 4 <= t_hi; t += 4) {
++                    int32x4x4_t av = vld4q_s32(acc + (long)t * 4 + shift);
++                    av.val[0] = vmlal_s16(av.val[0], vld1_s16(xrow + t), wv4);
++                    vst4q_s32(acc + (long)t * 4 + shift, av);
++                }
++            } else
++#endif
++            {
++                t = t_lo;
++            }
++            for (; t < t_hi; t++)
+                 acc[(long)t * stride + shift] += wv * xrow[t];
+         }
+     }

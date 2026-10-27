@@ -108,10 +108,30 @@ Utils.LEGACY_KINDLE_MODELS = {
 }
 
 local _legacy_kindle_model = nil
+local _kindle_kernel_2_6 = nil
 
---- True when the current Kindle is a 2007-2011 speaker model.  Nil or
---- "unknown" model values conservatively return false; the bug report
---- captures Device.model so a misdetection can be closed later.
+--- True when the running kernel is from the 2.6 series (every 2007-2011
+--- Kindle firmware).  Cached for the session.
+-- @return boolean
+local function kernelIs26()
+    if _kindle_kernel_2_6 ~= nil then return _kindle_kernel_2_6 end
+    _kindle_kernel_2_6 = false
+    local h = io.popen("uname -r 2>/dev/null")
+    if h then
+        local rel = h:read("*l") or ""
+        h:close()
+        _kindle_kernel_2_6 = rel:match("^2%.6") ~= nil
+    end
+    return _kindle_kernel_2_6
+end
+
+--- True when the current Kindle is a 2007-2011 speaker model.  Matched
+--- first against the KOReader model list; when KOReader cannot name the
+--- device at all (nil or "unknown" model, seen on a KT4 with fw 5.3.x,
+--- issue #85), classify by evidence: the speaker generation is the only
+--- Kindle family that still exposes a real ALSA card, and it runs a 2.6
+--- kernel.  PW2+ hardware has no ALSA card and 3.x+ kernels, so both
+--- checks together cannot false-positive there.
 -- @return boolean
 function Utils.isLegacyKindleModel()
     if _legacy_kindle_model ~= nil then return _legacy_kindle_model end
@@ -119,6 +139,15 @@ function Utils.isLegacyKindleModel()
     local ok, Device = pcall(require, "device")
     if ok and Device and Device.model then
         _legacy_kindle_model = Utils.LEGACY_KINDLE_MODELS[Device.model] or false
+    end
+    if not _legacy_kindle_model and ok and Device
+        and Device.isKindle and Device:isKindle() then
+        local model = Device.model
+        if not model or model == "unknown" then
+            if Utils.probeKindleAlsaCard() and kernelIs26() then
+                _legacy_kindle_model = true
+            end
+        end
     end
     return _legacy_kindle_model
 end
@@ -582,6 +611,118 @@ function Utils.findIgnoringSpaces(haystack, needle)
     local end_entry = strip_byte[q]
     if not start_entry or not end_entry then return nil end
     return start_entry.s, end_entry.e
+end
+
+--- Decode the UTF-8 codepoint starting at byte i.
+--- Codepoint-aligned input is assumed (the callers walk lead bytes only);
+--- a continuation byte met here returns the byte value itself.
+-- @param s string  Input text
+-- @param i number  Byte offset (1-based)
+-- @return number codepoint, number next byte offset
+function Utils.decodeCharAt(s, i)
+    local b = s:byte(i)
+    if not b then return nil, i + 1 end
+    if b < 0x80 then return b, i + 1 end
+    local len, cp
+    if b >= 0xC2 and b <= 0xDF then len, cp = 2, b - 0xC0
+    elseif b >= 0xE0 and b <= 0xEF then len, cp = 3, b - 0xE0
+    elseif b >= 0xF0 and b <= 0xF4 then len, cp = 4, b - 0xF0
+    else return b, i + 1 end
+    for k = 1, len - 1 do
+        local cb = s:byte(i + k)
+        if not cb or cb < 0x80 or cb >= 0xC0 then return b, i + 1 end
+        cp = cp * 64 + (cb - 0x80)
+    end
+    return cp, i + len
+end
+
+--- True when the text contains CJK ideographs, kana, or their compatibility
+--- forms.  Korean is deliberately excluded: hangul text uses spaces, so the
+--- word-count heuristics keep working for it.
+-- @param s string
+-- @return boolean
+function Utils.hasCJKScript(s)
+    if not s or s == "" then return false end
+    local i = 1
+    while i <= #s do
+        local cp, next_i = Utils.decodeCharAt(s, i)
+        if cp and cp >= 0x3000 then
+            -- CJK punctuation (0x3000-0x303F), kana (0x3040-0x30FF), CJK
+            -- ext-A (0x3400-0x4DBF), unified ideographs (0x4E00-0x9FFF),
+            -- compatibility ideographs (0xF900-0xFAFF), halfwidth kana
+            -- (0xFF66-0xFF9D).
+            if (cp <= 0x30FF)
+                or (cp >= 0x3400 and cp <= 0x4DBF)
+                or (cp >= 0x4E00 and cp <= 0x9FFF)
+                or (cp >= 0xF900 and cp <= 0xFAFF)
+                or (cp >= 0xFF66 and cp <= 0xFF9D) then
+                return true
+            end
+        end
+        i = next_i or (i + 1)
+    end
+    return false
+end
+
+--- Count non-whitespace characters (codepoints, not bytes).  For spaceless
+--- scripts a whole sentence is one "%S+" token, so word counts are useless;
+--- character counts stand in for them.
+-- @param s string
+-- @return number
+function Utils.charCount(s)
+    if not s or s == "" then return 0 end
+    local n = 0
+    local i = 1
+    while i <= #s do
+        local cp, next_i = Utils.decodeCharAt(s, i)
+        if cp and not (cp == 0x20 or (cp >= 0x09 and cp <= 0x0D)) then
+            n = n + 1
+        end
+        i = next_i or (i + 1)
+    end
+    return n
+end
+
+--[[--
+Decide whether a page's last, unterminated sentence should absorb the next
+page's first sentence (the page-boundary wrap carry).
+
+The Latin heuristic stands: a continuation that starts lowercase is a wrapped
+clause (carry it); otherwise demand a reasonably long last line so headings
+do not swallow the next sentence.  For spaceless scripts (Chinese, Japanese)
+neither test can work: nothing is ever lowercase and every sentence is a
+single whitespace token, so the old guard refused the carry for every CJK
+page and cut each sentence straddling the page break (issue #96).  There the
+capitalization test is dropped and a character-count threshold stands in for
+the word count: cut prose lines run long, bare headings are short.
+
+-- @param last_text string   Last sentence on the page (no terminator)
+-- @param first_text string  First sentence on the next page
+-- @return boolean           true when the carry should proceed
+--]]
+function Utils.shouldCarryPageBoundary(last_text, first_text)
+    if Utils.hasCJKScript(first_text) or Utils.hasCJKScript(last_text) then
+        return Utils.charCount(last_text) >= 6
+    end
+    -- Latin path (kept byte-compatible with the old synccontroller guard).
+    local s = first_text or ""
+    s = s:gsub("^[%s\"']+", "")
+    s = s:gsub("^\194[\171\187]+", "") -- « »
+    s = s:gsub("^\226\128[\147-\159]+", "") -- dashes / curly quotes
+    s = s:gsub("^[%-%s]+", "")
+    local b1, b2 = s:byte(1, 2)
+    local starts_lower = false
+    if b1 then
+        if b1 >= 97 and b1 <= 122 then
+            starts_lower = true
+        elseif b1 == 195 and b2 and b2 >= 160 and b2 <= 191 and b2 ~= 183 then
+            starts_lower = true
+        end
+    end
+    if starts_lower then return true end
+    local n = 0
+    for _ in (last_text or ""):gmatch("%S+") do n = n + 1 end
+    return n >= 4
 end
 
 --- Detect the number of CPU cores (same logic as piperqueue.lua).

@@ -416,14 +416,6 @@ function Audiobook:_initSubmodules()
         end
     end)
 
-    -- ── Clean old transcoded files ──
-    pcall(function()
-        local Transcoder = dofile(pp .. "transcoder.lua")
-        if Transcoder then
-            Transcoder:new{plugin_dir = pp}:clearOldTranscodes(30)
-        end
-    end)
-
     -- ── Media playback modules (always load; works without a document) ──
     local ok_media, err_media = pcall(function()
         local function dofile_v25(name)
@@ -439,9 +431,7 @@ function Audiobook:_initSubmodules()
         end
         local MediaEngine = dofile_v25("mediaengine")
         local MediaSync = dofile_v25("mediasync")
-        local Transcoder = dofile(pp .. "transcoder.lua")
         self.media_engine = MediaEngine:new{plugin = self, plugin_dir = pp:sub(1, -2)}
-        self.transcoder = Transcoder:new{plugin_dir = pp}
         self.media_sync = MediaSync:new{
             plugin = self,
             media_engine = self.media_engine,
@@ -453,7 +443,6 @@ function Audiobook:_initSubmodules()
         self._media_modules_error = tostring(err_media)
         self.media_engine = nil
         self.media_sync = nil
-        self.transcoder = nil
     end
 
     -- ── Audiobookshelf modules (always load; works without a document) ──
@@ -976,8 +965,7 @@ function Audiobook:addToMainMenu(menu_items)
                     {
                         text = _("Lock KOReader page margins"),
                         enabled_func = function()
-                            return (self.ui and self.ui.document
-                                and self:getSetting("keep_media_overlay_bar", false)) and true or false
+                            return (self.ui and self.ui.document) and true or false
                         end,
                         checked_func = function()
                             return self:getSetting("lock_koreader_page_margins", false)
@@ -995,7 +983,7 @@ function Audiobook:addToMainMenu(menu_items)
                                 pcall(function() ms:_releaseMiniBarSpace() end)
                             end
                         end,
-                        help_text = _("When enabled, the plugin writes this book’s bottom page margin into KOReader’s own settings before CRE typesets. The next open rebuilds the layout once (text stays above the audiobook bar); after that, KOReader reuses that layout. Disable to restore your original margins and edit them with KOReader’s usual controls."),
+                        help_text = _("When enabled, the plugin writes this book’s bottom page margin into KOReader’s own settings before CRE typesets. The next open rebuilds the layout once (text stays above the audiobook bar); after that, KOReader reuses that layout, so starting a read-along no longer re-lays out the page. Works with or without the persistent bar. Disable to restore your original margins and edit them with KOReader’s usual controls."),
                     },
                     {
                         text = _("Keep status bars during read-aloud"),
@@ -1328,7 +1316,7 @@ function Audiobook:onDictButtonsReady(dict_popup, buttons)
     }})
 end
 
-function Audiobook:startReadAlong(text, start_pos)
+function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self._init_ok then self:_showInitError(); return end
     if not self:_audioOutputReady() then return end
     local page_text = text or self:getCurrentPageText()
@@ -1465,7 +1453,7 @@ function Audiobook:startReadAlong(text, start_pos)
                         self.media_sync:stop(nil, { drop_chrome = true })
                     end)
                 end
-                self.sync_controller:start(page_text, { keep_text = keep_text })
+                self.sync_controller:start(page_text, { keep_text = keep_text, anchor_xp = anchor_xp })
             end,
         })
         return
@@ -1483,7 +1471,7 @@ function Audiobook:startReadAlong(text, start_pos)
         end)
     end
 
-    self.sync_controller:start(page_text, { keep_text = keep_text })
+    self.sync_controller:start(page_text, { keep_text = keep_text, anchor_xp = anchor_xp })
 end
 
 -- ---------------------------------------------------------------------------
@@ -1511,6 +1499,31 @@ function Audiobook:_hasMediaOverlays()
     if not self.ui.rolling then return false end
     local doc_path = self.ui.document.file_path or self.ui.document.file
     return self:_documentHasMediaOverlays(doc_path)
+end
+
+--- Storyteller-style read-along EPUBs ship a storyteller-readaloud.css
+--- stylesheet. BookOrbit's text-only delivery keeps that stylesheet and the
+--- sentence markup but removes the audio and the SMIL overlays, so a book
+--- with the stylesheet and no SMIL is a read-along that arrived without its
+--- narration. Used only to give a targeted hint on the "no audio" paths.
+function Audiobook:_documentIsStrippedReadalong(doc_path)
+    if not doc_path then return false end
+    local ext = doc_path:match("%.([^.]+)$") or ""
+    if ext:lower() ~= "epub" then return false end
+    if self:_documentHasMediaOverlays(doc_path) then return false end
+    local h = io.popen('unzip -l "' .. doc_path:gsub('"', '\\"') .. '" 2>/dev/null | grep -i "storyteller-readaloud.css"')
+    if h then
+        local out = h:read("*a") or ""
+        h:close()
+        return out:lower():find("storyteller-readaloud.css", 1, true) ~= nil
+    end
+    return false
+end
+
+--- Shared body of the narration-stripped hint shown by the three
+--- "this book has no audio" code paths.
+function Audiobook:_strippedReadalongNotice()
+    return _("This book is a read-along copy without narration: its audio was stripped at delivery, most likely by BookOrbit.\n\nIn BookOrbit, set this device's read-along delivery to “Original” and download the book again to get the recorded narration.")
 end
 
 --- On Kindle there is no speaker/ALSA: audio only plays over Bluetooth A2DP.
@@ -1597,6 +1610,13 @@ function Audiobook:_startMediaPlaybackForDocument(doc_path)
     end
 
     -- Nothing found
+    if self:_documentIsStrippedReadalong(doc_path) then
+        UIManager:show(InfoMessage:new{
+            text = self:_strippedReadalongNotice() .. "\n\n" .. _("Text-to-speech read-aloud still works for this book."),
+            timeout = 8,
+        })
+        return
+    end
     UIManager:show(InfoMessage:new{
         text = _("This book has no embedded narration.\n\nPlace an audiobook file with the same name in the same folder, or use Play unaligned audiobook to play a separate file."),
         timeout = 5,
@@ -1708,9 +1728,15 @@ function Audiobook:_checkPendingAlignedStart()
         if pending.action == "start" then
             self:_startMediaPlaybackForDocument(doc_path)
         else
+            local text
+            if self:_documentIsStrippedReadalong(doc_path) then
+                text = self:_strippedReadalongNotice() .. "\n\n" .. _("Play unaligned audiobook or Start music playlist can still play a separate audio file.")
+            else
+                text = _("This book has no built-in audiobook. Use Play unaligned audiobook or Start music playlist to play a separate audio file.")
+            end
             UIManager:show(InfoMessage:new{
-                text = _("This book has no built-in audiobook. Use Play unaligned audiobook or Start music playlist to play a separate audio file."),
-                timeout = 6,
+                text = text,
+                timeout = 8,
             })
         end
     end)
@@ -2300,45 +2326,7 @@ function Audiobook:_doPlayAudioFile(file_path, playlist_files, start_position, a
     if not file_path or not self.media_sync then return end
     local playable_path = file_path
 
-    -- Transcode unsupported formats (M4B, OGG, FLAC, etc.) to MP3.
-    -- The transcoded MP3 preserves chapters and cover art.
-    if self.transcoder and not self.transcoder:isPlayable(file_path) then
-        local cached = self.transcoder:getPlayablePath(file_path)
-        if cached then
-            playable_path = cached
-            logger.warn("Audiobook: using cached transcode", cached)
-        else
-            local InfoMessage = require("ui/widget/infomessage")
-            local busy = InfoMessage:new{
-                text = _("Transcoding to MP3...\nThis may take a minute."),
-                timeout = 0,
-            }
-            UIManager:show(busy)
-            UIManager:forceRePaint()
-
-            local ok_trans, trans_path_or_err = pcall(function()
-                return self.transcoder:transcode(file_path)
-            end)
-
-            UIManager:close(busy)
-            UIManager:forceRePaint()
-
-            if ok_trans and trans_path_or_err then
-                playable_path = trans_path_or_err
-                logger.warn("Audiobook: transcoded to", playable_path)
-            else
-                local err_msg = type(trans_path_or_err) == "string" and trans_path_or_err or "unknown error"
-                logger.err("Audiobook: transcoding failed:", err_msg)
-                UIManager:show(InfoMessage:new{
-                    text = _("Transcoding failed: ") .. err_msg,
-                    timeout = 3,
-                })
-                return
-            end
-        end
-    end
-
-    -- Probe duration and chapters from the playable file (original MP3 or transcoded)
+    -- Probe duration and chapters from the audio file
     local duration = self.media_engine:probeDuration(playable_path)
     local chapters = {}
     local cover_path = nil
@@ -3156,9 +3144,13 @@ function Audiobook:startAlignedAudioFromSelection(selected_text)
     end
 
     if not self:_hasMediaOverlays() then
+        local text = _("This book has no built-in audiobook.")
+        if self:_documentIsStrippedReadalong(doc_path) then
+            text = self:_strippedReadalongNotice()
+        end
         UIManager:show(InfoMessage:new{
-            text = _("This book has no built-in audiobook."),
-            timeout = 4,
+            text = text,
+            timeout = 8,
         })
         return
     end
@@ -3388,7 +3380,7 @@ function Audiobook:startReadAlongFromWord(word, context)
     end
     
     -- Start reading from the found position
-    self:startReadAlong(page_text, start_pos)
+    self:startReadAlong(page_text, start_pos, context and context.pos0 or nil)
 end
 
 --[[--

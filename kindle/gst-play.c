@@ -19,6 +19,11 @@
  *   gst-play --probe              Check available GStreamer elements
  *   gst-play --version            Print version and exit
  *
+ * Stderr markers (parsed by ttsengine.lua for hang detection, issue #73):
+ *   gst-play: state=PLAYING       pipeline reached PLAYING (preroll done)
+ *   gst-play: state=N pending=N rc=N   stopped before PLAYING (hang)
+ *   gst-play: EOS                 clean end of stream
+ *
  * Exit codes:
  *   0  Success (played to completion)
  *   1  Usage error
@@ -87,15 +92,17 @@ __asm__(".symver __res_maybe_init_compat, __res_maybe_init@GLIBC_PRIVATE");
 #endif /* !KGP_NATIVE_GLIBC */
 
 #ifdef KGP_NATIVE_GLIBC
-#define VERSION "0.6.1-native"
+#define VERSION "0.6.2-native"
 #define BUILD_VARIANT "native"
 #else
-#define VERSION "0.6.1-compat"
+#define VERSION "0.6.2-compat"
 #define BUILD_VARIANT "compat"
 #endif
 
 /* ---- GStreamer constants (stable across 0.10 and 1.0) ---- */
 #define GST_STATE_NULL    1
+#define GST_STATE_READY   2
+#define GST_STATE_PAUSED  3
 #define GST_STATE_PLAYING 4
 #define GST_MESSAGE_EOS   (1 << 0)   /* 0.10 and 1.0 */
 #define GST_MESSAGE_ERROR (1 << 1)
@@ -104,6 +111,7 @@ __asm__(".symver __res_maybe_init_compat, __res_maybe_init@GLIBC_PRIVATE");
 typedef void  (*fn_gst_init)(int *, char ***);
 typedef void* (*fn_gst_parse_launch)(const char *, void **);
 typedef int   (*fn_gst_element_set_state)(void *, int);
+typedef int   (*fn_gst_element_get_state)(void *, int *, int *, int64_t);
 typedef void* (*fn_gst_element_get_bus)(void *);
 typedef void* (*fn_gst_bus_poll)(void *, int, int64_t);
 typedef void  (*fn_gst_message_parse_error)(void *, void **, char **);
@@ -115,6 +123,7 @@ typedef void* (*fn_gst_element_factory_make)(const char *, const char *);
 static fn_gst_init                  gst_init_;
 static fn_gst_parse_launch          gst_parse_launch_;
 static fn_gst_element_set_state     gst_element_set_state_;
+static fn_gst_element_get_state     gst_element_get_state_;
 static fn_gst_element_get_bus       gst_element_get_bus_;
 static fn_gst_bus_poll              gst_bus_poll_;
 static fn_gst_message_parse_error   gst_message_parse_error_;
@@ -192,6 +201,7 @@ static int load_gstreamer(void)
     gst_init_                 = dlsym(lib, "gst_init");
     gst_parse_launch_         = dlsym(lib, "gst_parse_launch");
     gst_element_set_state_    = dlsym(lib, "gst_element_set_state");
+    gst_element_get_state_    = dlsym(lib, "gst_element_get_state");
     gst_element_get_bus_      = dlsym(lib, "gst_element_get_bus");
     gst_bus_poll_             = dlsym(lib, "gst_bus_poll");
     gst_message_parse_error_  = dlsym(lib, "gst_message_parse_error");
@@ -373,6 +383,36 @@ static int do_probe(void)
         }
     }
     return 0;
+}
+
+/* ---- Play state reporting ----
+ *
+ * Wait (bounded) until the pipeline reaches PLAYING and report it on
+ * stderr.  ttsengine.lua's hang detection keys on this line: a healthy
+ * pipeline prints "state=PLAYING" moments after launch, while a pipeline
+ * stuck in a state change or caps negotiation never does.  The helper
+ * prints nothing else on success, so without this marker a caller cannot
+ * tell "playing silently" from "never started" (issue #73).
+ *
+ * gst_element_get_state blocks until the state is reached or the timeout
+ * expires, which is exactly the bound we want: a commit stall returns
+ * ASYNC with the state still PAUSED after 5 s instead of blocking forever.
+ */
+static void report_playing_state(void *pipeline)
+{
+    if (!gst_element_get_state_) {
+        fprintf(stderr, "gst-play: state=UNKNOWN (no gst_element_get_state)\n");
+        return;
+    }
+    int state = 0, pending = 0;
+    int ret = gst_element_get_state_(pipeline, &state, &pending,
+                                     (int64_t)5000000000LL);
+    if (state == GST_STATE_PLAYING) {
+        fprintf(stderr, "gst-play: state=PLAYING\n");
+    } else {
+        fprintf(stderr, "gst-play: state=%d pending=%d rc=%d\n",
+                state, pending, ret);
+    }
 }
 
 /* ---- Play mode ---- */
@@ -561,6 +601,7 @@ static int do_play(const char *wav_path)
 
     /* -- Start playback -- */
     gst_element_set_state_(pipeline, GST_STATE_PLAYING);
+    report_playing_state(pipeline);
 
     int ret = 0;
 
@@ -588,6 +629,8 @@ static int do_play(const char *wav_path)
                     if (debug_info && *debug_info)
                         fprintf(stderr, "gst-play: debug: %s\n", debug_info);
                     ret = 4;
+                } else {
+                    fprintf(stderr, "gst-play: EOS\n");
                 }
                 /* err/debug leaked intentionally -- process exits shortly */
             }
@@ -756,6 +799,7 @@ static int do_ttssrc(const char *text)
     sigaction(SIGINT, &sa, NULL);
 
     gst_element_set_state_(pipeline, GST_STATE_PLAYING);
+    report_playing_state(pipeline);
 
     int ret = 0;
     void *bus = gst_element_get_bus_(pipeline);
@@ -774,6 +818,8 @@ static int do_ttssrc(const char *text)
                     if (debug_info && *debug_info)
                         fprintf(stderr, "gst-play: debug: %s\n", debug_info);
                     ret = 4;
+                } else {
+                    fprintf(stderr, "gst-play: EOS\n");
                 }
             }
         }

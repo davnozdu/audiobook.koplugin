@@ -123,9 +123,10 @@ it produces, and the plugin uses it to place the read-aloud highlight on the
 right word instead of estimating from character counts. The values are the
 duration student's own per-phoneme frame counts, computed during synthesis and
 previously discarded; reading them back changes no audio, and the WAV is
-bit-identical with or without the file. The int8 and nano engines have no
-duration read-out and write nothing, which is how the plugin tells the two
-cases apart.
+bit-identical with or without the file. The int8 engine publishes the same
+sidecar (local patch 0002 reads its duration student's output); the nano
+engine has no duration read-out and writes nothing, which is how the plugin
+tells the cases apart.
 
 ```
 sntt 1 <rate> <hop> <total_samples> <n_clauses> <n_words>
@@ -156,3 +157,35 @@ alone yields a different phone sequence than the one it contributes to the
 clause. Exact word boundaries are only available from a phonemizer that
 preserves them, which would mean a different phone sequence and therefore
 different audio.
+
+## ARM NEON kernels + dual-core (patches 0003/0004)
+
+The Kobo build compiles the port TU `mcu/ports/arm-neon/snt_port_arm.c`
+(NEON int kernels + a condvar-blocked pthread `snt_par_run`, scalar
+fallbacks everywhere) and vectorizes the integer conv kernels in the pq8 and
+front engines. Byte-identity discipline:
+
+- The vector axis is always the disjoint t/lane axis, so no integer addition
+  is ever reordered; `lrintf` requant epilogues, fp32 mixing and `tanhf`
+  stay scalar. Gates: 400-case kernel byte test, R7/nano goldens, and
+  server-level ids A/B (`dev/snt-ab.sh --ids --cross`) byte-comparing
+  pristine-scalar vs NEON for int8, pq8 and nano, plus f32 by correlation.
+- The f32 (fr) engine's fp32 kernels are byte-identical on the same
+  architecture (ARMv7 VMLA is non-fused) but carry only a correlation gate
+  across architectures; fr output bytes are not stable across toolchains.
+- The pq8 decoder splits by output channel (patch 0004) with per-core
+  `rowbuf` scratch; the fp32 branch-sum, stage taps and mix quant run after
+  the last barrier on the main thread, so audio and the `.timing` sidecar
+  are bit-identical under the 2-thread split.
+
+`SNT_THREADS` selects threading at runtime: unset or `1` is fully serial
+(the worker is never created), `2` runs one worker pinned to the second
+core. The plugin sets `SNT_THREADS=2` on multi-core devices and launches a
+single server; older server binaries ignore the variable.
+
+Compiler hazard worth knowing: GCC 15.2 armv7 -O2 miscompiles chained
+`vpadalq_s16` accumulate forms for some `-frandom-seed` values (silent wrong
+results that come and go with codegen). The kernels use explicit
+`vaddq_s32(acc, vpaddlq_s16(vmull_s8(...)))` instead; the gate ladder shakes
+three seeds. Build flags: `-mfpu=neon`, not `neon-vfpv4` (Cortex-A8/A9 have
+no scalar VFPv4 FMA and would trap on `vfma`).

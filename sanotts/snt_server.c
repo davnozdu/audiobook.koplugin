@@ -40,7 +40,7 @@
  * the bundled armhf espeak-ng through the bundled glibc loader on stock Kobo
  * rootfs); the gap args size the silence inserted after comma/period clauses
  * (defaults 150/350 ms; colon 220, semicolon 250).
- * Timing sidecar (pq8 and f32 only). Alongside each WAV, "<wav>.timing" is
+ * Timing sidecar (pq8, f32 and int8). Alongside each WAV, "<wav>.timing" is
  * written with the word boundaries the duration student already produced,
  * then immediately discarded by the old code. Line-oriented ASCII integers:
  *
@@ -78,6 +78,7 @@
 #include "phoneme_id_map.h"
 #include "phoneme_id_map_fr.h"
 #include "nano_lex_g2p.h"
+#include "nano_lex_fr.h"
 
 #include <unistd.h>
 #include <errno.h>
@@ -176,6 +177,10 @@ static int g_engine_nano = 0;
 static int g_engine_pq8 = 0;
 static int g_engine_f32 = 0;
 static int g_native_punct = 0;
+static int g_g2p_nano = 0;              /* --g2p nano: in-process lexicon G2P */
+static float g_g2p_oov_threshold = 0.25f;
+static long g_g2p_nano_clauses, g_g2p_espeak_clauses;
+static long g_g2p_oov_words, g_g2p_lex_words;
 static float g_length_scale = 1.0f;
 static float g_pause_scale = 1.0f;
 static uint64_t g_seed;
@@ -338,6 +343,206 @@ static int text_to_ids_native(const char *text, int32_t *ids) {
             append_ipa_ids(ipa, ids, &n);
             free(ipa);
         }
+    }
+    if (n > MAX_IDS - 1) n = MAX_IDS - 1;
+    ids[n++] = EOS_ID;
+    return n;
+}
+
+/* ---- in-process lexicon G2P (--g2p nano, int8/pq8/f32) ------------------
+ *
+ * The neural engines' phonemizer is espeak-ng by default:
+ * phonemize_via_binary fork+execs the bundled binary once per clause.
+ * --g2p nano replaces that with the in-process misaki lexicon G2P
+ * (nano_lex_g2p.c: no espeak, no fork, dictionary-first). The engines
+ * synthesize from piper-map ids either way, so only the phoneme source
+ * changes.
+ *
+ * nano_lex_g2p emits a UTF-8 phoneme STRING in its own 62-symbol
+ * vocabulary. Nearly all of it walks map_id() unchanged (shared symbols
+ * carry the same sound in both vocabularies). The symbols the piper map
+ * lacks get their espeak en-us IPA equivalents, verified symbol-for-symbol
+ * against espeak-ng --ipa -v en-us output and pinned by
+ * dev/test_g2p_adapter.c:
+ *   A (FACE)   -> e ɪ      I (PRICE) -> a ɪ     O (GOAT)  -> o ʊ
+ *   W (MOUTH)  -> a ʊ      Y (CHOICE)-> ɔ ɪ     T (flap)  -> ɾ
+ *   ʤ -> d ʒ    ʧ -> t ʃ    ᵊ (syllabic mark)  -> ə
+ * Em dash, curly quotes and ellipsis map nowhere and are skipped, exactly
+ * like espeak's own IPA output drops them.
+ *
+ * Word boundaries survive intact (one space symbol per word join), so the
+ * timing sidecar's word spans come out finer than espeak's, which merges
+ * neighbouring words in roughly a quarter of sentences.
+ *
+ * Out-of-vocabulary words contribute no phonemes (a counted outcome of
+ * the lexicon design, not a failure). A clause whose OOV ratio crosses
+ * --g2p-oov-threshold (default 0.25: proper names, heavy jargon) falls
+ * back to the espeak path FOR THAT CLAUSE. Counters land on stderr once
+ * per request as {"g2p": "nano=N espeak_fb=N oov=X/Y"} so gates can
+ * measure the real rate.
+ */
+#define NANO_G2P_FALLBACK (-1000)
+
+static const char *const npx_ei[] = {"e", "ɪ", NULL};
+static const char *const npx_ai[] = {"a", "ɪ", NULL};
+static const char *const npx_ou[] = {"o", "ʊ", NULL};
+static const char *const npx_au[] = {"a", "ʊ", NULL};
+static const char *const npx_oi[] = {"ɔ", "ɪ", NULL};
+static const char *const npx_flap[] = {"ɾ", NULL};
+static const char *const npx_dʒ[] = {"d", "ʒ", NULL};
+static const char *const npx_tʃ[] = {"t", "ʃ", NULL};
+static const char *const npx_ə[] = {"ə", NULL};
+
+static const struct { const char *sym; const char *const *exp; } NANO_PIPER_EXP[] = {
+    {"A", npx_ei}, {"I", npx_ai}, {"O", npx_ou}, {"W", npx_au}, {"Y", npx_oi},
+    {"T", npx_flap}, {"ʤ", npx_dʒ}, {"ʧ", npx_tʃ}, {"ᵊ", npx_ə},
+};
+
+/* Walk a nano phoneme string into (id, PAD) pairs, expanding the symbols
+ * the piper map lacks. Same shape and cap as append_ipa_ids. */
+static void append_nano_ids(const char *ph, int32_t *ids, int *n) {
+    for (const unsigned char *q = (const unsigned char *)ph; *q; ) {
+        int len = utf8_len(*q);
+        if (len <= 0 || len > 7) { q++; continue; }
+        char sym[8];
+        memcpy(sym, q, (size_t)len);
+        sym[len] = 0;
+        const char *const *exp = NULL;
+        for (size_t k = 0; k < sizeof NANO_PIPER_EXP / sizeof NANO_PIPER_EXP[0]; k++) {
+            if (!strcmp(NANO_PIPER_EXP[k].sym, sym)) { exp = NANO_PIPER_EXP[k].exp; break; }
+        }
+        if (exp) {
+            for (int k = 0; exp[k] && *n < MAX_IDS - 2; k++) {
+                int id = map_id(exp[k]);
+                if (id >= 0) { ids[(*n)++] = id; ids[(*n)++] = PAD_ID; }
+            }
+        } else {
+            int id = map_id(sym);
+            if (id >= 0 && *n < MAX_IDS - 2) { ids[(*n)++] = id; ids[(*n)++] = PAD_ID; }
+        }
+        q += len;
+    }
+}
+
+/* One shared phoneme-string arena: a clause's G2P output before the id
+ * walk. Static like the rest of the G2P machinery (single-threaded
+ * request loop; the G2P module itself is not reentrant either). */
+static char g_nano_ph[16384];
+
+/* G2P one clause with the in-process lexicon: sub-split at word boundaries
+ * (nano_lex_g2p caps input at 512 codepoints, same chunking as
+ * synth_clause_nano), concatenate the phoneme strings into g_nano_ph, and
+ * decide whether the clause is speakable. Returns the phoneme byte count,
+ * or NANO_G2P_FALLBACK when the clause should go through espeak instead
+ * (nothing survived, or the OOV ratio crossed the threshold while the
+ * espeak fallback is available). */
+static int g2p_nano_clause(const char *text) {
+    size_t len = 0;
+    long oov = 0, lex = 0;
+    int off = 0, n = (int)strlen(text);
+    while (off < n) {
+        int take = n - off;
+        if (take > 480) {
+            take = 480;
+            int cut = off + take;
+            while (cut > off + 64 && text[cut] != ' ') cut--;
+            take = cut - off;
+        }
+        while (off < n && text[off] == ' ') off++;   /* never lead with a space */
+        if (off >= n) break;
+        char chunk[512];
+        memcpy(chunk, text + off, (size_t)take);
+        chunk[take] = 0;
+        off += take;
+
+        /* Two lexicons share this clause walk: misaki English
+         * (nano_lex_g2p) and the espeak-derived French one
+         * (nano_lex_fr). The phoneme map (--phonemes) picks the G2P;
+         * the fr tables store espeak fr IPA verbatim, so in-dictionary
+         * French words are espeak-exact. */
+        long oov_c, lex_c;
+        int rc;
+        if (g_map == PHONEME_MAP_FR) {
+            nano_lex_fr_stats_t st;
+            rc = nano_lex_fr_text_to_phonemes(chunk, g_nano_ph + len,
+                                              sizeof g_nano_ph - len);
+            nano_lex_fr_get_stats(&st);
+            oov_c = st.oov_words;
+            lex_c = st.lexicon_words;
+        } else {
+            nano_lex_g2p_stats_t st;
+            rc = nano_lex_g2p_text_to_phonemes(chunk, g_nano_ph + len,
+                                               sizeof g_nano_ph - len);
+            nano_lex_g2p_get_stats(&st);
+            oov_c = st.oov_words;
+            lex_c = st.lexicon_words;
+        }
+        oov += oov_c;
+        lex += lex_c;
+        /* E_CAP leaves a truncated but speakable prefix in the buffer;
+         * every other negative code writes nothing. */
+        if (rc < 0 && rc != NANO_LEX_E_CAP && rc != NFR_E_CAP) continue;
+        len += strlen(g_nano_ph + len);
+    }
+    g_g2p_oov_words += oov;
+    g_g2p_lex_words += lex;
+    if (len == 0) return NANO_G2P_FALLBACK;
+    if (lex > 0 &&
+        (float)oov / (float)lex > g_g2p_oov_threshold &&
+        g_espeak_bin && g_espeak_data) {
+        g_g2p_espeak_clauses++;
+        return NANO_G2P_FALLBACK;
+    }
+    g_g2p_nano_clauses++;
+    return (int)len;
+}
+
+/* text -> piper phoneme ids via the in-process lexicon G2P. Same framing
+ * and return contract as text_to_ids(); NANO_G2P_FALLBACK asks the caller
+ * to redo the clause through espeak. */
+static int text_to_ids_nano(const char *text, int32_t *ids, int punct_id) {
+    int n = 0;
+    ids[n++] = BOS_ID;
+    ids[n++] = PAD_ID;
+    int plen = g2p_nano_clause(text);
+    if (plen == NANO_G2P_FALLBACK) return NANO_G2P_FALLBACK;
+    if (plen > 0) append_nano_ids(g_nano_ph, ids, &n);
+    if (punct_id >= 0 && n < MAX_IDS - 2) {
+        ids[n++] = punct_id;
+        ids[n++] = PAD_ID;
+    }
+    if (n > MAX_IDS - 1) n = MAX_IDS - 1;
+    ids[n++] = EOS_ID;
+    return n;
+}
+
+/* --native-punct variant of text_to_ids_nano: split at the text-level
+ * punctuation like text_to_ids_native and interleave each mark's own id,
+ * with the lexicon G2P phonemizing the pieces. */
+static int text_to_ids_nano_native(const char *text, int32_t *ids) {
+    int n = 0;
+    ids[n++] = BOS_ID;
+    ids[n++] = PAD_ID;
+    const char *p = text;
+    while (*p && n < MAX_IDS - 2) {
+        char c = *p;
+        if (c == '.' || c == ',' || c == '?' || c == '!' || c == ':' || c == ';') {
+            char sym[2] = { c, 0 };
+            int id = map_id(sym);
+            if (id >= 0) { ids[n++] = id; ids[n++] = PAD_ID; }
+            p++;
+            continue;
+        }
+        size_t len = strcspn(p, ".,!?;:");
+        if (len == 0) { p++; continue; }
+        char piece[2048];
+        if (len > sizeof piece - 1) len = sizeof piece - 1;
+        memcpy(piece, p, len);
+        piece[len] = 0;
+        p += len;
+        int plen = g2p_nano_clause(piece);
+        if (plen == NANO_G2P_FALLBACK) return NANO_G2P_FALLBACK;
+        if (plen > 0) append_nano_ids(g_nano_ph, ids, &n);
     }
     if (n > MAX_IDS - 1) n = MAX_IDS - 1;
     ids[n++] = EOS_ID;
@@ -674,10 +879,23 @@ int main(int argc, char **argv) {
         }
         else if (!strcmp(argv[i], "--pause-scale")) g_pause_scale = (float)atof(argv[i + 1]);
         else if (!strcmp(argv[i], "--native-punct")) g_native_punct = 1;
+        else if (!strcmp(argv[i], "--g2p")) {
+            if (!strcmp(argv[i + 1], "nano")) g_g2p_nano = 1;
+            else if (strcmp(argv[i + 1], "espeak")) {
+                fprintf(stderr, "{\"error\": \"unknown g2p %s\"}\n", argv[i + 1]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--g2p-oov-threshold"))
+            g_g2p_oov_threshold = (float)atof(argv[i + 1]);
     }
     if (!strcmp(engine, "nano")) g_engine_nano = 1;
     if (!strcmp(engine, "pq8")) g_engine_pq8 = 1;
     if (!strcmp(engine, "f32")) g_engine_f32 = 1;
+    if (g_g2p_nano && g_engine_nano) {
+        fprintf(stderr, "{\"error\": \"--g2p nano applies to int8/pq8/f32; --engine nano already uses the lexicon G2P\"}\n");
+        return 2;
+    }
     if (!rate) rate = g_engine_nano ? 24000 : 22050;
     /* The int8 (R7) engine has no per-call scale; it renders at a runtime
      * global whose native value is 1.08.  Apply the requested length scale as
@@ -686,8 +904,12 @@ int main(int argc, char **argv) {
     if (length_scale_given && !g_engine_nano && !g_engine_pq8 && !g_engine_f32) {
         snt_length_scale = 1.08f * g_length_scale;
     }
-    if (!model || (!g_engine_nano && (!g_espeak_bin || !g_espeak_data))) {
-        fprintf(stderr, "usage: %s --model <dir> --engine int8|pq8|nano|f32 [--espeak-bin <bin> --espeak-data <dir>] [--phonemes en|fr] [--rate 22050|24000] [--seed N] [--length-scale F]\n", argv[0]);
+    /* espeak stays mandatory for the espeak G2P; under --g2p nano it is an
+     * optional per-clause OOV fallback (absent = OOV words are swallowed,
+     * counted on the g2p stderr line). */
+    if (!model || (!g_engine_nano && !g_g2p_nano &&
+                   (!g_espeak_bin || !g_espeak_data))) {
+        fprintf(stderr, "usage: %s --model <dir> --engine int8|pq8|nano|f32 [--espeak-bin <bin> --espeak-data <dir>] [--phonemes en|fr] [--g2p espeak|nano] [--g2p-oov-threshold F] [--rate 22050|24000] [--seed N] [--length-scale F]\n", argv[0]);
         return 2;
     }
 
@@ -820,6 +1042,12 @@ int main(int argc, char **argv) {
         if (!fh) { fprintf(stderr, "{\"error\": \"cannot write %s\"}\n", output); fflush(stderr); continue; }
         write_header(fh, 0, (uint32_t)rate);
         sink.fh = fh; sink.n = 0;
+        if (g_g2p_nano) {
+            g_g2p_nano_clauses = 0;
+            g_g2p_espeak_clauses = 0;
+            g_g2p_oov_words = 0;
+            g_g2p_lex_words = 0;
+        }
 
         long total_ms = 0;
         int rc_all = 0;
@@ -834,14 +1062,22 @@ int main(int argc, char **argv) {
             } else {
                 int n_ids;
                 if (g_native_punct) {
-                    n_ids = text_to_ids_native(clauses[ci], ids);
+                    n_ids = g_g2p_nano
+                        ? text_to_ids_nano_native(clauses[ci], ids)
+                        : text_to_ids_native(clauses[ci], ids);
+                    if (n_ids == NANO_G2P_FALLBACK)
+                        n_ids = text_to_ids_native(clauses[ci], ids);
                 } else {
                     int pid = -1;
                     if (clause_punct[ci]) {
                         char sym[2] = { clause_punct[ci], 0 };
                         pid = map_id(sym);
                     }
-                    n_ids = text_to_ids(clauses[ci], ids, pid);
+                    n_ids = g_g2p_nano
+                        ? text_to_ids_nano(clauses[ci], ids, pid)
+                        : text_to_ids(clauses[ci], ids, pid);
+                    if (n_ids == NANO_G2P_FALLBACK)
+                        n_ids = text_to_ids(clauses[ci], ids, pid);
                 }
                 /* The piperlite voices embed fewer ids than the phoneme map
                  * carries, and an id they cannot embed fails the whole
@@ -910,8 +1146,9 @@ int main(int argc, char **argv) {
          * stdout protocol stays one path per line. Written and closed BEFORE
          * the path is printed, so the wrapper's "<wav>.done" marker (made from
          * that line) gates both files. Absence is the plugin's "no real
-         * timing" signal, so the int8 and nano engines and every failed run
-         * write nothing. See the format note at the top of this file. */
+         * timing" signal: int8/pq8/f32 fill word spans (int8 since the
+         * duration-readout patch), while the nano engine and every failed
+         * run write nothing. See the format note at the top of this file. */
         if (rc_all == 0 && n_words > 0) {
             char tpath[1100];
             int hop = g_engine_pq8 ? SNT_PIPERLITE_Q8_HOP
@@ -933,6 +1170,12 @@ int main(int argc, char **argv) {
 
         printf("%s\n", output);
         fflush(stdout);
+        if (g_g2p_nano) {
+            fprintf(stderr, "{\"g2p\": \"nano=%ld espeak_fb=%ld oov=%ld/%ld\"}\n",
+                    g_g2p_nano_clauses, g_g2p_espeak_clauses,
+                    g_g2p_oov_words, g_g2p_lex_words);
+            fflush(stderr);
+        }
         if (rc_all != 0) { fprintf(stderr, "{\"error\": \"synth rc %d\"}\n", rc_all); fflush(stderr); }
         (void)total_ms;
     }

@@ -14,6 +14,15 @@ let
         libadwaita = super.libadwaita.overrideAttrs (old: {
           doCheck = false;
         });
+        # ibus 1.5.33's Makefile installs gi/overrides/IBus.py from two
+        # sections that race under make -j: the loser hits "File exists"
+        # and the install fails. Serial install is deterministic. The
+        # race only bites on a cold CI nix store, where the whole
+        # alsa-plugins -> ffmpeg -> sdl3 -> zenity -> ibus chain rebuilds
+        # from source (armv7 outputs are not on the binary cache).
+        ibus = super.ibus.overrideAttrs (old: {
+          enableParallelInstalling = false;
+        });
       })
     ];
   };

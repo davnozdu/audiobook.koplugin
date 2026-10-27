@@ -30,12 +30,19 @@ GLIB_OUT=$(hdr glib.out)
 echo "headers: $GST_DEV / $GLIB_DEV"
 
 cd "$REPO"
+# Decoder-subset ffmpeg static libs (Tier 5b, in-process decode): built
+# once by build-ffmpeg-libs.sh into .ffinstall; auto-enabled when present.
+FFI="$HERE/.ffinstall"
+AV_FLAGS=""
+[ -f "$FFI/lib/libavformat.a" ] && AV_FLAGS="-DAUDIOOUT_WITH_LIBAV -I$FFI/include $FFI/lib/libavformat.a $FFI/lib/libavcodec.a $FFI/lib/libswresample.a $FFI/lib/libavutil.a"
+
 nix shell "nixpkgs#pkgsCross.armv7l-hf-multiplatform.stdenv.cc" -c \
     armv7l-unknown-linux-gnueabihf-gcc \
     -O2 -Wall -static-libgcc -nostdinc \
     -o "$OUT/audioout" \
     "$REPO/audioout.c" \
-    -ldl -lpthread \
+    $AV_FLAGS \
+    -ldl -lpthread -l:libm.so.6 \
     --sysroot="$SYSROOT" \
     -I"$SYSROOT/usr/include" \
     -I"$SYSROOT/usr/include/arm-linux-gnueabihf" \

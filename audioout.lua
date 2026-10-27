@@ -178,7 +178,14 @@ function AudioOut:play(path, opts)
 end
 
 function AudioOut:pause() return self:_command({ cmd = "pause" }) end
-function AudioOut:resume() return self:_command({ cmd = "resume" }) end
+-- resume with pos_ms (external mode) re-epochs the daemon's clock at that
+-- position instead of the legacy byte-derived rebaseline.
+function AudioOut:resume(pos_ms)
+    if pos_ms then
+        return self:_command({ cmd = "resume", pos_ms = pos_ms })
+    end
+    return self:_command({ cmd = "resume" })
+end
 function AudioOut:stop() return self:_command({ cmd = "stop" }) end
 -- play and flush may rebuild the pipeline, which takes seconds on ARM.
 function AudioOut:flush() return self:_command({ cmd = "flush" }, 8000) end
@@ -188,9 +195,33 @@ function AudioOut:release() return self:_command({ cmd = "release" }, 8000) end
 
 -- External stream mode (media path): an outside writer (ffmpeg) feeds the
 -- fifo; the daemon builds the pipeline and reports the probe clock.
-function AudioOut:externalStart(rate, channels)
+-- alsa_device selects the output PCM on ALSA devices (bluealsa). pos_ms and
+-- total_ms place the stream on the client's timeline (book position and
+-- length): the daemon's clock, status cap and completion latch all speak
+-- book positions from then on.
+function AudioOut:externalStart(rate, channels, alsa_device, pos_ms, total_ms, path)
     return self:_command({ cmd = "external", rate = rate or 44100,
-                           channels = channels or 2 }, 8000)
+                           channels = channels or 2, alsa_device = alsa_device,
+                           pos_ms = pos_ms, total_ms = total_ms,
+                           path = path }, 8000)
+end
+
+-- True when the running daemon was built with in-process decode (it then
+-- accepts compressed files directly in external mode). Cached.
+function AudioOut:hasDecoder()
+    if self._has_decoder == nil then
+        local st = self:status(400)
+        self._has_decoder = (st and st.decoder == 1) or false
+    end
+    return self._has_decoder
+end
+
+-- External mode: drop the old stream's bytes and re-epoch the clock at
+-- pos_ms. The caller respawns its feeder after this returns. total_ms
+-- updates the completion target.
+function AudioOut:seek(pos_ms, total_ms)
+    return self:_command({ cmd = "seek", pos_ms = pos_ms,
+                           total_ms = total_ms }, 8000)
 end
 
 function AudioOut:fifoPath()

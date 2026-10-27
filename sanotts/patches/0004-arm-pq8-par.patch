@@ -1,0 +1,302 @@
+# 0004-arm-pq8-par.patch -- pq8 decoder dual-core split via snt_par_run.
+#
+# Wraps the four decoder oc-loops (pre conv, upsample convtr, residual-bank
+# t1 and t2) in snt_par_run ranges split by output channel, with per-core
+# rowbuf scratch (rowbuf[2], arena 4N -> 8N) picked by snt_scratch_id().
+#
+# Bit-exactness: each oc row is computed entirely by one thread; within a
+# row the (ic,k) accumulation order is unchanged (the NEON kernels
+# parallelize only across disjoint t lanes), and integer addition cannot
+# drift.  sumf rows are per-oc disjoint, so the concurrent t2 accumulate is
+# safe; the fp32 branch-sum scaling, stage taps and the mix quant run AFTER
+# the last snt_par_run barrier on the main thread in the original serial
+# order, which preserves bit-exact audio and the .timing sidecar.
+#
+# SNT_THREADS env selects threading at runtime (unset = fully serial, the
+# worker thread is never created).  Gates: dev/snt-ab.sh --ids --cross
+# byte identity for serial-vs-pristine and SNT_THREADS=2-vs-1.
+#
+# Guard (package-for-kobo.sh): grep -q "snt_par_run" src/snt_piperlite_q8.c
+# Applied: patch -p1 from inside mcu/.
+diff -ruN a/src/snt_piperlite_q8.c b/src/snt_piperlite_q8.c
+--- a/src/snt_piperlite_q8.c	2026-10-19 00:09:53.508632833 +0200
++++ b/src/snt_piperlite_q8.c	2026-10-19 00:09:53.510417598 +0200
+@@ -22,6 +22,11 @@
+  * fly.
+  */
+ #include "snt_piperlite_q8.h"
++#include "snt_port.h"
++
++/* Not in snt_port.h: an extern convention shared with snt_tts.c/snt_nano.c,
++ * defined by the linked port TU (0 main thread, 1 worker). */
++extern int snt_scratch_id(void);
+ 
+ #include <math.h>
+ #include <string.h>
+@@ -334,13 +339,126 @@
+     if (!m || frames <= 0) return 0;
+     S = plq_plane_elems(m, frames);
+     N = (long)PLQ_HOP * frames;
+-    /* sumf (4S) + rowbuf (4N) + 4 int16 planes (2S each) + slack */
+-    main_bytes = 4 * S + 4 * N + 8 * S + 64;
++    /* sumf (4S) + 2 per-core rowbufs (2*4N) + 4 int16 planes (2S each) + slack */
++    main_bytes = 4 * S + 8 * N + 8 * S + 64;
+     /* post filter reuses the arena as 4 fp32 planes of pf_ch*N */
+     pf_bytes = m->pf_channels > 0 ? 16L * m->pf_channels * N + 64 : 0;
+     return (size_t)(main_bytes > pf_bytes ? main_bytes : pf_bytes);
+ }
+ 
++/* ---- parallel oc-loops ----------------------------------------------------
++ * Every split below is by output channel: plane rows and sumf rows are
++ * disjoint per oc, rowbuf is per-core scratch picked by snt_scratch_id(),
++ * and the integer conv kernels are order-free, so the 2-thread split cannot
++ * change any integer result.  The fp32 branch-sum scaling, stage taps and
++ * the mix quant stay AFTER the last snt_par_run barrier on the main thread
++ * in the original serial order -- that is what preserves bit-exact output
++ * (and the .timing sidecar) under the split. */
++typedef struct {
++    const snt_piperlite_q8_model *m;
++    const int16_t *in;
++    int16_t *out;
++    int32_t **rowbuf;
++    float s_in, s_out;
++    const float *b;
++    int T;
++} plq_pre_ctx;
++
++static void plq_pre_range(int lo, int hi, void *v) {
++    plq_pre_ctx *c = (plq_pre_ctx *)v;
++    int32_t *rb = c->rowbuf[snt_scratch_id()];
++    int oc, t;
++    for (oc = lo; oc < hi; oc++) {
++        float mm = c->s_in * c->m->wscale[0][oc] / c->s_out;
++        float cc = c->b[oc] / c->s_out;
++        int16_t *orow = c->out + (long)oc * c->T;
++        q16_conv1d_row(rb, c->in, c->m->wq[0] + (long)oc * c->m->in_ch * 7,
++                       c->m->in_ch, c->T, 7, 1);
++        for (t = 0; t < c->T; t++)
++            orow[t] = sat12((float)rb[t] * mm + cc);
++    }
++}
++
++typedef struct {
++    const snt_piperlite_q8_model *m;
++    const int16_t *in;
++    int16_t *out;
++    int32_t **rowbuf;
++    float s_in, s_out;
++    const float *b;
++    int T, out_ch, in_ch, stride, pad, k, L, slot;
++} plq_up_ctx;
++
++static void plq_up_range(int lo, int hi, void *v) {
++    plq_up_ctx *c = (plq_up_ctx *)v;
++    int32_t *rb = c->rowbuf[snt_scratch_id()];
++    int oc, t;
++    for (oc = lo; oc < hi; oc++) {
++        float mm = c->s_in * c->m->wscale[c->slot][oc] / c->s_out;
++        float cc = c->b[oc] / c->s_out;
++        int16_t *orow = c->out + (long)oc * c->L;
++        q16_convtr1d_row(rb, c->in, c->m->wq[c->slot], oc, c->in_ch,
++                         c->out_ch, c->T, c->k, c->stride, c->pad, c->L);
++        for (t = 0; t < c->L; t++)
++            orow[t] = sat12((float)rb[t] * mm + cc);
++    }
++}
++
++typedef struct {
++    const snt_piperlite_q8_model *m;
++    const int16_t *in;
++    const int16_t *res;
++    int16_t *out;
++    int32_t **rowbuf;
++    float s_t1, s_y1, s_res;
++    int L, out_ch, k, dil, slot;
++} plq_t1_ctx;
++
++static void plq_t1_range(int lo, int hi, void *v) {
++    plq_t1_ctx *c = (plq_t1_ctx *)v;
++    int32_t *rb = c->rowbuf[snt_scratch_id()];
++    int oc, t;
++    for (oc = lo; oc < hi; oc++) {
++        float mm = c->s_t1 * c->m->wscale[c->slot][oc] / c->s_y1;
++        float cc = c->m->f32[c->slot + 1][oc] / c->s_y1;
++        float mr = c->s_res / c->s_y1;
++        const int16_t *xrow = c->res + (long)oc * c->L;
++        int16_t *yrow = c->out + (long)oc * c->L;
++        q16_conv1d_row(rb, c->in, c->m->wq[c->slot] + (long)oc * c->out_ch * c->k,
++                       c->out_ch, c->L, c->k, c->dil);
++        for (t = 0; t < c->L; t++)
++            yrow[t] = sat12((float)rb[t] * mm + cc +
++                            (float)xrow[t] * mr);
++    }
++}
++
++typedef struct {
++    const snt_piperlite_q8_model *m;
++    const int16_t *in;
++    const int16_t *res;
++    float *sumf;
++    int32_t **rowbuf;
++    float s_t2, s_y1;
++    int L, out_ch, k, dil, slot;
++} plq_t2_ctx;
++
++static void plq_t2_range(int lo, int hi, void *v) {
++    plq_t2_ctx *c = (plq_t2_ctx *)v;
++    int32_t *rb = c->rowbuf[snt_scratch_id()];
++    int oc, t;
++    for (oc = lo; oc < hi; oc++) {
++        float mm = c->s_t2 * c->m->wscale[c->slot][oc];
++        float cc = c->m->f32[c->slot + 1][oc];
++        const int16_t *yrow = c->res + (long)oc * c->L;
++        float *srow = c->sumf + (long)oc * c->L;
++        q16_conv1d_row(rb, c->in, c->m->wq[c->slot] + (long)oc * c->out_ch * c->k,
++                       c->out_ch, c->L, c->k, c->dil);
++        for (t = 0; t < c->L; t++)
++            srow[t] += (float)rb[t] * mm + cc +
++                       (float)yrow[t] * c->s_y1;
++    }
++}
++
+ /* ---- forward ------------------------------------------------------------ */
+ 
+ static void plq_tap(const snt_piperlite_q8_model *m, const char *name,
+@@ -367,7 +485,7 @@
+ 
+     long S, N;
+     float *sumf;
+-    int32_t *rowbuf;
++    int32_t *rowbuf[2];
+     int16_t *pl[4];
+     unsigned char *base;
+     int cur, s, i;
+@@ -381,9 +499,10 @@
+     base = (unsigned char *)arena;
+     base += (16 - ((uintptr_t)base & 15)) & 15;
+     sumf = (float *)(void *)base;
+-    rowbuf = (int32_t *)(void *)(base + 4 * S);
++    rowbuf[0] = (int32_t *)(void *)(base + 4 * S);
++    rowbuf[1] = (int32_t *)(void *)(base + 4 * S + 4 * N);
+     for (i = 0; i < 4; i++)
+-        pl[i] = (int16_t *)(void *)(base + 4 * S + 4 * N + (long)i * 2 * S);
++        pl[i] = (int16_t *)(void *)(base + 4 * S + 8 * N + (long)i * 2 * S);
+ 
+     /* quantize z into the 12-bit lane */
+     {
+@@ -396,16 +515,12 @@
+     {
+         float s_z = PLQ_A12(m->act[0]), s_pre = PLQ_A12(m->act[1]);
+         const float *b = m->f32[1];
+-        int oc, T = frames;
+-        for (oc = 0; oc < m->c0; oc++) {
+-            float mm = s_z * m->wscale[0][oc] / s_pre;
+-            float cc = b[oc] / s_pre;
+-            int16_t *orow = pl[1] + (long)oc * T;
+-            int t;
+-            q16_conv1d_row(rowbuf, pl[0], m->wq[0] + (long)oc * m->in_ch * 7,
+-                           m->in_ch, T, 7, 1);
+-            for (t = 0; t < T; t++)
+-                orow[t] = sat12((float)rowbuf[t] * mm + cc);
++        int T = frames;
++        {
++            plq_pre_ctx pc;
++            pc.m = m; pc.in = pl[0]; pc.out = pl[1]; pc.rowbuf = rowbuf;
++            pc.s_in = s_z; pc.s_out = s_pre; pc.b = b; pc.T = T;
++            snt_par_run(plq_pre_range, m->c0, &pc);
+         }
+         plq_tap(m, "pre", pl[1], s_pre, m->c0, T, sumf);
+     }
+@@ -427,21 +542,20 @@
+             int p_a = (cur + 1) % 4, p_up = (cur + 2) % 4;
+             int p_t = (cur + 3) % 4, p_y = cur;
+             int L = (T - 1) * up_s[s] - 2 * up_p[s] + up_k[s];
+-            int oc, br;
++            int br;
+             long n = (long)out_c[s] * L;
+ 
+             /* act (0.1) then upsample */
+             q_leaky_requant(pl[p_a], pl[cur], (long)in_c[s] * T, 0.1f,
+                             s_cur, s_a, 0);
+-            for (oc = 0; oc < out_c[s]; oc++) {
+-                float mm = s_a * m->wscale[wbase][oc] / s_up;
+-                float cc = m->f32[wbase + 1][oc] / s_up;
+-                int16_t *orow = pl[p_up] + (long)oc * L;
+-                int t;
+-                q16_convtr1d_row(rowbuf, pl[p_a], m->wq[wbase], oc, in_c[s],
+-                                 out_c[s], T, up_k[s], up_s[s], up_p[s], L);
+-                for (t = 0; t < L; t++)
+-                    orow[t] = sat12((float)rowbuf[t] * mm + cc);
++            {
++                plq_up_ctx uc;
++                uc.m = m; uc.in = pl[p_a]; uc.out = pl[p_up]; uc.rowbuf = rowbuf;
++                uc.s_in = s_a; uc.s_out = s_up; uc.b = m->f32[wbase + 1];
++                uc.T = T; uc.out_ch = out_c[s]; uc.in_ch = in_c[s];
++                uc.stride = up_s[s]; uc.pad = up_p[s]; uc.k = up_k[s];
++                uc.L = L; uc.slot = wbase;
++                snt_par_run(plq_up_range, out_c[s], &uc);
+             }
+             plq_tap(m, up_name[s], pl[p_up], s_up, out_c[s], L, sumf);
+ 
+@@ -453,33 +567,24 @@
+                 float s_y1 = PLQ_A12(m->act[abase + 3 + br * 3]);
+                 float s_t2 = PLQ_A12(m->act[abase + 4 + br * 3]);
+                 q_leaky_requant(pl[p_t], pl[p_up], n, 0.1f, s_up, s_t1, 0);
+-                for (oc = 0; oc < out_c[s]; oc++) {
+-                    float mm = s_t1 * m->wscale[slot][oc] / s_y1;
+-                    float cc = m->f32[slot + 1][oc] / s_y1;
+-                    float mr = s_up / s_y1;
+-                    const int16_t *xrow = pl[p_up] + (long)oc * L;
+-                    int16_t *yrow = pl[p_y] + (long)oc * L;
+-                    int t;
+-                    q16_conv1d_row(rowbuf, pl[p_t],
+-                                   m->wq[slot] + (long)oc * out_c[s] * bk[br],
+-                                   out_c[s], L, bk[br], bd1[br]);
+-                    for (t = 0; t < L; t++)
+-                        yrow[t] = sat12((float)rowbuf[t] * mm + cc +
+-                                        (float)xrow[t] * mr);
++                {
++                    plq_t1_ctx tc;
++                    tc.m = m; tc.in = pl[p_t]; tc.res = pl[p_up]; tc.out = pl[p_y];
++                    tc.rowbuf = rowbuf;
++                    tc.s_t1 = s_t1; tc.s_y1 = s_y1; tc.s_res = s_up;
++                    tc.L = L; tc.out_ch = out_c[s]; tc.k = bk[br]; tc.dil = bd1[br];
++                    tc.slot = slot;
++                    snt_par_run(plq_t1_range, out_c[s], &tc);
+                 }
+                 q_leaky_requant(pl[p_t], pl[p_y], n, 0.1f, s_y1, s_t2, 0);
+-                for (oc = 0; oc < out_c[s]; oc++) {
+-                    float mm = s_t2 * m->wscale[slot + 2][oc];
+-                    float cc = m->f32[slot + 3][oc];
+-                    const int16_t *yrow = pl[p_y] + (long)oc * L;
+-                    float *srow = sumf + (long)oc * L;
+-                    int t;
+-                    q16_conv1d_row(rowbuf, pl[p_t],
+-                                   m->wq[slot + 2] + (long)oc * out_c[s] * bk[br],
+-                                   out_c[s], L, bk[br], bd2[br]);
+-                    for (t = 0; t < L; t++)
+-                        srow[t] += (float)rowbuf[t] * mm + cc +
+-                                   (float)yrow[t] * s_y1;
++                {
++                    plq_t2_ctx xc;
++                    xc.m = m; xc.in = pl[p_t]; xc.res = pl[p_y]; xc.sumf = sumf;
++                    xc.rowbuf = rowbuf;
++                    xc.s_t2 = s_t2; xc.s_y1 = s_y1;
++                    xc.L = L; xc.out_ch = out_c[s]; xc.k = bk[br]; xc.dil = bd2[br];
++                    xc.slot = slot + 2;
++                    snt_par_run(plq_t2_range, out_c[s], &xc);
+                 }
+             }
+             for (j = 0; j < n; j++) sumf[j] *= (1.0f / 3.0f);
+@@ -505,9 +610,9 @@
+             int t;
+             q_leaky_requant(pl[p_t], pl[cur], (long)m->c3 * T, 0.01f,
+                             s_cur, s_ap, 1);
+-            q16_conv1d_row(rowbuf, pl[p_t], m->wq[44], m->c3, T, 7, 1);
++            q16_conv1d_row(rowbuf[0], pl[p_t], m->wq[44], m->c3, T, 7, 1);
+             for (t = 0; t < T; t++)
+-                audio_out[t] = (float)rowbuf[t] * mm + cc;
++                audio_out[t] = (float)rowbuf[0][t] * mm + cc;
+             if (m->stage_cb)
+                 m->stage_cb("pre_tanh", audio_out, 1, T, m->stage_user);
+             for (j = 0; j < N; j++) audio_out[j] = tanhf(audio_out[j]);
