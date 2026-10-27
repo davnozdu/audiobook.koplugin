@@ -286,7 +286,10 @@ function MyTTS.askDialog(plugin)
         input_hint = "Например: почему героиня злится?",
         buttons = {{
             { text = "Отмена", id = "close", callback = function() UIManager:close(input) end },
-            -- 🎤 (voice question, GigaAM in MyTTS) comes with MyTTS's voice input: MyTTS.askByVoice is ready for it.
+            { text = "🎤 Голосом", callback = function()
+                UIManager:close(input)
+                MyTTS.askByVoice(plugin)
+            end },
             { text = "Спросить", is_enter_default = true, callback = function()
                 local q = input:getInputText()
                 UIManager:close(input)
@@ -312,7 +315,7 @@ function MyTTS.askByVoice(plugin)
     if not MyTTS.send(extras) then return false end
     MyTTS._recap_seen = nil
     -- After listening (a few seconds) the answer is being made: the window follows it.
-    require("ui/uimanager"):scheduleIn(1.5, function() MyTTS.showWindow(plugin, "Вопрос о книге") end)
+    require("ui/uimanager"):scheduleIn(1.5, function() MyTTS.showWindow(plugin, "Вопрос о книге", nil, 40) end)
     return true
 end
 
@@ -325,7 +328,7 @@ end
 --- second while the retelling is made or read, and stops asking when the window closes or the speech ends.
 --- [on_done]: called once the retelling has been made and read (or failed), the window then closes by itself —
 --- reading after a break goes on with the book.
-function MyTTS.showWindow(plugin, label, on_done)
+function MyTTS.showWindow(plugin, label, on_done, wait_polls)
     local UIManager = require("ui/uimanager")
     local TextViewer = require("ui/widget/textviewer")
     local Screen = require("device").screen
@@ -422,7 +425,8 @@ function MyTTS.showWindow(plugin, label, on_done)
             end
         end
         -- Paused: nothing changes until a button here or in the notification, so rarely.
-        if (s or on_done) and (polls < 5 or (s and (s.running == 1 or s.speaking == 1))) then
+        -- [wait_polls]: a voice question is still being said and recognised in MyTTS's window — keep asking longer.
+        if (s or on_done) and (polls < (wait_polls or 5) or (s and (s.running == 1 or s.speaking == 1))) then
             UIManager:scheduleIn((s and s.paused == 1 and s.running == 0) and 5 or 1, function() refresh(false) end)
         end
     end
