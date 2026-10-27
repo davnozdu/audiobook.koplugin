@@ -27,6 +27,16 @@ local MyTTS = {
     },
 }
 
+--- At most [limit] bytes of valid text for JNI's NewStringUTF: never a letter cut in half (that can abort KOReader), no
+--- 4-byte characters (emoji are not modified UTF-8).
+local function jniText(text, limit)
+    text = text:gsub("[\240-\247][\128-\191][\128-\191][\128-\191]", "")
+    if #text <= limit then return text end
+    text = text:sub(1, limit)
+    return (text:gsub("[\192-\255][\128-\191]*$", ""))
+end
+MyTTS.jniText = jniText
+
 local function androidModule()
     local ok, android = pcall(require, "android")
     if ok and android and android.app and android.jni then return android end
@@ -82,7 +92,7 @@ end
 function MyTTS.extras(plugin, kind)
     local extras = {}
     local ok, text = pcall(function() return plugin:getCurrentPageText() end)
-    if ok and type(text) == "string" and text ~= "" then extras.text = text:sub(1, MyTTS.MAX_TEXT) end
+    if ok and type(text) == "string" and text ~= "" then extras.text = jniText(text, MyTTS.MAX_TEXT) end
     local doc = plugin.ui and plugin.ui.document
     if doc and doc.file then extras.path = doc.file end
     if kind then extras.kind = kind end
@@ -92,7 +102,7 @@ end
 --- MyTTS's SmartBookProvider: ContentResolver.call(method) → table of the Bundle's values, nil when MyTTS cannot be
 --- reached (not installed, or not visible to KOReader). «state» returns title/book/stage/text/error and
 --- running/speaking/paused (0/1); «pause», «resume», «stop», «replay» control the speech.
-function MyTTS.call(method)
+function MyTTS.call(method, arg)
     local android = androidModule()
     if not android then return nil end
     local result
@@ -117,7 +127,7 @@ function MyTTS.call(method)
             local call = env[0].GetMethodID(env, resolver_class, "call",
                 "(Landroid/net/Uri;Ljava/lang/String;Ljava/lang/String;Landroid/os/Bundle;)Landroid/os/Bundle;")
             local null = ffi.cast("void*", nil)
-            local bundle = env[0].CallObjectMethod(env, resolver, call, uri, jstr(method), null, null)
+            local bundle = env[0].CallObjectMethod(env, resolver, call, uri, jstr(method), arg and jstr(arg) or null, null)
             if failed() or bundle == nil or tonumber(ffi.cast("intptr_t", bundle)) == 0 then
                 env[0].PopLocalFrame(env, nil)
                 return
@@ -146,6 +156,28 @@ function MyTTS.call(method)
     end)
     if not ok then logger.warn("MyTTS: call", method, "failed:", err); return nil end
     return result
+end
+
+--- The pages about to be read aloud go to MyTTS, which prepares them by its LLM in the background (stress, ё,
+--- punctuation, voices); the sentences then sent for synthesis are taken from that. Only while reading aloud, once per
+--- page; deferred so a page turn is not slowed.
+function MyTTS.ahead(plugin)
+    if not MyTTS.available() then return end
+    local UIManager = require("ui/uimanager")
+    UIManager:scheduleIn(0.5, function()
+        local sc = plugin.sync_controller
+        if not (sc and sc.isPlaying and sc:isPlaying()) then return end
+        local ok, current = pcall(plugin.getCurrentPageText, plugin)
+        if not ok or type(current) ~= "string" or current == "" then return end
+        local ok_next, following = pcall(plugin.peekNextPageText, plugin)
+        following = (ok_next and type(following) == "string") and following or ""
+        -- A paragraph going on over the page is kept whole, so its sentences are found in it.
+        local glue = current:match("[%.!%?…»\"]%s*$") and "\n" or " "
+        local text = jniText(current .. glue .. following, 12000)
+        if text == MyTTS._last_ahead then return end
+        MyTTS._last_ahead = text
+        MyTTS.call("prepare", text)
+    end)
 end
 
 --- Pause / resume / stop / replay of the retelling's speech: through the provider, else through the command activity.

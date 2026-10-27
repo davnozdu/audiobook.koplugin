@@ -1437,6 +1437,8 @@ end
 function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self._init_ok then self:_showInitError(); return end
     if not self:_audioOutputReady() then return end
+    -- MyTTS: this page and the next go to its LLM as soon as reading has started.
+    if MyTTSBridge and UIManager then UIManager:scheduleIn(1, function() MyTTSBridge.ahead(self) end) end
     local page_text = text or self:getCurrentPageText()
     if not page_text or page_text == "" then
         UIManager:show(InfoMessage:new{
@@ -4010,6 +4012,8 @@ end
 function Audiobook:onPageUpdate(cur_page, prev_page)
     if self._peeking_adjacent_page then return end
     self:_handlePageTurnFollow()
+    -- MyTTS: the next pages prepared by its LLM while this one is read.
+    if MyTTSBridge then MyTTSBridge.ahead(self) end
     -- TTS overlay boxes are screen coordinates.  A page turn must drop them
     -- or the underline is stamped at the old x,y on the new page.  Do not
     -- restart TTS here (that loop is why this used to be overlay-only).
