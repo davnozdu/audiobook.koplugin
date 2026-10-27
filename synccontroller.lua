@@ -143,6 +143,8 @@ function SyncController:start(text, opts)
     self.state = self.STATE.LOADING
     logger.dbg("SyncController: Starting read-along with", #text, "characters")
     self:_rememberReadingPosition()
+    -- Sentence indices are per page: what was heard before belongs to another page.
+    self._page_gen = (self._page_gen or 0) + 1
 
     -- Log rotation baseline for diagnostics
     local Screen = require("device").screen
@@ -1321,6 +1323,7 @@ page into a single BT stream, eliminating every A2DP re-negotiation gap.
 @param sentence table Sentence object
 --]]
 function SyncController:beginSentencePlayback(sentence)
+    self:_noteHeard(sentence)
     self._tts_heard_audio = true
     self._tts_session_warm = true
     self:_disarmTtsWaitUi()
@@ -2818,6 +2821,8 @@ function SyncController:highlightCurrentSentence(sentence)
     end
 
     self.current_sentence_index = sentence.index
+    -- Screen off / another app in front: nothing to see, no repaint; the sentence is painted on return.
+    if self.plugin and self.plugin._app_in_background then return end
     self.highlight_manager:highlightSentence(sentence, self.parsed_data)
 end
 
@@ -3464,6 +3469,50 @@ end
 --[[--
 Jump to previous sentence.
 --]]
+--- When each sentence of this page began to sound (for «back N seconds»).
+function SyncController:_noteHeard(sentence)
+    if not sentence or not sentence.index then return end
+    self._heard = self._heard or {}
+    local last = self._heard[#self._heard]
+    if last and last.idx == sentence.index and last.gen == self._page_gen then return end
+    table.insert(self._heard, { idx = sentence.index, t = time.to_s(UIManager:getTime()), gen = self._page_gen })
+    while #self._heard > 60 do table.remove(self._heard, 1) end
+end
+
+--- Back about [seconds] of listening: to the sentence that was sounding then (a headset «previous» press — the
+--- listener missed something).  A pause does not count: each sentence counts at most 30 s.  Before this page's
+--- first sentence it goes to that sentence.
+function SyncController:rewind(seconds)
+    if not self.parsed_data or self.state == self.STATE.STOPPED then return end
+    local heard = self._heard or {}
+    local now = time.to_s(UIManager:getTime())
+    local target, back, later = nil, 0, now
+    for i = #heard, 1, -1 do
+        local h = heard[i]
+        if h.gen ~= self._page_gen then break end
+        back = back + math.min(30, math.max(0, later - h.t))
+        target = h.idx
+        later = h.t
+        if back >= seconds then break end
+    end
+    target = target or self.reading_sentence_idx or 1
+    logger.warn("SyncController: rewind", seconds, "s to sentence", target)
+    self:_cleanConcatFiles()
+    pcall(function() self.tts_engine:stop() end)
+    self.highlight_manager:clearHighlights()
+    self._highest_dispatched_idx = nil
+    self.reading_sentence_idx = math.max(0, target - 1)
+    -- Paused: resume from there.
+    if self.state == self.STATE.PAUSED then
+        self.state = self.STATE.PLAYING
+        self._user_paused = false
+        self:_ttsMarkPlay()
+        if self.playback_bar then self.playback_bar:updatePlayState(true) end
+        pcall(function() self:_applyBarVisibility() end)
+    end
+    self:readNextSentence()
+end
+
 function SyncController:prevSentence()
     if not self.parsed_data or self.state == self.STATE.STOPPED then
         return

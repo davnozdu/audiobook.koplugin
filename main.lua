@@ -1137,6 +1137,11 @@ function Audiobook:addToMainMenu(menu_items)
                                 end,
                             },
                             {
+                                text = _("Until the end of the chapter"),
+                                checked_func = function() return self._sleep_chapter_end ~= nil end,
+                                callback = function() self:_startChapterSleep() end,
+                            },
+                            {
                                 text = _("15 min"),
                                 checked_func = function()
                                     return self:getSetting("sleep_timer_minutes", 0) == 15
@@ -3010,6 +3015,7 @@ end
 
 function Audiobook:_cancelSleepTimer()
     self._sleep_timer_end = nil
+    self._sleep_chapter_end = nil
     self._sleep_timer_minutes = nil
     if self._sleep_timer_check then
         UIManager:unschedule(self._sleep_timer_check)
@@ -3966,6 +3972,8 @@ end
 --- and bring the page back to the sentence being heard.
 function Audiobook:_afterInterruptionResume()
     local ms = self.media_sync
+    -- The words cut by the call are heard again: back 3 s (read-aloud restarts its sentence by itself).
+    if ms and ms.state == ms.STATE.PLAYING then pcall(function() ms:skipBack(3) end) end
     if not (ms and ms.overlay_mode and ms.state == ms.STATE.PLAYING) then return end
     self._readaloud_browsing_away = false
     self:_hideReturnToReadAloudButton()
@@ -4004,14 +4012,17 @@ function Audiobook:onMediaNext()
     return true
 end
 
+--- Headset «previous» (MyTTS fork): back 15 s of listening by default — what the listener missed — instead of the
+--- previous sentence / chapter.  Setting «headset_prev»: 15, 30, or "item" (the old behaviour).
 function Audiobook:onMediaPrev()
     if not self._init_ok then return true end
+    local back = self:getSetting("headset_prev", 15)
     if self.media_sync and self.media_sync.state ~= "stopped" then
-        self.media_sync:prevChapter()
+        if back == "item" then self.media_sync:prevChapter() else self.media_sync:skipBack(back) end
         return true
     end
     if self.sync_controller and (self.sync_controller:isPlaying() or self.sync_controller:isPaused()) then
-        self.sync_controller:prevSentence()
+        if back == "item" then self.sync_controller:prevSentence() else self.sync_controller:rewind(back) end
     end
     return true
 end
@@ -4025,6 +4036,7 @@ function Audiobook:onPosUpdate(pos, refresh_type)
     -- Screen-coordinate TTS underlines would otherwise stay glued in place.
     if self._peeking_adjacent_page then return end
     if type(pos) ~= "number" then return end
+    self:_checkChapterSleep()
     local prev = self._tts_hl_pos
     self._tts_hl_pos = pos
     if not prev then return end
@@ -4040,6 +4052,8 @@ end
 function Audiobook:onPageUpdate(cur_page, prev_page)
     if self._peeking_adjacent_page then return end
     self:_handlePageTurnFollow()
+    self:_armAutoReturn()
+    self:_checkChapterSleep()
     -- MyTTS: the next pages prepared by its LLM while this one is read.
     if MyTTSBridge then MyTTSBridge.ahead(self) end
     -- TTS overlay boxes are screen coordinates.  A page turn must drop them
@@ -4118,6 +4132,57 @@ function Audiobook:_hideReturnToReadAloudButton()
         end)
         self._return_to_readaloud_widget = nil
     end
+end
+
+--- Browsed away from the page being read and left it there: back to it after a minute of no page turns, while
+--- playing (MyTTS fork, setting «auto_return», on).  A paused reading is left where the listener put it.
+function Audiobook:_armAutoReturn()
+    if not self:getSetting("auto_return", true) then return end
+    if self._auto_return_fn then UIManager:unschedule(self._auto_return_fn) end
+    self._auto_return_fn = function()
+        self._auto_return_fn = nil
+        if self._app_in_background then return end
+        local ms, sc = self.media_sync, self.sync_controller
+        if ms and ms.overlay_mode and ms.state == ms.STATE.PLAYING and self._readaloud_browsing_away then
+            logger.warn("Audiobook: auto return to the sentence being heard")
+            self._readaloud_browsing_away = false
+            self:_hideReturnToReadAloudButton()
+            pcall(function() ms:refocusToCurrentSentence() end)
+        elseif sc and sc:isPlaying() and sc._reading_xp and self.ui and self.ui.document then
+            local ok, away = pcall(function()
+                return self.ui.document:getPageFromXPointer(sc._reading_xp) ~= self.ui:getCurrentPage()
+            end)
+            if ok and away then
+                logger.warn("Audiobook: auto return to the page being read")
+                pcall(function() sc:refocusToReading() end)
+            end
+        end
+    end
+    UIManager:scheduleIn(60, self._auto_return_fn)
+end
+
+--- Sleep timer «end of chapter»: reading stops once the page of the next chapter is reached.
+function Audiobook:_startChapterSleep()
+    self:_cancelSleepTimer()
+    local ui = self.ui
+    if not (ui and ui.toc and ui.getCurrentPage) then return end
+    local page = ui:getCurrentPage()
+    local ok, nxt = pcall(function() return ui.toc:getNextChapter(page) end)
+    if not ok or not nxt or nxt <= page then
+        nxt = ui.document and ui.document.getPageCount and ui.document:getPageCount() + 1
+    end
+    self._sleep_chapter_end = nxt
+    UIManager:show(InfoMessage:new{ text = _("Sleep timer: until the end of the chapter"), timeout = 2 })
+end
+
+function Audiobook:_checkChapterSleep()
+    local stop_at = self._sleep_chapter_end
+    if not stop_at or not (self.ui and self.ui.getCurrentPage) then return end
+    if self.ui:getCurrentPage() < stop_at then return end
+    self._sleep_chapter_end = nil
+    self:stopReadAlong()
+    UIManager:show(InfoMessage:new{ text = _("Sleep timer: end of chapter, playback stopped."), timeout = 3 })
+    if self:getSetting("sleep_timer_suspend_device", false) then pcall(function() Device:suspend() end) end
 end
 
 function Audiobook:_handlePageTurnFollow()
@@ -4365,6 +4430,11 @@ function Audiobook:onResume()
         "browsing_away", self._readaloud_browsing_away)
     if Device:isAndroid() and self._app_in_background then
         self._app_in_background = nil
+        -- Highlights are not painted in the background: paint the sentence being read now.
+        local sc = self.sync_controller
+        if sc and sc.current_sentence and (sc:isPlaying() or sc:isPaused()) then
+            UIManager:scheduleIn(0.5, function() pcall(sc.highlightCurrentSentence, sc, sc.current_sentence) end)
+        end
         -- Coming back from the dialer/another app relays out and repaints
         -- the page; those page events are not the user browsing away.
         if Time then

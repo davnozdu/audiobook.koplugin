@@ -333,6 +333,31 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         help_text = _("Height and font of the player bar at the bottom of the page. Takes effect the next time reading aloud starts."),
     })
 
+    -- Headset «previous» and the return to the page being read (MyTTS fork).
+    table.insert(menu, {
+        text_func = function()
+            local v = plugin:getSetting("headset_prev", 15)
+            return T(_("Headset «previous»: %1"), v == "item" and _("previous sentence") or T(_("back %1 s"), v))
+        end,
+        sub_item_table = (function()
+            local items = {}
+            for _i, v in ipairs({15, 30, "item"}) do
+                table.insert(items, {
+                    text = v == "item" and _("previous sentence (chapter of an audiobook)") or T(_("back %1 s"), v),
+                    checked_func = function() return plugin:getSetting("headset_prev", 15) == v end,
+                    callback = function() plugin:setSetting("headset_prev", v) end,
+                })
+            end
+            return items
+        end)(),
+    })
+    table.insert(menu, {
+        text = _("Return to the page being read after a minute"),
+        checked_func = function() return plugin:getSetting("auto_return", true) end,
+        callback = function() plugin:setSetting("auto_return", not plugin:getSetting("auto_return", true)) end,
+        help_text = _("Browsed away while reading aloud and left it there: after a minute without page turns the book goes back to the page being read. Not while paused."),
+    })
+
     -- Volume submenu
     table.insert(menu, {
         text_func = function()
@@ -2319,6 +2344,12 @@ function MenuBuilder.showTtsSettingsPicker(plugin)
             if plugin._showSleepTimerDialog then
                 plugin:_showSleepTimerDialog()
             end
+        end,
+    })
+    table.insert(items, {
+        text = _("Sleep timer: until the end of the chapter"),
+        callback = function()
+            if plugin._startChapterSleep then plugin:_startChapterSleep() end
         end,
     })
     -- Tier 2 audio output daemon (Kobo MTK Bluetooth only).  Owns the
