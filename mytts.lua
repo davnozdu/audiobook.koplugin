@@ -400,7 +400,10 @@ function MyTTS.showWindow(plugin, label, on_done, wait_polls)
             viewer.text = text
             viewer.title = (s and s.title ~= "" and s.title) or label
             viewer.buttons_table = buttons(s)
+            -- The answer grows while it is written: the place the listener scrolled to stays (reinit starts at the top).
+            local ok_r, low = pcall(function() return (viewer.scroll_widget.text_widget:getVisibleHeightRatios()) end)
             viewer:reinit()
+            if ok_r and low and low > 0 then pcall(function() viewer.scroll_widget:scrollToRatio(low) end) end
         end
         -- Asked only while something is made or read; a closed window or a finished retelling costs nothing.
         -- The first seconds always: the new retelling may not have started yet when the window opens.
