@@ -377,6 +377,25 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         help_text = _("When the book was not listened to for this long, MyTTS first retells what happened before (one cloud request), then reading goes on. Only for books MyTTS knows («Умная книга»)."),
     })
     table.insert(menu, {
+        text_func = function()
+            return plugin:getSetting("headset_next", "announce") == "announce"
+                and _("Headset «next»: time left in the chapter") or _("Headset «next»: next sentence")
+        end,
+        sub_item_table = {
+            {
+                text = _("Say how much is left of the chapter"),
+                checked_func = function() return plugin:getSetting("headset_next", "announce") == "announce" end,
+                callback = function() plugin:setSetting("headset_next", "announce") end,
+            },
+            {
+                text = _("next sentence (chapter of an audiobook)"),
+                checked_func = function() return plugin:getSetting("headset_next", "announce") == "item" end,
+                callback = function() plugin:setSetting("headset_next", "item") end,
+            },
+        },
+        help_text = _("A double press on most headsets. The book pauses, the engine says how long the chapter still lasts, then reading goes on."),
+    })
+    table.insert(menu, {
         text = _("Return to the page being read after a minute"),
         checked_func = function() return plugin:getSetting("auto_return", true) end,
         callback = function() plugin:setSetting("auto_return", not plugin:getSetting("auto_return", true)) end,

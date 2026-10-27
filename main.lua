@@ -4005,8 +4005,11 @@ function Audiobook:onMediaStop()
     return true
 end
 
+--- Headset «next» (a double press on most headsets; MyTTS fork): says how much is left of the chapter, then reading
+--- goes on.  Setting «headset_next»: "announce" (default) or "item" (the old next sentence / chapter).
 function Audiobook:onMediaNext()
     if not self._init_ok then return true end
+    if self:getSetting("headset_next", "announce") == "announce" and self:announceChapterLeft() then return true end
     if self.media_sync and self.media_sync.state ~= "stopped" then
         self.media_sync:nextChapter()
         return true
@@ -4014,6 +4017,81 @@ function Audiobook:onMediaNext()
     if self.sync_controller and (self.sync_controller:isPlaying() or self.sync_controller:isPaused()) then
         self.sync_controller:nextSentence()
     end
+    return true
+end
+
+--- Seconds of listening left in the chapter: read-aloud from the text left and the speed measured; an audiobook from
+--- its chapter marks (a book with a synchronized text from the text left, at an average pace).
+function Audiobook:chapterSecondsLeft()
+    local sc, ms = self.sync_controller, self.media_sync
+    if sc and (sc:isPlaying() or sc:isPaused()) then
+        local chars = self:_charsToChapterEnd()
+        if not chars then return nil end
+        return chars / ((sc.charsPerSecond and sc:charsPerSecond()) or 14)
+    end
+    if ms and ms.state ~= "stopped" and ms.media_engine then
+        if ms.overlay_mode then
+            local chars = self:_charsToChapterEnd()
+            return chars and chars / 14 or nil
+        end
+        local pos = ms.media_engine:getPosition() or 0
+        for _i, ch in ipairs(ms.chapters or {}) do
+            if (tonumber(ch.start_time) or 0) > pos + 1 then return ch.start_time - pos end
+        end
+        local ok, total = pcall(function() return ms.media_engine:getDuration() end)
+        if ok and total and total > pos then return total - pos end
+    end
+    return nil
+end
+
+local function ru_plural(n, one, few, many)
+    local d, h = n % 10, n % 100
+    if d == 1 and h ~= 11 then return one end
+    if d >= 2 and d <= 4 and (h < 12 or h > 14) then return few end
+    return many
+end
+
+--- «До конца главы примерно двенадцать минут» through the TTS engine, the book paused meanwhile and going on after
+--- (read-aloud from the start of its sentence).  False when it cannot be said (no Android engine, nothing known).
+function Audiobook:announceChapterLeft()
+    if not Device:isAndroid() or not self.tts_engine or not self.tts_engine._ensureAndroidTts then return false end
+    local secs = self:chapterSecondsLeft()
+    if not secs then return false end
+    local atts = self.tts_engine:_ensureAndroidTts()
+    if not (atts and atts.engineSpeak) then return false end
+    local minutes = math.floor(secs / 60 + 0.5)
+    local text
+    if minutes < 1 then
+        text = "До конца главы меньше минуты."
+    elseif minutes < 60 then
+        text = "До конца главы примерно " .. minutes .. " " .. ru_plural(minutes, "минута", "минуты", "минут") .. "."
+    else
+        local h, m = math.floor(minutes / 60), minutes % 60
+        text = "До конца главы примерно " .. h .. " " .. ru_plural(h, "час", "часа", "часов")
+            .. (m > 0 and (" " .. m .. " " .. ru_plural(m, "минута", "минуты", "минут")) or "") .. "."
+    end
+    local sc, ms = self.sync_controller, self.media_sync
+    local was_playing = (sc and sc:isPlaying()) or (ms and ms.state == "playing")
+    if was_playing then self:pauseReadAlong() end
+    logger.warn("Audiobook: announce", text)
+    -- After the pause has reached the engine (it stops the book's own requests), the answer.
+    UIManager:scheduleIn(0.3, function()
+        if not atts:engineSpeak(text) then
+            UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
+            if was_playing then self:resumeReadAlong() end
+            return
+        end
+        local waited = 0
+        local function check()
+            waited = waited + 0.4
+            if waited < 1.2 or (atts:engineSpeaking() and waited < 20) then
+                UIManager:scheduleIn(0.4, check)
+            elseif was_playing then
+                self:resumeReadAlong()
+            end
+        end
+        UIManager:scheduleIn(0.4, check)
+    end)
     return true
 end
 

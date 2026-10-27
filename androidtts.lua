@@ -626,6 +626,66 @@ function AndroidTts:engineStop()
     end)
 end
 
+--- Say [text] through the engine itself (TextToSpeech.speak, QUEUE_FLUSH): a short spoken answer while the book is
+--- paused («до конца главы…»).  The engine plays it; nothing is written to a file.  JNI on the helper's field, so the
+--- prebuilt .dex needs no new method.
+function AndroidTts:engineSpeak(text)
+    if not self._initialized or not self._helper_ref or not text or text == "" then return false end
+    local android = self._android
+    local ok_all, spoke = pcall(function()
+        return android.jni:context(android.app.activity.vm, function(jni)
+            local env = jni.env
+            env[0].PushLocalFrame(env, 16)
+            local result = false
+            local cls = env[0].GetObjectClass(env, self._helper_ref)
+            local fid = env[0].GetFieldID(env, cls, "tts", "Landroid/speech/tts/TextToSpeech;")
+            if not checkException(env) and fid ~= nil then
+                local tts = env[0].GetObjectField(env, self._helper_ref, fid)
+                if tts ~= nil and tonumber(ffi.cast("intptr_t", tts)) ~= 0 then
+                    local tts_cls = env[0].GetObjectClass(env, tts)
+                    local speak = getMethod(env, tts_cls, "speak",
+                        "(Ljava/lang/CharSequence;ILandroid/os/Bundle;Ljava/lang/String;)I")
+                    if speak then
+                        local null = ffi.cast("void*", nil)
+                        local r = env[0].CallIntMethod(env, tts, speak, env[0].NewStringUTF(env, text), ffi.cast("int", 0),
+                            null, env[0].NewStringUTF(env, "audiobook-announce"))
+                        result = not checkException(env) and tonumber(r) == 0
+                    end
+                end
+            end
+            env[0].PopLocalFrame(env, nil)
+            return result
+        end)
+    end)
+    return ok_all and spoke == true
+end
+
+--- True while the engine is still saying something (TextToSpeech.isSpeaking).
+function AndroidTts:engineSpeaking()
+    if not self._initialized or not self._helper_ref then return false end
+    local android = self._android
+    local ok_all, speaking = pcall(function()
+        return android.jni:context(android.app.activity.vm, function(jni)
+            local env = jni.env
+            env[0].PushLocalFrame(env, 8)
+            local result = false
+            local cls = env[0].GetObjectClass(env, self._helper_ref)
+            local fid = env[0].GetFieldID(env, cls, "tts", "Landroid/speech/tts/TextToSpeech;")
+            if not checkException(env) and fid ~= nil then
+                local tts = env[0].GetObjectField(env, self._helper_ref, fid)
+                if tts ~= nil and tonumber(ffi.cast("intptr_t", tts)) ~= 0 then
+                    local m = getMethod(env, env[0].GetObjectClass(env, tts), "isSpeaking", "()Z")
+                    if m then result = env[0].CallBooleanMethod(env, tts, m) ~= 0 end
+                    checkException(env)
+                end
+            end
+            env[0].PopLocalFrame(env, nil)
+            return result
+        end)
+    end)
+    return ok_all and speaking == true
+end
+
 --[[--
 Resume audio playback.
 --]]
