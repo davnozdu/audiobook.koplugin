@@ -158,25 +158,74 @@ function MyTTS.call(method, arg)
     return result
 end
 
---- The pages about to be read aloud go to MyTTS, which prepares them by its LLM in the background (stress, ё,
---- punctuation, voices); the sentences then sent for synthesis are taken from that. Only while reading aloud, once per
---- page; deferred so a page turn is not slowed.
+--- How far ahead the text goes: MyTTS keeps to its own «Упреждение» limit within it.
+MyTTS.AHEAD_PAGES = 12
+MyTTS.AHEAD_CHARS = 40000
+
+--- The text from the top of this page about [AHEAD_PAGES] pages on (CRE books: by position, without turning pages);
+--- otherwise this page and the next.
+local function aheadText(plugin)
+    local doc = plugin.ui and plugin.ui.document
+    if not doc then return nil end
+    if plugin.ui.rolling and doc.getTextFromXPointers and doc.getXPointer and doc.getPageXPointer then
+        local ok, text = pcall(function()
+            local from = doc:getXPointer()
+            local page = doc:getCurrentPage()
+            local last = math.min(page + MyTTS.AHEAD_PAGES, doc:getPageCount())
+            local to = last > page and doc:getPageXPointer(last) or nil
+            if not to then return nil end
+            return doc:getTextFromXPointers(from, to)
+        end)
+        if ok and type(text) == "string" and #text > 200 then return text end
+    end
+    local ok, current = pcall(plugin.getCurrentPageText, plugin)
+    if not ok or type(current) ~= "string" or current == "" then return nil end
+    local ok_next, following = pcall(plugin.peekNextPageText, plugin)
+    following = (ok_next and type(following) == "string") and following or ""
+    -- A paragraph going on over the page is kept whole, so its sentences are found in it.
+    local glue = current:match("[%.!%?…»\"]%s*$") and "\n" or " "
+    return current .. glue .. following
+end
+
+--- The text about to be read aloud goes to MyTTS with the exact sentences this plugin will send: MyTTS prepares the
+--- paragraphs by its LLM (stress, ё, punctuation, voices) and makes their audio ahead into its RAM cache, so each sentence
+--- plays at once, also through a dropped connection while the buffer lasts. Only while reading aloud, on start and on
+--- page turns; deferred so a page turn is not slowed. MyTTS skips what it already has.
 function MyTTS.ahead(plugin)
     if not MyTTS.available() then return end
     local UIManager = require("ui/uimanager")
     UIManager:scheduleIn(0.5, function()
         local sc = plugin.sync_controller
         if not (sc and sc.isPlaying and sc:isPlaying()) then return end
-        local ok, current = pcall(plugin.getCurrentPageText, plugin)
-        if not ok or type(current) ~= "string" or current == "" then return end
-        local ok_next, following = pcall(plugin.peekNextPageText, plugin)
-        following = (ok_next and type(following) == "string") and following or ""
-        -- A paragraph going on over the page is kept whole, so its sentences are found in it.
-        local glue = current:match("[%.!%?…»\"]%s*$") and "\n" or " "
-        local text = jniText(current .. glue .. following, 12000)
+        local text = aheadText(plugin)
+        if not text then return end
+        text = jniText(text, MyTTS.AHEAD_CHARS)
         if text == MyTTS._last_ahead then return end
         MyTTS._last_ahead = text
-        MyTTS.call("prepare", text)
+        -- The sentences as this plugin parses them, from the one being read on (the ones before are already heard).
+        local sentences = {}
+        local parser = plugin.text_parser
+        local ok_p, parsed = pcall(function() return parser and parser:parse(text) end)
+        if ok_p and parsed and parsed.sentences then
+            local current = sc.parsed_data and sc.parsed_data.sentences and sc.reading_sentence_idx
+                and sc.parsed_data.sentences[sc.reading_sentence_idx]
+            local from = 1
+            if current and current.text then
+                for i, sentence in ipairs(parsed.sentences) do
+                    if sentence.text == current.text then from = i; break end
+                end
+            end
+            for i = from, #parsed.sentences do
+                local t = parsed.sentences[i].text
+                if t and t ~= "" then table.insert(sentences, jniText(t, 4000)) end
+            end
+        end
+        local ok_j, json = pcall(require, "json")
+        if not ok_j or not json or not json.encode then
+            logger.warn("MyTTS: no json module, ahead text not sent")
+            return
+        end
+        MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
     end)
 end
 
