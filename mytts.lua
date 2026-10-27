@@ -212,7 +212,6 @@ function MyTTS.ahead(plugin, tries)
         if not text then alog("mytts-ahead no text"); return end
         text = jniText(text, MyTTS.AHEAD_CHARS)
         if text == MyTTS._last_ahead then return end
-        MyTTS._last_ahead = text
         -- The sentences as this plugin parses them, from the one being read on (the ones before are already heard).
         local sentences = {}
         local parser = plugin.text_parser
@@ -237,6 +236,8 @@ function MyTTS.ahead(plugin, tries)
             return
         end
         local sent = MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
+        -- Not reached (MyTTS restarting after an update): the same page is sent again on the next call.
+        if sent then MyTTS._last_ahead = text end
         alog("mytts-ahead chars", #text, "sentences", #sentences, sent and "ok" or "unreachable")
     end)
 end
@@ -287,13 +288,14 @@ function MyTTS.showWindow(plugin, label)
             {
                 { text = "Продолжить чтение", callback = function()
                     MyTTS.control("stop")
+                    open = false -- closed here, not through close_callback: no refresh may show it again
                     UIManager:close(viewer)
                     -- The book's own reading goes on (or starts from this page).
                     local sc = plugin.sync_controller
                     if sc and sc.isPaused and sc:isPaused() then pcall(plugin.resumeReadAlong, plugin)
                     elseif not (sc and sc.isPlaying and sc:isPlaying()) then pcall(plugin.startReadAlong, plugin) end
                 end },
-                { text = "Закрыть", callback = function() UIManager:close(viewer) end },
+                { text = "Закрыть", callback = function() open = false; UIManager:close(viewer) end },
             },
         }
     end
@@ -324,7 +326,10 @@ function MyTTS.showWindow(plugin, label)
         -- Asked only while something is made or read; a closed window or a finished retelling costs nothing.
         -- The first seconds always: the new retelling may not have started yet when the window opens.
         polls = polls + 1
-        if s and (polls < 5 or s.running == 1 or s.speaking == 1) then UIManager:scheduleIn(1, function() refresh(false) end) end
+        -- Paused: nothing changes until a button here or in the notification, so rarely.
+        if s and (polls < 5 or s.running == 1 or s.speaking == 1) then
+            UIManager:scheduleIn((s.paused == 1 and s.running == 0) and 5 or 1, function() refresh(false) end)
+        end
     end
     UIManager:scheduleIn(1, function() refresh(false) end)
 end
