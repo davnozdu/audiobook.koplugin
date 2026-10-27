@@ -930,8 +930,6 @@ function AudiobookPlayer:onMinimize()
 end
 
 function AudiobookPlayer:_restore()
-    -- TTS read-along has no full-screen player: the mini bar is the whole UI.
-    if self.tts_mode then return end
     self._minimized = false
     self._scrubber_dragging = false
     self._scrubber_drag_pct = nil
@@ -2033,11 +2031,10 @@ function AudiobookPlayer:handleEvent(event)
                         self:onRefocus()
                         return true
                     end
-                    -- TTS has no full-screen player: a tap on empty bar space
-                    -- does nothing.  Audiobook / music expand to the player.
-                    if not self.tts_mode then
-                        self:_restore()
-                    end
+                    -- A tap on empty bar space opens the full player, for read-aloud
+                    -- too (MyTTS fork: upstream 0.6.5 left TTS with the bar alone;
+                    -- its gear and speed buttons stay).
+                    self:_restore()
                     return true
                 end
                 -- Gesture outside mini bar (or non-tap on bar) -> deliver
