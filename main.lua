@@ -305,6 +305,22 @@ function Audiobook:_registerDictButtons()
             end)
         end,
     })
+
+    -- MyTTS «Умная книга»: one button, the retellings in a small dialog (five rows would crowd the popup).
+    self.ui.dictionary:addToDictButtons({
+        id = "audiobook_mytts",
+        text = _("Smart book (MyTTS)"),
+        font_bold = false,
+        conditional = true,
+        show_func = function(dict_popup)
+            return plugin._init_ok and MyTTSBridge ~= nil and MyTTSBridge.available()
+                and not dict_popup.is_wiki and not dict_popup.is_wiki_fullpage
+        end,
+        callback = function(dict_popup)
+            UIManager:close(dict_popup)
+            UIManager:scheduleIn(0.3, function() plugin:showMyTTSDialog() end)
+        end,
+    })
 end
 
 function Audiobook:_initSubmodules()
@@ -494,8 +510,14 @@ function Audiobook:onDispatcherRegisterActions()
         title = _("Stop Read-Along"),
         reader = true,
     })
-    -- MyTTS «Умная книга»: a gesture for each retelling.
+    -- MyTTS «Умная книга»: a gesture for the dialog and one for each retelling.
     if MyTTSBridge then
+        Dispatcher:registerAction("audiobook_mytts_dialog", {
+            category = "none",
+            event = "AudiobookMyTTSDialog",
+            title = "MyTTS: " .. "Умная книга",
+            reader = true,
+        })
         for _i, kind in ipairs(MyTTSBridge.KINDS) do
             Dispatcher:registerAction("audiobook_mytts_" .. kind[1]:lower(), {
                 category = "none",
@@ -506,6 +528,33 @@ function Audiobook:onDispatcherRegisterActions()
             })
         end
     end
+end
+
+--- The retellings in a small dialog (from the dictionary popup or a gesture), two per row.
+function Audiobook:showMyTTSDialog()
+    if not MyTTSBridge then return true end
+    local ButtonDialog = require("ui/widget/buttondialog")
+    local dialog
+    local rows, row = {}, {}
+    for _i, kind in ipairs(MyTTSBridge.KINDS) do
+        table.insert(row, {
+            text = kind[2],
+            callback = function()
+                UIManager:close(dialog)
+                self:onAudiobookMyTTS(kind[1])
+            end,
+        })
+        if #row == 2 then table.insert(rows, row); row = {} end
+    end
+    if #row > 0 then table.insert(rows, row) end
+    table.insert(rows, {{ text = _("Close"), callback = function() UIManager:close(dialog) end }})
+    dialog = ButtonDialog:new{ title = _("Smart book (MyTTS)"), buttons = rows }
+    UIManager:show(dialog)
+    return true
+end
+
+function Audiobook:onAudiobookMyTTSDialog()
+    return self:showMyTTSDialog()
 end
 
 function Audiobook:onAudiobookMyTTS(kind)
@@ -1359,6 +1408,17 @@ function Audiobook:onDictButtonsReady(dict_popup, buttons)
             end)
         end,
     }})
+    if MyTTSBridge and MyTTSBridge.available() then
+        table.insert(buttons, {{
+            id = "audiobook_mytts",
+            text = _("Smart book (MyTTS)"),
+            font_bold = false,
+            callback = function()
+                UIManager:close(dict_popup)
+                UIManager:scheduleIn(0.3, function() plugin:showMyTTSDialog() end)
+            end,
+        }})
+    end
 end
 
 function Audiobook:startReadAlong(text, start_pos, anchor_xp)
