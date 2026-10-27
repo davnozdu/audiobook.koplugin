@@ -314,6 +314,25 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         })
     end
 
+    -- Size of the bottom bar (MyTTS fork): bigger buttons on a phone. Takes effect when reading starts next.
+    table.insert(menu, {
+        text_func = function()
+            return T(_("Bottom bar size: %1×"), plugin:getSetting("mini_bar_scale", 2))
+        end,
+        sub_item_table = (function()
+            local items = {}
+            for _i, v in ipairs({1, 1.5, 2, 2.5, 3}) do
+                table.insert(items, {
+                    text = tostring(v) .. "×",
+                    checked_func = function() return plugin:getSetting("mini_bar_scale", 2) == v end,
+                    callback = function() plugin:setSetting("mini_bar_scale", v) end,
+                })
+            end
+            return items
+        end)(),
+        help_text = _("Height and font of the player bar at the bottom of the page. Takes effect the next time reading aloud starts."),
+    })
+
     -- Volume submenu
     table.insert(menu, {
         text_func = function()

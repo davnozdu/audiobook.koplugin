@@ -12,7 +12,7 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=3; plural=(n==1) ? 0 : (n>=2 && n<=4) ? 1 : 2;\n"
 
-#: _meta.lua:18 main.lua:638
+#: _meta.lua:18 main.lua:672
 msgid "Audiobook Read-Along"
 msgstr "Audiokniha – čtení nahlas"
 
@@ -118,11 +118,11 @@ msgstr "http://192.168.1.100:13378"
 msgid "Enter the URL of your Audiobookshelf server."
 msgstr "Zadejte URL vašeho serveru Audiobookshelf."
 
-#: absbrowse.lua:253 absbrowse.lua:331 absbrowse.lua:814 audiobookplayer.lua:1270 btui.lua:345 main.lua:1553 main.lua:1709 main.lua:2409
+#: absbrowse.lua:253 absbrowse.lua:331 absbrowse.lua:814 audiobookplayer.lua:1274 btui.lua:345 main.lua:1590 main.lua:1747 main.lua:2447
 msgid "Cancel"
 msgstr "Zrušit"
 
-#: absbrowse.lua:259 menubuilder.lua:1690 menubuilder.lua:1725
+#: absbrowse.lua:259 menubuilder.lua:1709 menubuilder.lua:1744
 msgid "Save"
 msgstr "Uložit"
 
@@ -166,7 +166,7 @@ msgstr "Přihlášení proběhlo úspěšně."
 msgid "Login failed: "
 msgstr "Přihlášení selhalo: "
 
-#: absbrowse.lua:374 absbrowse.lua:430 absbrowse.lua:557 absbrowse.lua:756 absbrowse.lua:1192 absbrowse.lua:1361 absbrowse.lua:1582 menubuilder.lua:1201
+#: absbrowse.lua:374 absbrowse.lua:430 absbrowse.lua:557 absbrowse.lua:756 absbrowse.lua:1192 absbrowse.lua:1361 absbrowse.lua:1582 menubuilder.lua:1220
 msgid "unknown error"
 msgstr "neznámá chyba"
 
@@ -270,7 +270,7 @@ msgstr "← Zpět do knihovny"
 msgid "Search: %1 (%2)"
 msgstr "Hledání: %1 (%2)"
 
-#: absbrowse.lua:961 main.lua:1708
+#: absbrowse.lua:961 main.lua:1746
 msgid "Play"
 msgstr "Přehrát"
 
@@ -492,31 +492,31 @@ msgstr "Klient není dostupný."
 msgid "BT"
 msgstr "BT"
 
-#: audiobookplayer.lua:278 audiobookplayer.lua:778 audiobookplayer.lua:1332 audiobookplayer.lua:1717 mediasync.lua:2681 mediasync.lua:2689 synccontroller.lua:2038
+#: audiobookplayer.lua:278 audiobookplayer.lua:784 audiobookplayer.lua:1336 audiobookplayer.lua:1721 mediasync.lua:2681 mediasync.lua:2689 synccontroller.lua:2038
 msgid "Audiobook"
 msgstr "Audiokniha"
 
-#: audiobookplayer.lua:965 mediasync.lua:3127 mediasync.lua:3226 mediasync.lua:3238 mediasync.lua:3340
+#: audiobookplayer.lua:969 mediasync.lua:3127 mediasync.lua:3226 mediasync.lua:3238 mediasync.lua:3340
 msgid "Could not open chapter list."
 msgstr "Nepodařilo se otevřít seznam kapitol."
 
-#: audiobookplayer.lua:1061
+#: audiobookplayer.lua:1065
 msgid "Playback speed"
 msgstr "Rychlost přehrávání"
 
-#: audiobookplayer.lua:1102 main.lua:550 mediasync.lua:3195 menubuilder.lua:1926
+#: audiobookplayer.lua:1106 main.lua:584 mediasync.lua:3195 menubuilder.lua:1945
 msgid "Close"
 msgstr "Zavřít"
 
-#: audiobookplayer.lua:1242
+#: audiobookplayer.lua:1246
 msgid "%1 h %2 min %3 s"
 msgstr "%1 h %2 min %3 s"
 
-#: audiobookplayer.lua:1244
+#: audiobookplayer.lua:1248
 msgid "%1 min %2 s"
 msgstr "%1 min %2 s"
 
-#: audiobookplayer.lua:1269
+#: audiobookplayer.lua:1273
 msgid ""
 "Sleep timer active.\n"
 "Time remaining: %1\n"
@@ -528,39 +528,39 @@ msgstr ""
 "\n"
 "Zrušit časovač?"
 
-#: audiobookplayer.lua:1271
+#: audiobookplayer.lua:1275
 msgid "Keep"
 msgstr "Ponechat"
 
-#: audiobookplayer.lua:1293 main.lua:1093 main.lua:2889 menubuilder.lua:2298
+#: audiobookplayer.lua:1297 main.lua:1127 main.lua:2927 menubuilder.lua:2317
 msgid "Sleep timer"
 msgstr "Časovač vypnutí"
 
-#: audiobookplayer.lua:1294
+#: audiobookplayer.lua:1298
 msgid "Select minutes."
 msgstr "Vyberte minuty."
 
-#: audiobookplayer.lua:1300 main.lua:1213 main.lua:2899 main.lua:2944
+#: audiobookplayer.lua:1304 main.lua:1247 main.lua:2937 main.lua:2982
 msgid "Set"
 msgstr "Nastavit"
 
-#: audiobookplayer.lua:1710
+#: audiobookplayer.lua:1714
 msgid "Return to read-aloud"
 msgstr "Zpět ke čtení nahlas"
 
-#: audiobookplayer.lua:1759 menubuilder.lua:43 synccontroller.lua:3048
+#: audiobookplayer.lua:1763 menubuilder.lua:43 synccontroller.lua:3048
 msgid "System TTS"
 msgstr "Systémové TTS"
 
-#: audiobookplayer.lua:1760
+#: audiobookplayer.lua:1764
 msgid "Native voice"
 msgstr ""
 
-#: audiobookplayer.lua:1810
+#: audiobookplayer.lua:1814
 msgid "Speed"
 msgstr ""
 
-#: audiobookplayer.lua:1812 menubuilder.lua:2392
+#: audiobookplayer.lua:1816 menubuilder.lua:2411
 msgid "Volume"
 msgstr "Hlasitost"
 
@@ -642,7 +642,7 @@ msgstr ""
 msgid "Restoring Bluetooth connection…"
 msgstr "Obnovuji Bluetooth připojení…"
 
-#: btui.lua:24 main.lua:1096
+#: btui.lua:24 main.lua:1130
 msgid "Off"
 msgstr "Vyp."
 
@@ -1022,47 +1022,47 @@ msgstr "Neznámý hlas MBROLA."
 msgid "Invert (best for e-ink)"
 msgstr "Inverze (nejlepší pro e-ink)"
 
-#: highlightmanager.lua:1302 main.lua:978 menubuilder.lua:897
+#: highlightmanager.lua:1302 main.lua:1012 menubuilder.lua:916
 msgid "Underline"
 msgstr "Podtržení"
 
-#: highlightmanager.lua:1303 main.lua:979
+#: highlightmanager.lua:1303 main.lua:1013
 msgid "Box"
 msgstr "Rámeček"
 
-#: highlightmanager.lua:1304 main.lua:977 main.lua:982
+#: highlightmanager.lua:1304 main.lua:1011 main.lua:1016
 msgid "Background"
 msgstr "Pozadí"
 
-#: main.lua:186 main.lua:254 main.lua:1368
+#: main.lua:207 main.lua:288 main.lua:1402
 msgid "Read aloud from here"
 msgstr "Číst nahlas odsud"
 
-#: main.lua:214 main.lua:290 main.lua:1398
+#: main.lua:235 main.lua:324 main.lua:1432
 msgid "Play aligned audiobook from here"
 msgstr "Přehrát zarovnanou audioknihu odsud"
 
-#: main.lua:312 main.lua:551 main.lua:583 main.lua:1414
+#: main.lua:252 main.lua:346 main.lua:585 main.lua:617 main.lua:1448
 msgid "Smart book (MyTTS)"
 msgstr ""
 
-#: main.lua:504
+#: main.lua:538
 msgid "Toggle Read-Along"
 msgstr "Zapnout/vypnout čtení"
 
-#: main.lua:510
+#: main.lua:544
 msgid "Stop Read-Along"
 msgstr "Zastavit čtení"
 
-#: main.lua:563
+#: main.lua:597
 msgid "MyTTS is not installed or the page has no text."
 msgstr ""
 
-#: main.lua:584
+#: main.lua:618
 msgid "Retellings of this book by MyTTS: what happened before, the previous chapter, this chapter, who is who, how it ends. MyTTS reads them aloud; the book's text goes to the cloud LLM chosen in MyTTS."
 msgstr ""
 
-#: main.lua:595
+#: main.lua:629
 msgid ""
 "Audiobook plugin failed to initialize.\n"
 "\n"
@@ -1070,19 +1070,19 @@ msgstr ""
 "Plugin „Audiokniha – čtení nahlas“ se nepodařilo inicializovat.\n"
 "\n"
 
-#: main.lua:608
+#: main.lua:642
 msgid "Audiobook Read-Along (error)"
 msgstr "Audiokniha – čtení nahlas (chyba)"
 
-#: main.lua:612
+#: main.lua:646
 msgid "Plugin failed to load"
 msgstr "Plugin se nepodařilo načíst"
 
-#: main.lua:619 main.lua:1249
+#: main.lua:653 main.lua:1283
 msgid "Generate bug report"
 msgstr "Vygenerovat hlášení o chybě"
 
-#: main.lua:625
+#: main.lua:659
 msgid ""
 "Bug report module failed to load.\n"
 "\n"
@@ -1092,35 +1092,35 @@ msgstr ""
 "\n"
 "Spusťte místo toho generate-report.sh přes SSH nebo emulátor terminálu."
 
-#: main.lua:643
+#: main.lua:677
 msgid "Start Text-to-Speech from current page"
 msgstr "Spustit čtení nahlas od aktuální stránky"
 
-#: main.lua:653 main.lua:1853 main.lua:1871
+#: main.lua:687 main.lua:1891 main.lua:1909
 msgid "Play aligned/enriched audiobook"
 msgstr "Přehrát zarovnanou/obohacenou audioknihu"
 
-#: main.lua:664
+#: main.lua:698
 msgid "Start music playlist"
 msgstr "Spustit hudební playlist"
 
-#: main.lua:674
+#: main.lua:708
 msgid "Play unaligned audiobook"
 msgstr "Přehrát nezarovnanou audioknihu"
 
-#: main.lua:689
+#: main.lua:723
 msgid "Audiobookshelf"
 msgstr "Audiobookshelf"
 
-#: main.lua:699
+#: main.lua:733
 msgid "Bluetooth settings"
 msgstr "Nastavení Bluetooth"
 
-#: main.lua:710
+#: main.lua:744
 msgid "Headset media buttons"
 msgstr "Mediální tlačítka sluchátek"
 
-#: main.lua:722
+#: main.lua:756
 msgid ""
 "When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control playback. The connected device will also show playback status.\n"
 "\n"
@@ -1130,359 +1130,359 @@ msgstr ""
 "\n"
 "Na Kindle se kliknutí na stopce čtou z Lab126 LIPC (playermgr / audiomgrd), protože tento firmware nemá evdev uzel AVRCP."
 
-#: main.lua:725
+#: main.lua:759
 msgid "Reconnect BT on track change"
 msgstr "Znovu připojit BT při změně stopy"
 
-#: main.lua:735
+#: main.lua:769
 msgid "Kindle + AirPods: when enabled, each playlist/Storyteller audio-file boundary runs a Bluetooth Disconnect→Connect cycle before the next file starts (~5–10 s gap). Off by default; the plugin still keeps a silent A2DP keepalive across the gap. Turn this on only if audio goes silent at chapter/chunk transitions."
 msgstr "Kindle + AirPods: je-li zapnuto, na každém rozhraní zvukových souborů playlistu/Storyteller se před dalším souborem provede cyklus Bluetooth odpojit→připojit (mezera ~5–10 s). Ve výchozím stavu vypnuto; plugin i tak přes mezeru udržuje tichý A2DP keepalive. Zapněte, jen pokud zvuk utichne při přechodu mezi kapitolami/úseky."
 
-#: main.lua:741
+#: main.lua:775
 msgid "Disconnect alert: off"
 msgstr "Upozornění na odpojení: vyp."
 
-#: main.lua:743
+#: main.lua:777
 msgid "Disconnect alert: %1s"
 msgstr "Upozornění na odpojení: %1 s"
 
-#: main.lua:754
+#: main.lua:788
 msgid "Voice settings"
 msgstr "Nastavení hlasu"
 
-#: main.lua:755
+#: main.lua:789
 msgid "Voice settings (N/A)"
 msgstr "Nastavení hlasu (N/A)"
 
-#: main.lua:758
+#: main.lua:792
 msgid "Voice settings (Piper - %1)"
 msgstr "Nastavení hlasu (Piper - %1)"
 
-#: main.lua:765
+#: main.lua:799
 msgid "Voice settings (%1)"
 msgstr "Nastavení hlasu (%1)"
 
-#: main.lua:774
+#: main.lua:808
 msgid "General settings"
 msgstr "Obecná nastavení"
 
-#: main.lua:777
+#: main.lua:811
 msgid "Session recorder settings"
 msgstr "Nastavení nahrávání relace"
 
-#: main.lua:782
+#: main.lua:816
 msgid "Video FPS: %1"
 msgstr "Video FPS: %1"
 
-#: main.lua:789
+#: main.lua:823
 msgid "Frames per second for the video capture. Higher values use more CPU and storage."
 msgstr "Počet snímků za sekundu při záznamu videa. Vyšší hodnoty více zatěžují CPU a úložiště."
 
-#: main.lua:794
+#: main.lua:828
 msgid "Video scale: %1"
 msgstr "Měřítko videa: %1"
 
-#: main.lua:802
+#: main.lua:836
 msgid "Resolution scaling for the video. Lower values reduce file size and CPU load."
 msgstr "Změna rozlišení videa. Nižší hodnoty zmenšují soubor a zatížení CPU."
 
-#: main.lua:807
+#: main.lua:841
 msgid "Video quality: %1"
 msgstr "Kvalita videa: %1"
 
-#: main.lua:816
+#: main.lua:850
 msgid "MJPEG quality (2 = best, 31 = worst). Lower values produce larger files."
 msgstr "Kvalita MJPEG (2 = nejlepší, 31 = nejhorší). Nižší hodnoty dávají větší soubory."
 
-#: main.lua:819
+#: main.lua:853
 msgid "Include audio in video file"
 msgstr "Zahrnout zvuk do videosouboru"
 
-#: main.lua:829
+#: main.lua:863
 msgid "When enabled, the recorder tries to mux ALSA audio into the video file in real time. This requires a working ALSA capture device and fails on most e-ink devices, so it is disabled."
 msgstr "Je-li zapnuto, nahrávač se snaží v reálném čase přidávat ALSA zvuk do videosouboru. Vyžaduje to funkční ALSA záznamové zařízení a na většině e-ink zařízení to selže, proto je to vypnuto."
 
-#: main.lua:832
+#: main.lua:866
 msgid "Save separate audio files"
 msgstr "Ukládat samostatné zvukové soubory"
 
-#: main.lua:839
+#: main.lua:873
 msgid "When enabled, TTS and playback audio are saved as WAV files in the audio/ folder. When disabled, only the video file is kept."
 msgstr "Je-li zapnuto, TTS a přehrávaný zvuk se ukládají jako WAV soubory do složky audio/. Je-li vypnuto, ponechá se pouze videosoubor."
 
-#: main.lua:844
+#: main.lua:878
 msgid "Screenshot max interval: %1s"
 msgstr "Max. interval snímků obrazovky: %1 s"
 
-#: main.lua:852
+#: main.lua:886
 msgid "Maximum time between forced screenshot frames when the screen is static."
 msgstr "Maximální doba mezi vynucenými snímky, když se obrazovka nemění."
 
-#: main.lua:859
+#: main.lua:893
 msgid "Audio output (PocketBook): N/A"
 msgstr "Zvukový výstup (PocketBook): N/A"
 
-#: main.lua:864
+#: main.lua:898
 msgid "PocketBook pipeline"
 msgstr "PocketBook pipeline"
 
-#: main.lua:865
+#: main.lua:899
 msgid "Auto"
 msgstr "Auto"
 
-#: main.lua:867
+#: main.lua:901
 msgid "Audio output (PocketBook): %1"
 msgstr "Zvukový výstup (PocketBook): %1"
 
-#: main.lua:875
+#: main.lua:909
 msgid "PocketBook devices route audio through different paths depending on firmware. The default works on most devices. Change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."
 msgstr "Zařízení PocketBook směrují zvuk různými cestami podle firmwaru. Výchozí volba funguje na většině zařízení. Měňte ji jen tehdy, pokud neslyšíte zvuk, zvuk je zkreslený nebo hraje 2–3× rychleji (známý problém na PB631). Každá možnost v podmenu má vlastní nápovědu, co zkusit."
 
-#: main.lua:878
+#: main.lua:912
 msgid "Allow speaker playback without Bluetooth"
 msgstr "Povolit reproduktor bez Bluetooth"
 
-#: main.lua:888
+#: main.lua:922
 msgid "By default, PocketBooks with a Bluetooth adapter only play through Bluetooth audio, because direct hardware access can damage the amplifier. This toggle lifts the Bluetooth requirement ONLY for daemon-routed devices (tts_sm, hwout_mix), which go through the PocketBook audio daemon like the system's own TTS and never touch the hardware directly. Direct-hardware choices (plughw:0) remain blocked without Bluetooth. Use at your own risk."
 msgstr "PocketBooky s Bluetooth adaptérem ve výchozím stavu hrají pouze přes Bluetooth zvuk, protože přímý přístup k hardwaru může poškodit zesilovač. Tento přepínač ruší požadavek na Bluetooth POUZE pro zařízení směrovaná přes démona (tts_sm, hwout_mix), která jdou přes zvukového démona PocketBooku jako systémové TTS a nikdy se přímo nedotknou hardwaru. Volby s přímým přístupem k hardwaru (plughw:0) zůstávají bez Bluetooth zablokované. Na vlastní riziko."
 
-#: main.lua:893
+#: main.lua:927
 msgid "Android: persistent audio stream (auto-enabled)"
 msgstr "Android: trvalý zvukový stream (automaticky zapnutý)"
 
-#: main.lua:895
+#: main.lua:929
 msgid "Android: persistent audio stream"
 msgstr "Android: trvalý zvukový stream"
 
-#: main.lua:907
+#: main.lua:941
 msgid "Workaround for Android devices where read-aloud audio cuts off mid-sentence and stalls (seen on some MTK e-readers). Plays synthesized audio through one persistent, continuously-fed audio track instead of a fresh media player per sentence. Leave this off for neural engines such as SherpaTTS: the persistent stream adds hiss and pitch artifacts. Off by default; the plugin also switches to it automatically for the rest of the session when it detects a stalled clip, except on neural engines. Takes effect from the next sentence."
 msgstr "Obejití pro zařízení s Androidem, kde se zvuk čtení přeruší uprostřed věty a zasekne (pozorováno na některých čtečkách MTK). Syntetizovaný zvuk hraje přes jednu trvalou, průběžně plněnou zvukovou stopu místo nového přehrávače pro každou větu. Pro neurální enginy jako SherpaTTS to nechte vypnuté: trvalý stream přidává šum a zkresluje výšku hlasu. Ve výchozím stavu vypnuto; plugin se na něj pro zbytek relace přepne i automaticky, když zjistí zaseknutý klip (kromě neurálních enginů). Projeví se od další věty."
 
-#: main.lua:910
+#: main.lua:944
 msgid "Keep playing when lid is closed"
 msgstr "Hrát i při zavřeném krytu"
 
-#: main.lua:917
+#: main.lua:951
 msgid "When enabled, closing the case/cover keeps audio playing: the device stays awake while something is playing and suspends on its own within 30 seconds once playback stops or pauses. When disabled (default), playback pauses on lid close and resumes when reopened. Disabling prevents device crashes caused by audio processes running during hardware suspend."
 msgstr ""
 
-#: main.lua:920
+#: main.lua:954
 msgid "Pause reading when a menu opens"
 msgstr "Pozastavit čtení při otevření menu"
 
-#: main.lua:927
+#: main.lua:961
 msgid "When enabled (default), read-aloud pauses while a KOReader menu or dialog is open and resumes when it closes. When disabled, narration keeps playing while you browse menus; only the sentence highlighting pauses."
 msgstr "Je-li zapnuto (výchozí), čtení nahlas se pozastaví, dokud je otevřené menu nebo dialog KOReaderu, a po zavření pokračuje. Je-li vypnuto, čtení pokračuje i během procházení menu; pozastaví se jen zvýrazňování vět."
 
-#: main.lua:930
+#: main.lua:964
 msgid "Resume from the start of the sentence"
 msgstr ""
 
-#: main.lua:937
+#: main.lua:971
 msgid "When enabled (default), read-aloud resumed after a pause starts the interrupted sentence again from its beginning, so you hear it whole. Applies to Android system TTS. When disabled, playback continues from the exact point where it was paused."
 msgstr ""
 
-#: main.lua:940
+#: main.lua:974
 msgid "Hide control bar while playing (experimental)"
 msgstr "Skrýt ovládací panel během přehrávání (experimentální)"
 
-#: main.lua:953
+#: main.lua:987
 msgid "Experimental: when enabled, the playback control bar disappears while TTS is playing so the bottom of the page is fully visible for read-along. Pause playback (via tap-to-pause overlay or BT headset button) to bring the bar back."
 msgstr "Experimentální: je-li zapnuto, ovládací panel přehrávání během TTS zmizí, takže spodek stránky je při čtení celý viditelný. Panel se vrátí po pozastavení přehrávání (klepnutím na překrytí nebo tlačítkem BT sluchátek)."
 
-#: main.lua:956
+#: main.lua:990
 msgid "Hide progress bar during read-along"
 msgstr "Skrýt ukazatel průběhu během čtení"
 
-#: main.lua:972
+#: main.lua:1006
 msgid "When enabled, the progress bar row is left out of the control bar during TTS read-along, making the bar one row shorter and leaving more of the page visible. The sentence highlight already shows how far along the page you are. The progress bar is always shown for audiobook playback, where it doubles as the seek control."
 msgstr "Je-li zapnuto, řádek s ukazatelem průběhu se během TTS čtení vynechá z ovládacího panelu, panel je o řádek nižší a je vidět více stránky. Zvýraznění věty i tak ukazuje, kde na stránce jste. Při přehrávání audioknihy se ukazatel průběhu zobrazuje vždy, protože slouží i k posunu."
 
-#: main.lua:980
+#: main.lua:1014
 msgid "Invert"
 msgstr "Inverze"
 
-#: main.lua:982
+#: main.lua:1016
 msgid "Highlight style: %1"
 msgstr "Styl zvýraznění: %1"
 
-#: main.lua:990
+#: main.lua:1024
 msgid "Auto-advance pages"
 msgstr "Automaticky otáčet stránky"
 
-#: main.lua:1000
+#: main.lua:1034
 msgid "Highlight sentences"
 msgstr "Zvýrazňovat věty"
 
-#: main.lua:1010
+#: main.lua:1044
 msgid "Group short cues (e-ink)"
 msgstr "Seskupovat krátké značky (e-ink)"
 
-#: main.lua:1018
+#: main.lua:1052
 msgid "For EPUB Media Overlay read-aloud books: merge consecutive short phrases into one highlight that stays on screen at least half a second, so slow e-ink refreshes are not skipped between words. Audio is unaffected. Takes effect on the next audio part or after restarting read-aloud."
 msgstr "Pro knihy EPUB Media Overlay čtené nahlas: sloučí po sobě jdoucí krátké fráze do jednoho zvýraznění, které zůstane na obrazovce nejméně půl sekundy, aby pomalé obnovování e-inku nepřeskakovalo mezi slovy. Zvuk není ovlivněn. Projeví se při další zvukové části nebo po restartu čtení nahlas."
 
-#: main.lua:1021
+#: main.lua:1055
 msgid "Follow narration page (aligned)"
 msgstr "Sledovat stránku vyprávění (zarovnané)"
 
-#: main.lua:1029
+#: main.lua:1063
 msgid "When enabled (default), the book view auto-turns to keep the current narration sentence on screen while you stay with the read-aloud. Manually turning a page never seeks or restarts audio: highlighting pauses and a “Return to read-aloud” cue appears until you jump back or the narration catches up."
 msgstr "Je-li zapnuto (výchozí), zobrazení knihy se automaticky otáčí tak, aby aktuální věta vyprávění zůstala na obrazovce, dokud čtení sledujete. Ruční otočení stránky nikdy neposouvá ani nerestartuje zvuk: zvýrazňování se pozastaví a zobrazí se výzva „Zpět ke čtení nahlas“, dokud neskočíte zpět nebo jej vyprávění nedožene."
 
-#: main.lua:1032
+#: main.lua:1066
 msgid "Keep the audiobook bar"
 msgstr "Ponechat panel audioknihy"
 
-#: main.lua:1056
+#: main.lua:1090
 msgid "When enabled, the mini audiobook bar stays on screen after you stop narration. When disabled (default), the bar hides when idle."
 msgstr "Je-li zapnuto, malý panel audioknihy zůstane na obrazovce i po zastavení vyprávění. Je-li vypnuto (výchozí), panel se při nečinnosti skryje."
 
-#: main.lua:1059
+#: main.lua:1093
 msgid "Lock KOReader page margins"
 msgstr "Zamknout okraje stránky KOReaderu"
 
-#: main.lua:1079
+#: main.lua:1113
 msgid "When enabled, the plugin writes this book’s bottom page margin into KOReader’s own settings before CRE typesets. The next open rebuilds the layout once (text stays above the audiobook bar); after that, KOReader reuses that layout, so starting a read-along no longer re-lays out the page. Works with or without the persistent bar. Disable to restore your original margins and edit them with KOReader’s usual controls."
 msgstr ""
 
-#: main.lua:1082
+#: main.lua:1116
 msgid "Keep status bars during read-aloud"
 msgstr "Ponechat stavové řádky během čtení"
 
-#: main.lua:1090
+#: main.lua:1124
 msgid "When enabled, the minimized read-aloud mini player sits above KOReader’s bottom status bar / progress bar (alt status bar at the top is unchanged). The page always reflows so book text ends above the mini player — the player never covers readable text. When disabled (default), the mini player sits at the bottom of the screen (may cover the status bar) but text is still reflowed above it."
 msgstr "Je-li zapnuto, minimalizovaný mini přehrávač čtení je nad spodním stavovým řádkem / ukazatelem průběhu KOReaderu (alternativní stavový řádek nahoře se nemění). Stránka se vždy zalomí tak, aby text knihy končil nad mini přehrávačem — přehrávač nikdy nezakryje čitelný text. Je-li vypnuto (výchozí), mini přehrávač je na spodku obrazovky (může zakrýt stavový řádek), ale text je stále zalomen nad ním."
 
-#: main.lua:1106
+#: main.lua:1140
 msgid "15 min"
 msgstr "15 min"
 
-#: main.lua:1116
+#: main.lua:1150
 msgid "30 min"
 msgstr "30 min"
 
-#: main.lua:1126
+#: main.lua:1160
 msgid "45 min"
 msgstr "45 min"
 
-#: main.lua:1136
+#: main.lua:1170
 msgid "60 min"
 msgstr "60 min"
 
-#: main.lua:1146
+#: main.lua:1180
 msgid "1 hour"
 msgstr "1 hodina"
 
-#: main.lua:1156
+#: main.lua:1190
 msgid "2 hours"
 msgstr "2 hodiny"
 
-#: main.lua:1166
+#: main.lua:1200
 msgid "3 hours"
 msgstr "3 hodiny"
 
-#: main.lua:1176
+#: main.lua:1210
 msgid "Custom..."
 msgstr "Vlastní..."
 
-#: main.lua:1183
+#: main.lua:1217
 msgid "Automatically pause playback after the selected time. Useful for listening before sleep."
 msgstr "Po zvolené době automaticky pozastaví přehrávání. Hodí se k poslechu před spaním."
 
-#: main.lua:1186
+#: main.lua:1220
 msgid "Put device to sleep when timer ends"
 msgstr "Uspat zařízení po skončení časovače"
 
-#: main.lua:1193
+#: main.lua:1227
 msgid "When enabled, the device will suspend after the sleep timer stops playback."
 msgstr "Je-li zapnuto, zařízení se uspí, když časovač vypnutí zastaví přehrávání."
 
-#: main.lua:1198
+#: main.lua:1232
 msgid "Overlay sync offset: %1 s"
 msgstr "Posun synchronizace překrytí: %1 s"
 
-#: main.lua:1205
+#: main.lua:1239
 msgid "Overlay sync offset"
 msgstr "Posun synchronizace překrytí"
 
-#: main.lua:1206
+#: main.lua:1240
 msgid "Positive values delay the highlight (use when the highlight runs ahead of the narration); negative values advance it."
 msgstr "Kladné hodnoty zpozdí zvýraznění (když zvýraznění předbíhá vyprávění); záporné jej posunou dopředu."
 
-#: main.lua:1220
+#: main.lua:1254
 msgid "Shifts EPUB Media Overlay sentence highlighting relative to the audio. Some audiobooks (e.g. with publisher intros) have timing tables offset from the embedded audio."
 msgstr "Posouvá zvýrazňování vět EPUB Media Overlay vůči zvuku. Některé audioknihy (např. s úvodem vydavatele) mají časové tabulky posunuté vůči vloženému zvuku."
 
-#: main.lua:1228
+#: main.lua:1262
 msgid "Stop session recorder"
 msgstr "Zastavit nahrávání relace"
 
-#: main.lua:1230
+#: main.lua:1264
 msgid "Start session recorder"
 msgstr "Spustit nahrávání relace"
 
-#: main.lua:1246
+#: main.lua:1280
 msgid "Records the current audiobook or TTS session. Audio, video/screenshots, and optional touch events are saved to a folder on device storage."
 msgstr "Nahrává aktuální relaci audioknihy nebo TTS. Zvuk, video/snímky obrazovky a volitelně dotykové události se uloží do složky v úložišti zařízení."
 
-#: main.lua:1253
+#: main.lua:1287
 msgid "Saves a diagnostic report to your device storage. The report contains device model, TTS engine status, and audio configuration — no personal data or book content. Share it when reporting issues on GitHub."
 msgstr "Uloží diagnostickou zprávu do úložiště zařízení. Zpráva obsahuje model zařízení, stav TTS enginu a konfiguraci zvuku — žádné osobní údaje ani obsah knih. Přiložte ji při hlášení problémů na GitHubu."
 
-#: main.lua:1256
+#: main.lua:1290
 msgid "Run device benchmark"
 msgstr "Spustit benchmark zařízení"
 
-#: main.lua:1266
+#: main.lua:1300
 msgid "Runs a standardized TTS benchmark on test sentences using each available engine (espeak-ng, Piper). Saves a report you can share on GitHub to help document device performance. Piper tests may take several minutes on slow devices."
 msgstr "Spustí standardizovaný TTS benchmark na testovacích větách s každým dostupným enginem (espeak-ng, Piper). Uloží zprávu, kterou můžete sdílet na GitHubu a pomoci tak zdokumentovat výkon zařízení. Testy Piper mohou na pomalých zařízeních trvat několik minut."
 
-#: main.lua:1269
+#: main.lua:1303
 msgid "Check for updates"
 msgstr "Zkontrolovat aktualizace"
 
-#: main.lua:1280
+#: main.lua:1314
 msgid "Could not load updater module."
 msgstr "Nepodařilo se načíst modul aktualizací."
 
-#: main.lua:1288
+#: main.lua:1322
 msgid "Checks GitHub for a newer release. If an update is available, downloads and installs it. Requires Wi-Fi."
 msgstr "Zkontroluje na GitHubu novější vydání. Pokud je aktualizace dostupná, stáhne ji a nainstaluje. Vyžaduje Wi-Fi."
 
-#: main.lua:1291
+#: main.lua:1325
 msgid "About / Debug info"
 msgstr "O pluginu / ladicí informace"
 
-#: main.lua:1297
+#: main.lua:1331
 msgid "Plugin: Audiobook Read-Along %1"
 msgstr "Plugin: Audiokniha – čtení nahlas %1"
 
-#: main.lua:1311
+#: main.lua:1345
 msgid "KOReader: %1"
 msgstr "KOReader: %1"
 
-#: main.lua:1317
+#: main.lua:1351
 msgid "Device: %1 (%2)"
 msgstr "Zařízení: %1 (%2)"
 
-#: main.lua:1330
+#: main.lua:1364
 msgid "TTS backend: %1"
 msgstr "TTS backend: %1"
 
-#: main.lua:1337
+#: main.lua:1371
 msgid "Audio player: %1"
 msgstr "Přehrávač zvuku: %1"
 
-#: main.lua:1340
+#: main.lua:1374
 msgid "Plugin path: %1"
 msgstr "Cesta pluginu: %1"
 
-#: main.lua:1346
+#: main.lua:1380
 msgid "Shows plugin version, KOReader version, device model, active TTS backend, and audio player. Useful when reporting issues."
 msgstr "Zobrazí verzi pluginu, verzi KOReaderu, model zařízení, aktivní TTS backend a přehrávač zvuku. Užitečné při hlášení problémů."
 
-#: main.lua:1430
+#: main.lua:1467
 msgid ""
 "Could not extract text from this page.\n"
 "\n"
@@ -1492,7 +1492,7 @@ msgstr ""
 "\n"
 "Formát dokumentu nemusí být plně podporován."
 
-#: main.lua:1482
+#: main.lua:1519
 msgid ""
 "No TTS engine found.\n"
 "\n"
@@ -1502,7 +1502,7 @@ msgstr ""
 "\n"
 "Nainstalujte espeak-ng."
 
-#: main.lua:1523
+#: main.lua:1560
 msgid ""
 "Piper TTS is selected, but this Kindle model cannot play WAV files.\n"
 "\n"
@@ -1512,7 +1512,7 @@ msgstr ""
 "\n"
 "Použije se místo toho vestavěný hlas Kindle. Zvýrazňování slov může být o něco méně přesné."
 
-#: main.lua:1544
+#: main.lua:1581
 msgid ""
 "No audio output available.\n"
 "\n"
@@ -1534,7 +1534,7 @@ msgstr ""
 "\n"
 "Pokud to stále nejde, vygenerujte hlášení o chybě (Audiokniha – čtení nahlas > Vygenerovat hlášení o chybě) a sdílejte jej v GitHub issue."
 
-#: main.lua:1551
+#: main.lua:1588
 msgid ""
 "No audio output device found.\n"
 "\n"
@@ -1544,18 +1544,18 @@ msgstr ""
 "\n"
 "TTS syntéza poběží, ale zvuk se nemusí přehrát. Přesto spustit?"
 
-#: main.lua:1552
+#: main.lua:1589
 msgid "Start"
 msgstr "Spustit"
 
-#: main.lua:1631
+#: main.lua:1668
 msgid ""
 "This book is a read-along copy without narration: its audio was stripped at delivery, most likely by BookOrbit.\n"
 "\n"
 "In BookOrbit, set this device's read-along delivery to “Original” and download the book again to get the recorded narration."
 msgstr ""
 
-#: main.lua:1661
+#: main.lua:1698
 msgid ""
 "No Bluetooth audio device connected.\n"
 "\n"
@@ -1565,11 +1565,11 @@ msgstr ""
 "\n"
 "Znovu připojuji sluchátka… po připojení to zkuste znovu."
 
-#: main.lua:1690 main.lua:3245
+#: main.lua:1728 main.lua:3283
 msgid "No document is currently open."
 msgstr "Momentálně není otevřen žádný dokument."
 
-#: main.lua:1707
+#: main.lua:1745
 msgid ""
 "No embedded narration found for this book.\n"
 "\n"
@@ -1585,11 +1585,11 @@ msgstr ""
 "\n"
 "Přehrát ji?"
 
-#: main.lua:1720
+#: main.lua:1758
 msgid "Text-to-speech read-aloud still works for this book."
 msgstr ""
 
-#: main.lua:1726
+#: main.lua:1764
 msgid ""
 "This book has no embedded narration.\n"
 "\n"
@@ -1599,27 +1599,27 @@ msgstr ""
 "\n"
 "Vložte zvukový soubor se stejným názvem do stejné složky, nebo použijte Přehrát nezarovnanou audioknihu pro přehrání samostatného souboru."
 
-#: main.lua:1775
+#: main.lua:1813
 msgid "Select a book"
 msgstr "Vyberte knihu"
 
-#: main.lua:1790
+#: main.lua:1828
 msgid "Unsupported file type for aligned audiobook: %1"
 msgstr "Nepodporovaný typ souboru pro zarovnanou audioknihu: %1"
 
-#: main.lua:1810
+#: main.lua:1848
 msgid "Could not open the book: %1"
 msgstr "Knihu se nepodařilo otevřít: %1"
 
-#: main.lua:1838
+#: main.lua:1876
 msgid "Play unaligned audiobook or Start music playlist can still play a separate audio file."
 msgstr ""
 
-#: main.lua:1840
+#: main.lua:1878
 msgid "This book has no built-in audiobook. Use Play unaligned audiobook or Start music playlist to play a separate audio file."
 msgstr "Tato kniha nemá vestavěnou audioknihu. Pro přehrání samostatného zvukového souboru použijte Přehrát nezarovnanou audioknihu nebo Spustit hudební playlist."
 
-#: main.lua:1905
+#: main.lua:1943
 msgid ""
 "Loading the built-in audiobook…\n"
 "%1 / %2"
@@ -1627,31 +1627,31 @@ msgstr ""
 "Načítám vestavěnou audioknihu…\n"
 "%1 / %2"
 
-#: main.lua:1910
+#: main.lua:1948
 msgid "Built-in audiobook ready"
 msgstr "Vestavěná audiokniha připravena"
 
-#: main.lua:1965 main.lua:3280
+#: main.lua:2003 main.lua:3318
 msgid "Could not load the built-in audiobook."
 msgstr "Vestavěnou audioknihu se nepodařilo načíst."
 
-#: main.lua:1972 main.lua:3310
+#: main.lua:2010 main.lua:3348
 msgid "Loading the built-in audiobook…"
 msgstr "Načítám vestavěnou audioknihu…"
 
-#: main.lua:1998 main.lua:3252 main.lua:3332
+#: main.lua:2036 main.lua:3290 main.lua:3370
 msgid "This book has no built-in audiobook."
 msgstr "Tato kniha nemá vestavěnou audioknihu."
 
-#: main.lua:2032
+#: main.lua:2070
 msgid "Could not find the built-in audiobook audio."
 msgstr "Nepodařilo se najít zvuk vestavěné audioknihy."
 
-#: main.lua:2294 main.lua:2315
+#: main.lua:2332 main.lua:2353
 msgid "Select audio file"
 msgstr "Vyberte zvukový soubor"
 
-#: main.lua:2351
+#: main.lua:2389
 msgid ""
 "No audio files found in\n"
 "%1"
@@ -1659,95 +1659,95 @@ msgstr ""
 "Nebyly nalezeny žádné zvukové soubory v\n"
 "%1"
 
-#: main.lua:2387 main.lua:2804 main.lua:5146
+#: main.lua:2425 main.lua:2842 main.lua:5188
 msgid "Unknown book"
 msgstr "Neznámá kniha"
 
-#: main.lua:2397 main.lua:5149
+#: main.lua:2435 main.lua:5191
 msgid "Resume from %1?"
 msgstr "Pokračovat od %1?"
 
-#: main.lua:2399 main.lua:2808 main.lua:5151
+#: main.lua:2437 main.lua:2846 main.lua:5193
 msgid "Book: %1"
 msgstr "Kniha: %1"
 
-#: main.lua:2402 main.lua:2811 main.lua:5154
+#: main.lua:2440 main.lua:2849 main.lua:5196
 msgid "Chapter: %1"
 msgstr "Kapitola: %1"
 
-#: main.lua:2405 main.lua:2815 main.lua:5166
+#: main.lua:2443 main.lua:2853 main.lua:5208
 msgid "Last played: %1"
 msgstr "Naposledy přehráno: %1"
 
-#: main.lua:2408 main.lua:2829 main.lua:5169
+#: main.lua:2446 main.lua:2867 main.lua:5211
 msgid "Resume"
 msgstr "Pokračovat"
 
-#: main.lua:2416 main.lua:2844 main.lua:5177
+#: main.lua:2454 main.lua:2882 main.lua:5219
 msgid "From start"
 msgstr "Od začátku"
 
-#: main.lua:2521
+#: main.lua:2559
 msgid "Audio playback"
 msgstr "Přehrávání zvuku"
 
-#: main.lua:2792
+#: main.lua:2830
 msgid "Resumed from %1"
 msgstr "Pokračuje se od %1"
 
-#: main.lua:2802
+#: main.lua:2840
 msgid "Start from current page"
 msgstr "Začít od aktuální stránky"
 
-#: main.lua:2806
+#: main.lua:2844
 msgid "Continue listening from %1?"
 msgstr "Pokračovat v poslechu od %1?"
 
-#: main.lua:2865
+#: main.lua:2903
 msgid "%1 h"
 msgstr "%1 h"
 
-#: main.lua:2867
+#: main.lua:2905
 msgid "%1 h %2 min"
 msgstr "%1 h %2 min"
 
-#: main.lua:2870
+#: main.lua:2908
 msgid "%1 min"
 msgstr "%1 min"
 
-#: main.lua:2873
+#: main.lua:2911
 msgid "Sleep timer set: %1"
 msgstr "Časovač vypnutí nastaven: %1"
 
-#: main.lua:2890
+#: main.lua:2928
 msgid "Select hours and minutes."
 msgstr "Vyberte hodiny a minuty."
 
-#: main.lua:2927
+#: main.lua:2965
 msgid "Sleep timer: hours"
 msgstr "Časovač vypnutí: hodiny"
 
-#: main.lua:2928
+#: main.lua:2966
 msgid "Select the number of hours."
 msgstr "Vyberte počet hodin."
 
-#: main.lua:2934 mediasync.lua:3199 menubuilder.lua:1930
+#: main.lua:2972 mediasync.lua:3199 menubuilder.lua:1949
 msgid "Next"
 msgstr "Další"
 
-#: main.lua:2937
+#: main.lua:2975
 msgid "Sleep timer: minutes"
 msgstr "Časovač vypnutí: minuty"
 
-#: main.lua:2938
+#: main.lua:2976
 msgid "Select the number of minutes."
 msgstr "Vyberte počet minut."
 
-#: main.lua:3006
+#: main.lua:3044
 msgid "Sleep timer: playback paused."
 msgstr "Časovač vypnutí: přehrávání pozastaveno."
 
-#: main.lua:3374
+#: main.lua:3412
 msgid ""
 "\n"
 "\n"
@@ -1757,11 +1757,11 @@ msgstr ""
 "\n"
 "Tato kniha má vložené vyprávění — použijte místo toho \"Přehrát zarovnanou audioknihu odsud\"."
 
-#: main.lua:3377 menubuilder.lua:2166 menubuilder.lua:2231
+#: main.lua:3415 menubuilder.lua:2185 menubuilder.lua:2250
 msgid "TTS engine is not available."
 msgstr "TTS engine není dostupný."
 
-#: main.lua:3402
+#: main.lua:3440
 msgid ""
 "\n"
 "\n"
@@ -1771,15 +1771,15 @@ msgstr ""
 "\n"
 "Pro tento EPUB se čtením použijte \"Přehrát zarovnanou audioknihu odsud\"."
 
-#: main.lua:3405
+#: main.lua:3443
 msgid "Could not retrieve page text for TTS."
 msgstr "Nepodařilo se získat text stránky pro TTS."
 
-#: main.lua:4997
+#: main.lua:5039
 msgid "Audiobookshelf modules not available."
 msgstr "Moduly Audiobookshelf nejsou dostupné."
 
-#: main.lua:5162
+#: main.lua:5204
 msgid "File: %1"
 msgstr "Soubor: %1"
 
@@ -1821,11 +1821,11 @@ msgstr "Přehrávání zvuku selhalo: "
 msgid "No chapters available."
 msgstr "Nejsou dostupné žádné kapitoly."
 
-#: mediasync.lua:3163 menubuilder.lua:1891
+#: mediasync.lua:3163 menubuilder.lua:1910
 msgid "Item"
 msgstr "Položka"
 
-#: mediasync.lua:3186 menubuilder.lua:1917
+#: mediasync.lua:3186 menubuilder.lua:1936
 msgid "Prev"
 msgstr "Předchozí"
 
@@ -1865,15 +1865,15 @@ msgstr "Piper (neurální)"
 msgid "sanoTTS (neural)"
 msgstr "sanoTTS (neurální)"
 
-#: menubuilder.lua:68 menubuilder.lua:979 ttsengine.lua:1657
+#: menubuilder.lua:68 menubuilder.lua:998 ttsengine.lua:1657
 msgid "Pico TTS"
 msgstr "Pico TTS"
 
-#: menubuilder.lua:69 menubuilder.lua:982
+#: menubuilder.lua:69 menubuilder.lua:1001
 msgid "Flite"
 msgstr "Flite"
 
-#: menubuilder.lua:70 menubuilder.lua:985
+#: menubuilder.lua:70 menubuilder.lua:1004
 msgid "Festival"
 msgstr "Festival"
 
@@ -1893,7 +1893,7 @@ msgstr "Nastavení nativního pomocníka platformy"
 msgid "MBROLA voice UK English Male 1"
 msgstr "Hlas MBROLA UK English Male 1"
 
-#: menubuilder.lua:118 menubuilder.lua:1385
+#: menubuilder.lua:118 menubuilder.lua:1404
 msgid "MBROLA disabled. Using regular espeak-ng voice."
 msgstr "MBROLA vypnuto. Používá se běžný hlas espeak-ng."
 
@@ -1939,19 +1939,19 @@ msgstr "Agresivně dělit věty pro Piper"
 msgid "Limits synthesis chunks to about 150 characters instead of 300. Reduces the wait per sentence and avoids synthesis failures with long sentences on low-memory devices. Applies from the next page."
 msgstr "Omezí úseky syntézy na asi 150 znaků místo 300. Zkrátí čekání na větu a předchází selháním syntézy dlouhých vět na zařízeních s malou pamětí. Platí od další stránky."
 
-#: menubuilder.lua:233 menubuilder.lua:2312
+#: menubuilder.lua:233 menubuilder.lua:2331
 msgid "Use audio output daemon"
 msgstr ""
 
-#: menubuilder.lua:240 menubuilder.lua:2319
+#: menubuilder.lua:240 menubuilder.lua:2338
 msgid "Routes read-aloud audio through a background daemon that keeps the Bluetooth pipeline open between sentences and tracks real playback position. On by default; turning it off uses the legacy per-play pipeline."
 msgstr ""
 
-#: menubuilder.lua:258 menubuilder.lua:262 menubuilder.lua:264 menubuilder.lua:456 menubuilder.lua:2261
+#: menubuilder.lua:258 menubuilder.lua:262 menubuilder.lua:264 menubuilder.lua:475 menubuilder.lua:2280
 msgid "Voice: %1"
 msgstr "Hlas: %1"
 
-#: menubuilder.lua:262 menubuilder.lua:1979 menubuilder.lua:2242
+#: menubuilder.lua:262 menubuilder.lua:1998 menubuilder.lua:2261
 msgid "Auto-detect"
 msgstr "Automaticky"
 
@@ -1967,7 +1967,7 @@ msgstr ""
 msgid "Synthesizes the next sentence in the background while the current one plays, removing most of the pause between sentences. Useful when your TTS engine is slow to answer each request. If audio glitches or repeated sentences occur, turn this off."
 msgstr ""
 
-#: menubuilder.lua:302 menubuilder.lua:2267 menubuilder.lua:2289
+#: menubuilder.lua:302 menubuilder.lua:2286 menubuilder.lua:2308
 msgid "Speech rate: %1x"
 msgstr "Rychlost řeči: %1x"
 
@@ -1975,519 +1975,527 @@ msgstr "Rychlost řeči: %1x"
 msgid "Pitch: %1"
 msgstr "Výška hlasu: %1"
 
-#: menubuilder.lua:320 menubuilder.lua:2390 menubuilder.lua:2405
+#: menubuilder.lua:320
+msgid "Bottom bar size: %1×"
+msgstr ""
+
+#: menubuilder.lua:333
+msgid "Height and font of the player bar at the bottom of the page. Takes effect the next time reading aloud starts."
+msgstr ""
+
+#: menubuilder.lua:339 menubuilder.lua:2409 menubuilder.lua:2424
 msgid "Volume: %1%%"
 msgstr "Hlasitost: %1%%"
 
-#: menubuilder.lua:330 menubuilder.lua:2359 menubuilder.lua:2367
+#: menubuilder.lua:349 menubuilder.lua:2378 menubuilder.lua:2386
 msgid "Sentence pause (. ? !): %1s"
 msgstr "Pauza po větě (. ? !): %1 s"
 
-#: menubuilder.lua:337 menubuilder.lua:2374 menubuilder.lua:2382
+#: menubuilder.lua:356 menubuilder.lua:2393 menubuilder.lua:2401
 msgid "Paragraph pause (newlines): %1s"
 msgstr "Pauza po odstavci (nové řádky): %1 s"
 
-#: menubuilder.lua:347 menubuilder.lua:2328 menubuilder.lua:2336
+#: menubuilder.lua:366 menubuilder.lua:2347 menubuilder.lua:2355
 msgid "Sentence gap (. ? !): %1s"
 msgstr "Mezera po větě (. ? !): %1 s"
 
-#: menubuilder.lua:354 menubuilder.lua:2343 menubuilder.lua:2351
+#: menubuilder.lua:373 menubuilder.lua:2362 menubuilder.lua:2370
 msgid "Paragraph gap (newlines): %1s"
 msgstr "Mezera po odstavci (nové řádky): %1 s"
 
-#: menubuilder.lua:363
+#: menubuilder.lua:382
 msgid "Gap test mode (audible tones)"
 msgstr "Testovací režim mezer (slyšitelné tóny)"
 
-#: menubuilder.lua:381
+#: menubuilder.lua:400
 msgid "Clause pause (, ; : -): %1s"
 msgstr "Pauza po vedlejší větě (, ; : -): %1 s"
 
-#: menubuilder.lua:389
+#: menubuilder.lua:408
 msgid "Word gap (between words): %1"
 msgstr "Mezera mezi slovy: %1"
 
-#: menubuilder.lua:400
+#: menubuilder.lua:419
 msgid "Piper voice: %1"
 msgstr "Hlas Piper: %1"
 
-#: menubuilder.lua:408
+#: menubuilder.lua:427
 msgid "Download Piper voice…"
 msgstr "Stáhnout hlas Piper…"
 
-#: menubuilder.lua:420
+#: menubuilder.lua:439
 msgid "Could not load voice download menu."
 msgstr "Nepodařilo se načíst menu stahování hlasů."
 
-#: menubuilder.lua:430
+#: menubuilder.lua:449
 msgid "sanoTTS voice: %1"
 msgstr "Hlas sanoTTS: %1"
 
-#: menubuilder.lua:438
+#: menubuilder.lua:457
 msgid "Voice: Japanese (sanoTTS-jp)"
 msgstr "Hlas: japonština (sanoTTS-jp)"
 
-#: menubuilder.lua:440
+#: menubuilder.lua:459
 msgid "The rate slider has no effect on this voice: the Japanese core has no speed control yet. Weights and dictionary are your own downloads from sanoTTS-jp and carry their own usage terms."
 msgstr "Posuvník rychlosti nemá na tento hlas vliv: japonské jádro zatím nemá ovládání rychlosti. Váhy a slovník jsou vaše vlastní stažené soubory ze sanoTTS-jp a platí pro ně vlastní podmínky použití."
 
-#: menubuilder.lua:454
+#: menubuilder.lua:473
 msgid "Voice: (disabled while MBROLA is on)"
 msgstr "Hlas: (vypnutý, dokud je zapnuté MBROLA)"
 
-#: menubuilder.lua:462
+#: menubuilder.lua:481
 msgid "Base voice and accent variant are ignored when a MBROLA voice is active. Disable MBROLA to use regular espeak-ng voices."
 msgstr "Základní hlas a varianta přízvuku se ignorují, když je aktivní hlas MBROLA. Chcete-li používat běžné hlasy espeak-ng, vypněte MBROLA."
 
-#: menubuilder.lua:474
+#: menubuilder.lua:493
 msgid "Download sanoTTS-jp files…"
 msgstr "Stáhnout soubory sanoTTS-jp…"
 
-#: menubuilder.lua:486
+#: menubuilder.lua:505
 msgid "Could not load the download menu."
 msgstr "Nepodařilo se načíst menu stahování."
 
-#: menubuilder.lua:500
+#: menubuilder.lua:519
 msgid "PocketBook pipeline - tts_sm (recommended)"
 msgstr "PocketBook pipeline - tts_sm (doporučeno)"
 
-#: menubuilder.lua:501
+#: menubuilder.lua:520
 msgid "Routes through the PocketBook audio daemon (softvol, dmix, resampling). Best compatibility on devices that expose tts_sm in /etc/asound.conf."
 msgstr "Směruje přes zvukového démona PocketBooku (softvol, dmix, převzorkování). Nejlepší kompatibilita na zařízeních, která mají tts_sm v /etc/asound.conf."
 
-#: menubuilder.lua:502
+#: menubuilder.lua:521
 msgid "Direct hardware with resampling - plughw:0"
 msgstr "Přímý hardware s převzorkováním - plughw:0"
 
-#: menubuilder.lua:503
+#: menubuilder.lua:522
 msgid "Direct hardware access through the ALSA plug layer. On some PocketBooks (e.g. PB631) the plug layer does not actually resample; if you hear playback at 2-3x speed, switch back to tts_sm or Auto."
 msgstr "Přímý přístup k hardwaru přes vrstvu ALSA plug. Na některých PocketBoocích (např. PB631) vrstva plug ve skutečnosti nepřevzorkuje; pokud zvuk hraje 2–3× rychleji, přepněte zpět na tts_sm nebo Auto."
 
-#: menubuilder.lua:504
+#: menubuilder.lua:523
 msgid "Auto (default ALSA device)"
 msgstr "Auto (výchozí zařízení ALSA)"
 
-#: menubuilder.lua:505
+#: menubuilder.lua:524
 msgid "Uses the system default ALSA device, then falls back to tts_sm and plughw:0 if the default is unavailable."
 msgstr "Použije systémové výchozí zařízení ALSA; pokud není dostupné, zkusí tts_sm a plughw:0."
 
-#: menubuilder.lua:506
+#: menubuilder.lua:525
 msgid "System player (InkView) - experimental"
 msgstr "Systémový přehrávač (InkView) - experimentální"
 
-#: menubuilder.lua:507
+#: menubuilder.lua:526
 msgid "Uses the PocketBook InkView PlayFile API. Some firmwares (PB740, PB631) export PlayFile but do not actually play audio; if no sound comes out, switch back to tts_sm or Auto."
 msgstr "Používá API PlayFile z PocketBook InkView. Některé firmwary (PB740, PB631) PlayFile exportují, ale zvuk ve skutečnosti nepřehrají; pokud nic neslyšíte, přepněte zpět na tts_sm nebo Auto."
 
-#: menubuilder.lua:515
+#: menubuilder.lua:534
 msgid "PocketBook pipeline (direct dmix) - hwout_mix"
 msgstr "PocketBook pipeline (přímý dmix) - hwout_mix"
 
-#: menubuilder.lua:516
+#: menubuilder.lua:535
 msgid "Routes to the same PocketBook audio daemon output as tts_sm but skips the softvol layers that crash on some firmwares. Try this if tts_sm produces no sound or playback stops with an error. Loses the system TTS volume control."
 msgstr "Směruje na stejný výstup zvukového démona PocketBooku jako tts_sm, ale vynechává vrstvy softvol, které na některých firmwarech padají. Zkuste, pokud tts_sm nevydává zvuk nebo se přehrávání zastaví s chybou. Přijdete o ovládání hlasitosti systémového TTS."
 
-#: menubuilder.lua:563
+#: menubuilder.lua:582
 msgid "0 (very low)"
 msgstr "0 (velmi nízká)"
 
-#: menubuilder.lua:565
+#: menubuilder.lua:584
 msgid "50 (default)"
 msgstr "50 (výchozí)"
 
-#: menubuilder.lua:567
+#: menubuilder.lua:586
 msgid "99 (very high)"
 msgstr "99 (velmi vysoká)"
 
-#: menubuilder.lua:609 menubuilder.lua:629 menubuilder.lua:651 menubuilder.lua:671
+#: menubuilder.lua:628 menubuilder.lua:648 menubuilder.lua:670 menubuilder.lua:690
 msgid " (default)"
 msgstr " (výchozí)"
 
-#: menubuilder.lua:692
+#: menubuilder.lua:711
 msgid " (default / off)"
 msgstr " (výchozí / vyp.)"
 
-#: menubuilder.lua:712
+#: menubuilder.lua:731
 msgid "0 (no extra gap)"
 msgstr "0 (bez mezery navíc)"
 
-#: menubuilder.lua:713
+#: menubuilder.lua:732
 msgid "1 (10ms)"
 msgstr "1 (10 ms)"
 
-#: menubuilder.lua:714
+#: menubuilder.lua:733
 msgid "2 (20ms - default)"
 msgstr "2 (20 ms - výchozí)"
 
-#: menubuilder.lua:715
+#: menubuilder.lua:734
 msgid "5 (50ms)"
 msgstr "5 (50 ms)"
 
-#: menubuilder.lua:716
+#: menubuilder.lua:735
 msgid "10 (100ms)"
 msgstr "10 (100 ms)"
 
-#: menubuilder.lua:717
+#: menubuilder.lua:736
 msgid "20 (200ms)"
 msgstr "20 (200 ms)"
 
-#: menubuilder.lua:718
+#: menubuilder.lua:737
 msgid "50 (500ms)"
 msgstr "50 (500 ms)"
 
-#: menubuilder.lua:748
+#: menubuilder.lua:767
 msgid "English (GB)"
 msgstr "Angličtina (GB)"
 
-#: menubuilder.lua:749 menubuilder.lua:1749
+#: menubuilder.lua:768 menubuilder.lua:1768
 msgid "English (US)"
 msgstr "Angličtina (US)"
 
-#: menubuilder.lua:750
+#: menubuilder.lua:769
 msgid "English (Received Pronunciation)"
 msgstr "Angličtina (Received Pronunciation)"
 
-#: menubuilder.lua:751
+#: menubuilder.lua:770
 msgid "English (Scotland)"
 msgstr "Angličtina (Skotsko)"
 
-#: menubuilder.lua:752
+#: menubuilder.lua:771
 msgid "English (Lancaster)"
 msgstr "Angličtina (Lancaster)"
 
-#: menubuilder.lua:753
+#: menubuilder.lua:772
 msgid "English (West Midlands)"
 msgstr "Angličtina (West Midlands)"
 
-#: menubuilder.lua:754
+#: menubuilder.lua:773
 msgid "English (Caribbean)"
 msgstr "Angličtina (Karibik)"
 
-#: menubuilder.lua:755
+#: menubuilder.lua:774
 msgid "English (New York City)"
 msgstr "Angličtina (New York)"
 
-#: menubuilder.lua:758 menubuilder.lua:1396 menubuilder.lua:1752
+#: menubuilder.lua:777 menubuilder.lua:1415 menubuilder.lua:1771
 msgid "German"
 msgstr "Němčina"
 
-#: menubuilder.lua:759 menubuilder.lua:1397 menubuilder.lua:1751
+#: menubuilder.lua:778 menubuilder.lua:1416 menubuilder.lua:1770
 msgid "Spanish"
 msgstr "Španělština"
 
-#: menubuilder.lua:760 menubuilder.lua:1396 menubuilder.lua:1748
+#: menubuilder.lua:779 menubuilder.lua:1415 menubuilder.lua:1767
 msgid "French"
 msgstr "Francouzština"
 
-#: menubuilder.lua:761 menubuilder.lua:1397 menubuilder.lua:1753
+#: menubuilder.lua:780 menubuilder.lua:1416 menubuilder.lua:1772
 msgid "Italian"
 msgstr "Italština"
 
-#: menubuilder.lua:762 menubuilder.lua:1397
+#: menubuilder.lua:781 menubuilder.lua:1416
 msgid "Portuguese"
 msgstr "Portugalština"
 
-#: menubuilder.lua:763 menubuilder.lua:1754
+#: menubuilder.lua:782 menubuilder.lua:1773
 msgid "Portuguese (Brazil)"
 msgstr "Portugalština (Brazílie)"
 
-#: menubuilder.lua:764 menubuilder.lua:1398 menubuilder.lua:1755
+#: menubuilder.lua:783 menubuilder.lua:1417 menubuilder.lua:1774
 msgid "Dutch"
 msgstr "Nizozemština"
 
-#: menubuilder.lua:765 menubuilder.lua:1400 menubuilder.lua:1769
+#: menubuilder.lua:784 menubuilder.lua:1419 menubuilder.lua:1788
 msgid "Russian"
 msgstr "Ruština"
 
-#: menubuilder.lua:766 menubuilder.lua:1398 menubuilder.lua:1756
+#: menubuilder.lua:785 menubuilder.lua:1417 menubuilder.lua:1775
 msgid "Polish"
 msgstr "Polština"
 
-#: menubuilder.lua:767 menubuilder.lua:1398 menubuilder.lua:1757
+#: menubuilder.lua:786 menubuilder.lua:1417 menubuilder.lua:1776
 msgid "Czech"
 msgstr "Čeština"
 
-#: menubuilder.lua:768 menubuilder.lua:1398 menubuilder.lua:1758
+#: menubuilder.lua:787 menubuilder.lua:1417 menubuilder.lua:1777
 msgid "Slovak"
 msgstr "Slovenština"
 
-#: menubuilder.lua:769 menubuilder.lua:1400 menubuilder.lua:1772
+#: menubuilder.lua:788 menubuilder.lua:1419 menubuilder.lua:1791
 msgid "Swedish"
 msgstr "Švédština"
 
-#: menubuilder.lua:770 menubuilder.lua:1401 menubuilder.lua:1773
+#: menubuilder.lua:789 menubuilder.lua:1420 menubuilder.lua:1792
 msgid "Turkish"
 msgstr "Turečtina"
 
-#: menubuilder.lua:771 menubuilder.lua:1399 menubuilder.lua:1770
+#: menubuilder.lua:790 menubuilder.lua:1418 menubuilder.lua:1789
 msgid "Greek"
 msgstr "Řečtina"
 
-#: menubuilder.lua:772 menubuilder.lua:1768
+#: menubuilder.lua:791 menubuilder.lua:1787
 msgid "Finnish"
 msgstr "Finština"
 
-#: menubuilder.lua:773 menubuilder.lua:1774
+#: menubuilder.lua:792 menubuilder.lua:1793
 msgid "Hungarian"
 msgstr "Maďarština"
 
-#: menubuilder.lua:774 menubuilder.lua:1775
+#: menubuilder.lua:793 menubuilder.lua:1794
 msgid "Romanian"
 msgstr "Rumunština"
 
-#: menubuilder.lua:777 menubuilder.lua:1400 menubuilder.lua:1761
+#: menubuilder.lua:796 menubuilder.lua:1419 menubuilder.lua:1780
 msgid "Arabic"
 msgstr "Arabština"
 
-#: menubuilder.lua:778
+#: menubuilder.lua:797
 msgid "Chinese (Mandarin)"
 msgstr "Čínština (mandarínská)"
 
-#: menubuilder.lua:779 menubuilder.lua:1399 menubuilder.lua:1765
+#: menubuilder.lua:798 menubuilder.lua:1418 menubuilder.lua:1784
 msgid "Japanese"
 msgstr "Japonština"
 
-#: menubuilder.lua:780 menubuilder.lua:1766
+#: menubuilder.lua:799 menubuilder.lua:1785
 msgid "Korean"
 msgstr "Korejština"
 
-#: menubuilder.lua:781 menubuilder.lua:1760
+#: menubuilder.lua:800 menubuilder.lua:1779
 msgid "Hindi"
 msgstr "Hindština"
 
-#: menubuilder.lua:782
+#: menubuilder.lua:801
 msgid "Vietnamese"
 msgstr "Vietnamština"
 
-#: menubuilder.lua:786
+#: menubuilder.lua:805
 msgid "Default (male)"
 msgstr "Výchozí (mužský)"
 
-#: menubuilder.lua:789
+#: menubuilder.lua:808
 msgid "Female 1"
 msgstr "Ženský 1"
 
-#: menubuilder.lua:790
+#: menubuilder.lua:809
 msgid "Female 2"
 msgstr "Ženský 2"
 
-#: menubuilder.lua:791
+#: menubuilder.lua:810
 msgid "Female 3"
 msgstr "Ženský 3"
 
-#: menubuilder.lua:792
+#: menubuilder.lua:811
 msgid "Female 4 (breathy)"
 msgstr "Ženský 4 (dechový)"
 
-#: menubuilder.lua:793
+#: menubuilder.lua:812
 msgid "Female 5"
 msgstr "Ženský 5"
 
-#: menubuilder.lua:795
+#: menubuilder.lua:814
 msgid "Annie (F)"
 msgstr "Annie (Ž)"
 
-#: menubuilder.lua:796
+#: menubuilder.lua:815
 msgid "Alicia (F)"
 msgstr "Alicia (Ž)"
 
-#: menubuilder.lua:797
+#: menubuilder.lua:816
 msgid "Belinda (F)"
 msgstr "Belinda (Ž)"
 
-#: menubuilder.lua:798
+#: menubuilder.lua:817
 msgid "Linda (F)"
 msgstr "Linda (Ž)"
 
-#: menubuilder.lua:799
+#: menubuilder.lua:818
 msgid "Steph (F)"
 msgstr "Steph (Ž)"
 
-#: menubuilder.lua:800
+#: menubuilder.lua:819
 msgid "Andrea (F)"
 msgstr "Andrea (Ž)"
 
-#: menubuilder.lua:801
+#: menubuilder.lua:820
 msgid "Anika (F)"
 msgstr "Anika (Ž)"
 
-#: menubuilder.lua:802
+#: menubuilder.lua:821
 msgid "Aunty (F)"
 msgstr "Teta (Ž)"
 
-#: menubuilder.lua:803
+#: menubuilder.lua:822
 msgid "Grandma (F)"
 msgstr "Babička (Ž)"
 
-#: menubuilder.lua:806
+#: menubuilder.lua:825
 msgid "Male 1"
 msgstr "Mužský 1"
 
-#: menubuilder.lua:807
+#: menubuilder.lua:826
 msgid "Male 2"
 msgstr "Mužský 2"
 
-#: menubuilder.lua:808
+#: menubuilder.lua:827
 msgid "Male 3"
 msgstr "Mužský 3"
 
-#: menubuilder.lua:809
+#: menubuilder.lua:828
 msgid "Male 4"
 msgstr "Mužský 4"
 
-#: menubuilder.lua:810
+#: menubuilder.lua:829
 msgid "Male 5"
 msgstr "Mužský 5"
 
-#: menubuilder.lua:811
+#: menubuilder.lua:830
 msgid "Male 6"
 msgstr "Mužský 6"
 
-#: menubuilder.lua:812
+#: menubuilder.lua:831
 msgid "Male 7"
 msgstr "Mužský 7"
 
-#: menubuilder.lua:813
+#: menubuilder.lua:832
 msgid "Alex (M)"
 msgstr "Alex (M)"
 
-#: menubuilder.lua:814
+#: menubuilder.lua:833
 msgid "Andy (M)"
 msgstr "Andy (M)"
 
-#: menubuilder.lua:815
+#: menubuilder.lua:834
 msgid "Gene (M)"
 msgstr "Gene (M)"
 
-#: menubuilder.lua:816
+#: menubuilder.lua:835
 msgid "Lee (M)"
 msgstr "Lee (M)"
 
-#: menubuilder.lua:817
+#: menubuilder.lua:836
 msgid "Shelby (M, smooth)"
 msgstr "Shelby (M, jemný)"
 
-#: menubuilder.lua:820
+#: menubuilder.lua:839
 msgid "Robosoft 1 (softer)"
 msgstr "Robosoft 1 (jemnější)"
 
-#: menubuilder.lua:821
+#: menubuilder.lua:840
 msgid "Robosoft 2 (softer)"
 msgstr "Robosoft 2 (jemnější)"
 
-#: menubuilder.lua:822
+#: menubuilder.lua:841
 msgid "Robosoft 3 (softer)"
 msgstr "Robosoft 3 (jemnější)"
 
-#: menubuilder.lua:823
+#: menubuilder.lua:842
 msgid "Robosoft 4 (softer)"
 msgstr "Robosoft 4 (jemnější)"
 
-#: menubuilder.lua:824
+#: menubuilder.lua:843
 msgid "Robosoft 5 (softer)"
 msgstr "Robosoft 5 (jemnější)"
 
-#: menubuilder.lua:825
+#: menubuilder.lua:844
 msgid "Robosoft 6 (softer)"
 msgstr "Robosoft 6 (jemnější)"
 
-#: menubuilder.lua:826
+#: menubuilder.lua:845
 msgid "Robosoft 7 (softer)"
 msgstr "Robosoft 7 (jemnější)"
 
-#: menubuilder.lua:827
+#: menubuilder.lua:846
 msgid "Robosoft 8 (softer)"
 msgstr "Robosoft 8 (jemnější)"
 
-#: menubuilder.lua:830
+#: menubuilder.lua:849
 msgid "Whisper"
 msgstr "Šepot"
 
-#: menubuilder.lua:831
+#: menubuilder.lua:850
 msgid "Whisper (female)"
 msgstr "Šepot (ženský)"
 
-#: menubuilder.lua:832
+#: menubuilder.lua:851
 msgid "Croak"
 msgstr "Chraplavý"
 
-#: menubuilder.lua:859
+#: menubuilder.lua:878
 msgid "Accent: %1"
 msgstr "Přízvuk: %1"
 
-#: menubuilder.lua:886
+#: menubuilder.lua:905
 msgid "Voice type: %1"
 msgstr "Typ hlasu: %1"
 
-#: menubuilder.lua:896
+#: menubuilder.lua:915
 msgid "Background highlight"
 msgstr "Zvýraznění pozadím"
 
-#: menubuilder.lua:898
+#: menubuilder.lua:917
 msgid "Box border"
 msgstr "Rámeček"
 
-#: menubuilder.lua:899
+#: menubuilder.lua:918
 msgid "Invert colors"
 msgstr "Invertovat barvy"
 
-#: menubuilder.lua:948
+#: menubuilder.lua:967
 msgid "espeak-ng (formant, fast, robotic)"
 msgstr "espeak-ng (formantový, rychlý, robotický)"
 
-#: menubuilder.lua:956
+#: menubuilder.lua:975
 msgid "Piper (neural, natural-sounding)"
 msgstr "Piper (neurální, přirozený)"
 
-#: menubuilder.lua:964
+#: menubuilder.lua:983
 msgid "sanoTTS (neural, lightweight)"
 msgstr "sanoTTS (neurální, nenáročný)"
 
-#: menubuilder.lua:973
+#: menubuilder.lua:992
 msgid "sanoTTS-jp (Japanese neural)"
 msgstr "sanoTTS-jp (japonský neurální)"
 
-#: menubuilder.lua:992
+#: menubuilder.lua:1011
 msgid "Platform-native helper (user-supplied engine)"
 msgstr "Nativní pomocník platformy (engine od uživatele)"
 
-#: menubuilder.lua:998
+#: menubuilder.lua:1017
 msgid "No TTS engines found"
 msgstr "Nebyly nalezeny žádné TTS enginy"
 
-#: menubuilder.lua:1039
+#: menubuilder.lua:1058
 msgid "No voice models found"
 msgstr "Nebyly nalezeny žádné hlasové modely"
 
-#: menubuilder.lua:1043
+#: menubuilder.lua:1062
 msgid "Place .onnx files in plugins/audiobook.koplugin/piper/"
 msgstr "Vložte soubory .onnx do plugins/audiobook.koplugin/piper/"
 
-#: menubuilder.lua:1091
+#: menubuilder.lua:1110
 msgid "Note: this device has limited CPU/RAM. Piper voices may pause between sentences or fall back to espeak during playback. Enabling \"Low-resource mode\" in Voice settings can help."
 msgstr "Poznámka: toto zařízení má omezený CPU/RAM. Hlasy Piper mohou dělat pauzy mezi větami nebo během přehrávání přejít na espeak. Může pomoci zapnutí \"Úsporný režim\" v Nastavení hlasu."
 
-#: menubuilder.lua:1115
+#: menubuilder.lua:1134
 msgid "No sanoTTS voices found"
 msgstr "Nebyly nalezeny žádné hlasy sanoTTS"
 
-#: menubuilder.lua:1139
+#: menubuilder.lua:1158
 msgid "Word phonemization: dictionary (no espeak)"
 msgstr ""
 
-#: menubuilder.lua:1157
+#: menubuilder.lua:1176
 msgid "Reads the pronunciation dictionary directly instead of running the espeak helper for every clause: faster and it keeps word boundaries exact. Hard-to-read words (names) still fall back to espeak per clause. On by default for all sanoTTS voices."
 msgstr ""
 
-#: menubuilder.lua:1184
+#: menubuilder.lua:1203
 msgid "Refresh voice list from internet"
 msgstr "Obnovit seznam hlasů z internetu"
 
-#: menubuilder.lua:1188
+#: menubuilder.lua:1207
 msgid "Fetching latest voice list…"
 msgstr "Získávám nejnovější seznam hlasů…"
 
-#: menubuilder.lua:1196
+#: menubuilder.lua:1215
 msgid ""
 "Voice list updated.\n"
 "%1 voices available."
@@ -2495,7 +2503,7 @@ msgstr ""
 "Seznam hlasů aktualizován.\n"
 "Dostupných hlasů: %1."
 
-#: menubuilder.lua:1201
+#: menubuilder.lua:1220
 msgid ""
 "Could not refresh voice list.\n"
 "\n"
@@ -2503,19 +2511,19 @@ msgstr ""
 "Seznam hlasů se nepodařilo obnovit.\n"
 "\n"
 
-#: menubuilder.lua:1209
+#: menubuilder.lua:1228
 msgid "─"
 msgstr "─"
 
-#: menubuilder.lua:1229 menubuilder.lua:1483
+#: menubuilder.lua:1248 menubuilder.lua:1502
 msgid " ✓ installed"
 msgstr " ✓ nainstalován"
 
-#: menubuilder.lua:1238 menubuilder.lua:1492
+#: menubuilder.lua:1257 menubuilder.lua:1511
 msgid "Downloading "
 msgstr "Stahuji "
 
-#: menubuilder.lua:1238 menubuilder.lua:1492
+#: menubuilder.lua:1257 menubuilder.lua:1511
 msgid ""
 "…\n"
 "(~"
@@ -2523,17 +2531,17 @@ msgstr ""
 "…\n"
 "(~"
 
-#: menubuilder.lua:1239 menubuilder.lua:1493
+#: menubuilder.lua:1258 menubuilder.lua:1512
 msgid " MB)"
 msgstr " MB)"
 
-#: menubuilder.lua:1259 menubuilder.lua:1511
+#: menubuilder.lua:1278 menubuilder.lua:1530
 msgid ""
 "Voice installed:\n"
 msgstr ""
 "Hlas nainstalován:\n"
 
-#: menubuilder.lua:1260
+#: menubuilder.lua:1279
 msgid ""
 "\n"
 "\n"
@@ -2543,29 +2551,29 @@ msgstr ""
 "\n"
 "Nyní je zvolen jako váš aktivní hlas Piper."
 
-#: menubuilder.lua:1265 menubuilder.lua:1333 menubuilder.lua:1517
+#: menubuilder.lua:1284 menubuilder.lua:1352 menubuilder.lua:1536
 msgid ""
 "Download failed:\n"
 msgstr ""
 "Stahování selhalo:\n"
 
-#: menubuilder.lua:1292
+#: menubuilder.lua:1311
 msgid "Japanese voice for sanoTTS: two files, ~14 MB total, from the sanoTTS-jp v1.0.0 release (MIT). The plugin bundles none of this data."
 msgstr "Japonský hlas pro sanoTTS: dva soubory, celkem ~14 MB, z vydání sanoTTS-jp v1.0.0 (MIT). Plugin tato data nepřibaluje."
 
-#: menubuilder.lua:1297
+#: menubuilder.lua:1316
 msgid "Voice weights"
 msgstr "Váhy hlasu"
 
-#: menubuilder.lua:1298
+#: menubuilder.lua:1317
 msgid "Japanese dictionary (438k entries)"
 msgstr "Japonský slovník (438 tis. hesel)"
 
-#: menubuilder.lua:1318
+#: menubuilder.lua:1337
 msgid "Downloading sanoTTS-jp file…"
 msgstr "Stahuji soubor sanoTTS-jp…"
 
-#: menubuilder.lua:1328
+#: menubuilder.lua:1347
 msgid ""
 "Downloaded.\n"
 "\n"
@@ -2575,27 +2583,27 @@ msgstr ""
 "\n"
 "Váhy a slovník © ayutaz/sanoTTS-jp (vydání v1.0.0). Jejich podmínky použití (LICENSE-MODEL.md, NOTICE.md) se uložily vedle hlasu. Pro použití zvolte v TTS engine položku 'sanoTTS-jp (Japanese)'."
 
-#: menubuilder.lua:1343
+#: menubuilder.lua:1362
 msgid "When both files are downloaded, select 'sanoTTS-jp (Japanese)' under TTS engine."
 msgstr "Až budou oba soubory stažené, zvolte v TTS engine položku 'sanoTTS-jp (Japanese)'."
 
-#: menubuilder.lua:1371
+#: menubuilder.lua:1390
 msgid "Disable MBROLA (use regular espeak-ng voice)"
 msgstr "Vypnout MBROLA (použít běžný hlas espeak-ng)"
 
-#: menubuilder.lua:1396
+#: menubuilder.lua:1415
 msgid "English"
 msgstr "Angličtina"
 
-#: menubuilder.lua:1399
+#: menubuilder.lua:1418
 msgid "Chinese"
 msgstr "Čínština"
 
-#: menubuilder.lua:1427
+#: menubuilder.lua:1446
 msgid " (bundled)"
 msgstr " (přibalený)"
 
-#: menubuilder.lua:1441
+#: menubuilder.lua:1460
 msgid ""
 "MBROLA voice selected:\n"
 "%1"
@@ -2603,7 +2611,7 @@ msgstr ""
 "Zvolený hlas MBROLA:\n"
 "%1"
 
-#: menubuilder.lua:1512
+#: menubuilder.lua:1531
 msgid ""
 "\n"
 "\n"
@@ -2613,171 +2621,171 @@ msgstr ""
 "\n"
 "Nyní je zvolen jako váš aktivní hlas MBROLA."
 
-#: menubuilder.lua:1530
+#: menubuilder.lua:1549
 msgid "All available MBROLA voices are already installed."
 msgstr "Všechny dostupné hlasy MBROLA jsou již nainstalovány."
 
-#: menubuilder.lua:1549
+#: menubuilder.lua:1568
 msgid "Native helper: not set"
 msgstr "Nativní pomocník: nenastaven"
 
-#: menubuilder.lua:1551
+#: menubuilder.lua:1570
 msgid "Native helper: %1"
 msgstr "Nativní pomocník: %1"
 
-#: menubuilder.lua:1561
+#: menubuilder.lua:1580
 msgid "Input encoding: %1"
 msgstr "Kódování vstupu: %1"
 
-#: menubuilder.lua:1589
+#: menubuilder.lua:1608
 msgid "daemon/FIFO"
 msgstr "démon/FIFO"
 
-#: menubuilder.lua:1589
+#: menubuilder.lua:1608
 msgid "one-shot"
 msgstr "jednorázově"
 
-#: menubuilder.lua:1590
+#: menubuilder.lua:1609
 msgid "Speed mode: %1"
 msgstr "Režim rychlosti: %1"
 
-#: menubuilder.lua:1594
+#: menubuilder.lua:1613
 msgid "One-shot (run helper per sentence)"
 msgstr "Jednorázově (spustit pomocníka pro každou větu)"
 
-#: menubuilder.lua:1603
+#: menubuilder.lua:1622
 msgid "Daemon/FIFO (keep helper running)"
 msgstr "Démon/FIFO (pomocník běží stále)"
 
-#: menubuilder.lua:1619
+#: menubuilder.lua:1638
 msgid "FIFO path: default"
 msgstr "Cesta FIFO: výchozí"
 
-#: menubuilder.lua:1621
+#: menubuilder.lua:1640
 msgid "FIFO path: %1"
 msgstr "Cesta FIFO: %1"
 
-#: menubuilder.lua:1633
+#: menubuilder.lua:1652
 msgid "Pre-synthesis command: none"
 msgstr "Příkaz před syntézou: žádný"
 
-#: menubuilder.lua:1635
+#: menubuilder.lua:1654
 msgid "Pre-synthesis command: %1"
 msgstr "Příkaz před syntézou: %1"
 
-#: menubuilder.lua:1652
+#: menubuilder.lua:1671
 msgid "Select native TTS helper"
 msgstr "Vyberte nativního TTS pomocníka"
 
-#: menubuilder.lua:1664
+#: menubuilder.lua:1683
 msgid "Native helper path saved."
 msgstr "Cesta nativního pomocníka uložena."
 
-#: menubuilder.lua:1679
+#: menubuilder.lua:1698
 msgid "Native TTS FIFO path"
 msgstr "Cesta FIFO nativního TTS"
 
-#: menubuilder.lua:1682
+#: menubuilder.lua:1701
 msgid "Optional path to the request FIFO used in daemon mode. Leave empty to use the default."
 msgstr "Volitelná cesta k FIFO požadavků v režimu démona. Pro výchozí nechte prázdné."
 
-#: menubuilder.lua:1714
+#: menubuilder.lua:1733
 msgid "Pre-synthesis command"
 msgstr "Příkaz před syntézou"
 
-#: menubuilder.lua:1717
+#: menubuilder.lua:1736
 msgid "Optional shell command to run before each synthesis request (for example, to wake or restart a device-specific audio path)."
 msgstr "Volitelný shell příkaz spuštěný před každým požadavkem na syntézu (například pro probuzení nebo restart zvukové cesty konkrétního zařízení)."
 
-#: menubuilder.lua:1750
+#: menubuilder.lua:1769
 msgid "English (UK)"
 msgstr "Angličtina (UK)"
 
-#: menubuilder.lua:1759
+#: menubuilder.lua:1778
 msgid "Ukrainian"
 msgstr "Ukrajinština"
 
-#: menubuilder.lua:1762
+#: menubuilder.lua:1781
 msgid "Catalan"
 msgstr "Katalánština"
 
-#: menubuilder.lua:1763
+#: menubuilder.lua:1782
 msgid "Chinese (Simplified)"
 msgstr "Čínština (zjednodušená)"
 
-#: menubuilder.lua:1764
+#: menubuilder.lua:1783
 msgid "Chinese (Traditional)"
 msgstr "Čínština (tradiční)"
 
-#: menubuilder.lua:1767
+#: menubuilder.lua:1786
 msgid "Danish"
 msgstr "Dánština"
 
-#: menubuilder.lua:1771
+#: menubuilder.lua:1790
 msgid "Norwegian"
 msgstr "Norština"
 
-#: menubuilder.lua:1794
+#: menubuilder.lua:1813
 msgid "offline"
 msgstr "offline"
 
-#: menubuilder.lua:1794
+#: menubuilder.lua:1813
 msgid "online"
 msgstr "online"
 
-#: menubuilder.lua:1796
+#: menubuilder.lua:1815
 msgid "%1 · %2 (%3)"
 msgstr "%1 · %2 (%3)"
 
-#: menubuilder.lua:1798
+#: menubuilder.lua:1817
 msgid "%1 (%2)"
 msgstr "%1 (%2)"
 
-#: menubuilder.lua:1815 menubuilder.lua:1837 menubuilder.lua:2083 menubuilder.lua:2111 menubuilder.lua:2147
+#: menubuilder.lua:1834 menubuilder.lua:1856 menubuilder.lua:2102 menubuilder.lua:2130 menubuilder.lua:2166
 msgid "Voice set to %1."
 msgstr "Hlas nastaven na %1."
 
-#: menubuilder.lua:1850
+#: menubuilder.lua:1869
 msgid "No voices found."
 msgstr "Nebyly nalezeny žádné hlasy."
 
-#: menubuilder.lua:1859 menubuilder.lua:1952 menubuilder.lua:1963
+#: menubuilder.lua:1878 menubuilder.lua:1971 menubuilder.lua:1982
 msgid "Could not open voice list."
 msgstr "Nepodařilo se otevřít seznam hlasů."
 
-#: menubuilder.lua:1941 menubuilder.lua:2182 menubuilder.lua:2201
+#: menubuilder.lua:1960 menubuilder.lua:2201 menubuilder.lua:2220
 msgid "Select voice"
 msgstr "Vyberte hlas"
 
-#: menubuilder.lua:1977
+#: menubuilder.lua:1996
 msgid "Auto (book language)"
 msgstr "Automaticky (jazyk knihy)"
 
-#: menubuilder.lua:1998
+#: menubuilder.lua:2017
 msgid "Installed voices"
 msgstr "Nainstalované hlasy"
 
-#: menubuilder.lua:2032
+#: menubuilder.lua:2051
 msgid "Languages"
 msgstr "Jazyky"
 
-#: menubuilder.lua:2174
+#: menubuilder.lua:2193
 msgid "Loading voices…"
 msgstr "Načítám hlasy…"
 
-#: menubuilder.lua:2269
+#: menubuilder.lua:2288
 msgid "Speech rate"
 msgstr "Rychlost řeči"
 
-#: menubuilder.lua:2330 menubuilder.lua:2361
+#: menubuilder.lua:2349 menubuilder.lua:2380
 msgid "Sentence pause"
 msgstr "Pauza po větě"
 
-#: menubuilder.lua:2345 menubuilder.lua:2376
+#: menubuilder.lua:2364 menubuilder.lua:2395
 msgid "Paragraph pause"
 msgstr "Pauza po odstavci"
 
-#: menubuilder.lua:2412
+#: menubuilder.lua:2431
 msgid "TTS settings"
 msgstr "Nastavení TTS"
 

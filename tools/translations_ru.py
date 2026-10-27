@@ -406,6 +406,8 @@ TRANSLATIONS_RU = {
     "Speech rate: %1x": "Скорость речи: %1x",
     "Pitch: %1": "Высота: %1",
     "Volume: %1%%": "Громкость: %1%%",
+    "Bottom bar size: %1×": "Размер нижней панели: %1×",
+    "Height and font of the player bar at the bottom of the page. Takes effect the next time reading aloud starts.": "Высота и шрифт панели плеера внизу страницы. Применяется при следующем запуске чтения вслух.",
     "Sentence pause (. ? !): %1s": "Пауза после предложения (. ? !): %1 с",
     "Paragraph pause (newlines): %1s": "Пауза после абзаца (перевод строки): %1 с",
     "Sentence gap (. ? !): %1s": "Промежуток после предложения (. ? !): %1 с",

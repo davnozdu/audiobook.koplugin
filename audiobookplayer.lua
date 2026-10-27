@@ -598,14 +598,20 @@ function AudiobookPlayer:setupUI()
     self.dimen.y = 0
 
     -- ── Mini-player bar (shown when minimized) ──
-    self._mini_height = Screen:scaleBySize(44)
-    local mini_btn_size = self._mini_height - 20  -- keep clear of the mini bar border
+    -- «Размер нижней панели» (MyTTS fork): the bar and its fonts grow by this factor; the buttons grow as far as a row of
+    -- them still fits the screen width.
+    local bar_settings = G_reader_settings and G_reader_settings:readSetting("audiobook_settings") or {}
+    local bar_scale = tonumber(bar_settings.mini_bar_scale) or 2
+    local function fs(n) return math.floor(n * math.min(bar_scale, 2) + 0.5) end
+    self._mini_height = Screen:scaleBySize(math.floor(44 * bar_scale))
+    local mini_btn_size = math.min(self._mini_height - 20,  -- keep clear of the mini bar border
+        math.floor(self.width / 7.5))
 
     self._mini_play_pause = Button:new{
         text = self.is_playing and "⏸" or "▶",
         width = mini_btn_size,
         height = mini_btn_size,
-        text_font_size = 18,
+        text_font_size = fs(18),
         callback = function() self:onPlayPause() end,
         bordersize = 0,
         show_parent = self,
@@ -615,7 +621,7 @@ function AudiobookPlayer:setupUI()
         text = "✕",
         width = mini_btn_size,
         height = mini_btn_size,
-        text_font_size = 16,
+        text_font_size = fs(16),
         callback = function() self:onClose() end,
         bordersize = 0,
         show_parent = self,
@@ -627,7 +633,7 @@ function AudiobookPlayer:setupUI()
             text = "○",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 18,
+            text_font_size = fs(18),
             callback = function() self:onRefocus() end,
             bordersize = 0,
             show_parent = self,
@@ -659,7 +665,7 @@ function AudiobookPlayer:setupUI()
             text = self:_speedText(),
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 11,
+            text_font_size = fs(11),
             callback = function() self:onSpeed() end,
             bordersize = 0,
             show_parent = self,
@@ -668,7 +674,7 @@ function AudiobookPlayer:setupUI()
             text = "⚙",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 16,
+            text_font_size = fs(16),
             callback = function() self:onTtsSettings() end,
             bordersize = 0,
             show_parent = self,
@@ -694,7 +700,7 @@ function AudiobookPlayer:setupUI()
             text = "−",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 16,
+            text_font_size = fs(16),
             callback = function() nudge(-100) end,
             bordersize = 0,
             show_parent = self,
@@ -703,7 +709,7 @@ function AudiobookPlayer:setupUI()
             text = "+",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 16,
+            text_font_size = fs(16),
             callback = function() nudge(100) end,
             bordersize = 0,
             show_parent = self,
@@ -726,7 +732,7 @@ function AudiobookPlayer:setupUI()
             text = "♪−",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 13,
+            text_font_size = fs(13),
             callback = function() self:_applyVolume(-10) end,
             bordersize = 0,
             show_parent = self,
@@ -735,7 +741,7 @@ function AudiobookPlayer:setupUI()
             text = "♪+",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 13,
+            text_font_size = fs(13),
             callback = function() self:_applyVolume(10) end,
             bordersize = 0,
             show_parent = self,
@@ -757,7 +763,7 @@ function AudiobookPlayer:setupUI()
             text = "☰",
             width = mini_btn_size,
             height = mini_btn_size,
-            text_font_size = 16,
+            text_font_size = fs(16),
             callback = function() self:onChapterList() end,
             bordersize = 0,
             show_parent = self,
@@ -776,7 +782,7 @@ function AudiobookPlayer:setupUI()
     self._mini_title = TextWidget:new{
         text = (self.chapter_title and self.chapter_title ~= "" and self.chapter_title)
             or self.output_name or self.title or _("Audiobook"),
-        face = Font:getFace("cfont", 13),
+        face = Font:getFace("cfont", fs(13)),
         max_width = center_max_width,
         truncate_left = false,
     }
@@ -790,7 +796,7 @@ function AudiobookPlayer:setupUI()
     else
         self._mini_time = TextWidget:new{
             text = self.current_time_str or "",
-            face = Font:getFace("cfont", 11),
+            face = Font:getFace("cfont", fs(11)),
             max_width = center_max_width,
         }
         mini_center = VerticalGroup:new{
