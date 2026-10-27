@@ -196,12 +196,15 @@ local function alog(...)
     if DL and DL.log then pcall(DL.log, ...) end
 end
 
-function MyTTS.ahead(plugin)
+function MyTTS.ahead(plugin, tries)
     if not MyTTS.available() then alog("mytts-ahead no android module"); return end
     local UIManager = require("ui/uimanager")
-    UIManager:scheduleIn(0.5, function()
+    tries = tries or 0
+    UIManager:scheduleIn(tries == 0 and 0.5 or 1, function()
         local sc = plugin.sync_controller
         if not (sc and sc.isPlaying and sc:isPlaying()) then
+            -- Reading is starting (the engine loads, the first sentence is made): ask again, up to 20 s.
+            if sc and sc.state == "loading" and tries < 20 then MyTTS.ahead(plugin, tries + 1); return end
             alog("mytts-ahead skip state", sc and tostring(sc.state) or "no controller")
             return
         end
