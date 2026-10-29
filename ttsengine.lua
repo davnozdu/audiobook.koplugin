@@ -2458,6 +2458,13 @@ function TTSEngine:_myttsPlaying(text)
     pcall(MyTTS.playing, text)
 end
 
+--- Пауза: MyTTS гасит фон сразу, а не через 0.8 с эвристики «между фразами».
+function TTSEngine:_myttsPaused()
+    local ok, MyTTS = pcall(require, "mytts")
+    if not ok or not MyTTS or not MyTTS.paused then return end
+    pcall(MyTTS.paused)
+end
+
 --[[--
 Check if prefetched audio matches the given text and swap it in.
 @param text string The sentence text to check
@@ -7042,6 +7049,7 @@ function TTSEngine:pause()
         logger.warn("TTSEngine: pause; speaking=", tostring(self.is_speaking))
         self.is_paused = true
         self.pause_time = UIManager:getTime()
+        self:_myttsPaused()
         -- Android: pause via MediaPlayer API
         if self.audio_player_type == "android" and self._android_tts then
             self._android_tts:pausePlayback()

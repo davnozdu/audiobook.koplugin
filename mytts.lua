@@ -102,6 +102,11 @@ end
 --- Reports the sentence whose audio has just started playing. MyTTS holds the scene and the sound cues of a
 --- file request until this call, so background sounds land with the words and not with the request (the lookahead
 --- already writes sentences ahead). One provider call per sentence; no window is opened.
+--- Пауза чтения: фон в MyTTS гаснет сразу.
+function MyTTS.paused()
+    return MyTTS.call("paused", "")
+end
+
 function MyTTS.playing(text)
     if not text or text == "" then return false end
     return MyTTS.call("playing", jniText(text, 400)) ~= nil
