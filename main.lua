@@ -3764,7 +3764,15 @@ function Audiobook:_claimMediaButtons()
     if not BtMediaControl then return end
     pcall(function()
         self:_ensureBtMediaControl()
-        BtMediaControl.sendPlaybackStatus("paused")
+        -- startSession просит аудиофокус: чужая сессия (подкаст) получает LOSS и замолкает, а наша
+        -- становится самой свежей для медиакнопок. Сразу после этого публикуем «пауза», чтобы ничего не «играло».
+        local session = BtMediaControl.getAndroidSession and BtMediaControl.getAndroidSession()
+        if session then
+            session:startSession(_("Audiobook"), "")
+            session:sendPlaybackStatus("paused")
+        else
+            BtMediaControl.sendPlaybackStatus("paused")
+        end
     end)
 end
 
