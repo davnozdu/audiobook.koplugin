@@ -364,7 +364,8 @@ function AndroidMediaSession:startPolling(plugin)
             if on ~= nil then self._headphones = on end
         end
         -- Paused or stopped: buttons are still heard, but once a second instead of five times.
-        UIManager:scheduleIn(playing and 0.2 or 1, tick)
+        -- Пауза: 0.3 с вместо 1 с — кнопка с гарнитуры («продолжить») должна срабатывать сразу.
+        UIManager:scheduleIn(0.2, tick)
     end
     UIManager:scheduleIn(0.2, tick)
 end

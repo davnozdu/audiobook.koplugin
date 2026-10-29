@@ -193,7 +193,7 @@ function Audiobook:init()
 
     -- Забрать медиакнопки сразу при открытии книги: иначе нажатие «играть» на наушниках уходит в чужую
     -- сессию (например, в подкаст-плеер), которая последней была активной.
-    UIManager:scheduleIn(2, function() pcall(function() self:_claimMediaButtons() end) end)
+    UIManager:scheduleIn(0, function() pcall(function() self:_claimMediaButtons() end) end)
 
     -- If the user chose "Play aligned/enriched audiobook" from the browser,
     -- the FileManager plugin instance stored a pending request before ReaderUI
