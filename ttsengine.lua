@@ -2646,11 +2646,13 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
                 UIManager:scheduleIn(0.1, pollSlotDone)
                 return
             else
-                logger.warn("TTSEngine: Android slot clip never started in 10 s, falling back")
-                return engine:_androidSlotClipFailed()
+                -- Плеер так и не сообщил PLAYING (в этом режиме он часто не сообщает вовсе). Не объявляем клип
+                -- мёртвым и не срываемся в откат: таймингом занимается сам контроллер.
+                logger.warn("TTSEngine: Android slot clip never reported playing; leaving timing to the controller")
+                return
             end
         end
-        if atts:isPlaybackDone() then
+        if started and atts:isPlaybackDone() then
             local elapsed_ms = engine._audio_launched_at
                 and time.to_ms(UIManager:getTime() - engine._audio_launched_at) or dur_ms
             -- A clip that reports done far before its WAV duration is a
@@ -3999,7 +4001,9 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
             end
             if (status == 2 or status == 3) and not pcm_active
                 and allow_pcm_degrade
-                and played_ms >= 100 and played_ms < dur_ms - 800 then
+                -- Порог мягче: хвост тишины и задержка старта давали ложные «обрывы» (5300 из 6312 мс) и
+                -- предложение читалось повторно.
+                and played_ms >= 100 and played_ms < dur_ms - 1500 and played_ms < dur_ms * 0.8 then
                 -- Mid-clip teardown signature from issue #44: the pipeline
                 -- reported completion (or an error) far before the WAV
                 -- duration, so the MTK HAL killed the MediaPlayer track.
