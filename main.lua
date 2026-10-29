@@ -191,6 +191,10 @@ function Audiobook:init()
     -- while audio is playing (when the user enables the setting).
     self:_installSleepCoverOverride()
 
+    -- Забрать медиакнопки сразу при открытии книги: иначе нажатие «играть» на наушниках уходит в чужую
+    -- сессию (например, в подкаст-плеер), которая последней была активной.
+    UIManager:scheduleIn(2, function() pcall(function() self:_claimMediaButtons() end) end)
+
     -- If the user chose "Play aligned/enriched audiobook" from the browser,
     -- the FileManager plugin instance stored a pending request before ReaderUI
     -- loaded. Handle it now that we have a document.
@@ -3753,6 +3757,17 @@ end
 --- Ensure headset media buttons are listened for.
 -- The setting defaults to on; an explicit user "off" is always honored,
 -- including on Kindle (AVRCP scan does not run without consent).
+--- Claim the media buttons as soon as KOReader with the audiobook plugin is up.
+--- Android routes a PLAY key to the most recently active MediaSession, so without an own session a
+--- headset press resumes whatever played last (a podcast player) instead of the book.
+function Audiobook:_claimMediaButtons()
+    if not BtMediaControl then return end
+    pcall(function()
+        self:_ensureBtMediaControl()
+        BtMediaControl.sendPlaybackStatus("paused")
+    end)
+end
+
 function Audiobook:_ensureBtMediaControl()
     if not BtMediaControl then return end
     if self:getSetting("bt_media_control", true) then
