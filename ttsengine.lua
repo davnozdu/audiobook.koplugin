@@ -2603,9 +2603,13 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
     -- failure surfaces within ~100 ms as an immediate isPlaybackDone and is
     -- handled by the early-death branch below.
     atts:setPcmMode(self:_androidPcmActive())
-    self:_myttsPlaying(self._mytts_playing_text)
-    self._mytts_playing_text = nil
     local dispatched = atts:playFile(file_path)
+    -- Only after the dispatch: a provider call before it would hold the clip back, and a late start reads as a
+    -- cut sentence (the sentence controller then replays it).
+    if dispatched and dispatched >= 0 then
+        self:_myttsPlaying(self._mytts_playing_text)
+        self._mytts_playing_text = nil
+    end
     local dur_ms = WavUtils.getDurationMs(file_path)
     if not dispatched or dispatched < 0 or not dur_ms or dur_ms <= 0 then
         logger.warn("TTSEngine: Android slot clip failed to start (dispatch=",
