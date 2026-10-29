@@ -2639,11 +2639,15 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
             if atts:isPlaying() then
                 started = true
                 engine._audio_launched_at = UIManager:getTime()
-            elseif poll_count <= 20 then
+            elseif poll_count <= 100 then
+                -- Ждём старт до 10 с: под нагрузкой MediaPlayer готовит дольше 2 с, а isPlaybackDone() в это
+                -- время ещё отвечает за ПРОШЛЫЙ клип — из-за этого живой клип объявлялся «умершим» и предложение
+                -- читалось повторно.
                 UIManager:scheduleIn(0.1, pollSlotDone)
                 return
             else
-                started = true  -- never seen playing: let the checks below decide
+                logger.warn("TTSEngine: Android slot clip never started in 10 s, falling back")
+                return engine:_androidSlotClipFailed()
             end
         end
         if atts:isPlaybackDone() then
@@ -7028,7 +7032,10 @@ end
 Pause playback.
 --]]
 function TTSEngine:pause()
-    if self.is_speaking and not self.is_paused then
+    -- Не требуем is_speaking: между предложениями он уже false, и пауза в этот момент раньше просто игнорировалась —
+    -- чтение продолжалось. Останавливаем игрока всегда; на простое pausePlayback безвреден.
+    if not self.is_paused then
+        logger.warn("TTSEngine: pause; speaking=", tostring(self.is_speaking))
         self.is_paused = true
         self.pause_time = UIManager:getTime()
         -- Android: pause via MediaPlayer API
