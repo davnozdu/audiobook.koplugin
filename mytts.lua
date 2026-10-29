@@ -99,6 +99,14 @@ function MyTTS.extras(plugin, kind)
     return extras
 end
 
+--- Reports the sentence whose audio has just started playing. MyTTS holds the scene and the sound cues of a
+--- file request until this call, so background sounds land with the words and not with the request (the lookahead
+--- already writes sentences ahead). One provider call per sentence; no window is opened.
+function MyTTS.playing(text)
+    if not text or text == "" then return false end
+    return MyTTS.call("playing", jniText(text, 400)) ~= nil
+end
+
 --- MyTTS's SmartBookProvider: ContentResolver.call(method) → table of the Bundle's values, nil when MyTTS cannot be
 --- reached (not installed, or not visible to KOReader). «state» returns title/book/stage/text/error and
 --- running/speaking/paused (0/1); «pause», «resume», «stop», «replay» control the speech.

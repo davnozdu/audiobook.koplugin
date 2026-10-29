@@ -1814,6 +1814,7 @@ function TTSEngine:_androidSelectLanguage(atts, text)
 end
 
 function TTSEngine:synthesizeAndroid(text, audio_file, callback)
+    self._mytts_synth_text = text
     local atts = self:_ensureAndroidTts()
     if not atts then
         logger.err("TTSEngine: Android TTS not initialized")
@@ -2448,6 +2449,15 @@ function TTSEngine:_androidDispatchQueuedPrefetch()
     self._android_prefetch_queued_text = nil
     self:_androidDispatchPrefetch(atts, text, slot_no)
 end
+--- Tells MyTTS that [text] is starting to sound now: the engine holds that sentence's scene and sound cues until
+--- this call (the plugin writes sentences ahead, so the request time is one or two sentences early).
+function TTSEngine:_myttsPlaying(text)
+    if not text or text == "" then return end
+    local ok, MyTTS = pcall(require, "mytts")
+    if not ok or not MyTTS or not MyTTS.playing then return end
+    pcall(MyTTS.playing, text)
+end
+
 --[[--
 Check if prefetched audio matches the given text and swap it in.
 @param text string The sentence text to check
@@ -2469,6 +2479,7 @@ function TTSEngine:usePrefetched(text)
         -- this sentence, so the pipeline status is stale from the last one).
         if self.backend == self.BACKENDS.ANDROID then
             self._android_prefetch_consumed = true
+            self._mytts_playing_text = text
         end
         logger.dbg("TTSEngine: Using prefetched audio")
         return true
@@ -2488,6 +2499,7 @@ function TTSEngine:usePrefetched(text)
         -- slot sub-path (no synthesizeAndPlay dispatch happened for this
         -- sentence, so the pipeline status is stale from the last one).
         self._android_prefetch_consumed = true
+        self._mytts_playing_text = text
         dlog("android-sentence", "slot2-hit")
         logger.dbg("TTSEngine: Using prefetched audio (slot 2)")
         return true
@@ -2591,6 +2603,8 @@ function TTSEngine:_playAndroidSlotClip(atts, my_gen)
     -- failure surfaces within ~100 ms as an immediate isPlaybackDone and is
     -- handled by the early-death branch below.
     atts:setPcmMode(self:_androidPcmActive())
+    self:_myttsPlaying(self._mytts_playing_text)
+    self._mytts_playing_text = nil
     local dispatched = atts:playFile(file_path)
     local dur_ms = WavUtils.getDurationMs(file_path)
     if not dispatched or dispatched < 0 or not dur_ms or dur_ms <= 0 then
@@ -3909,6 +3923,8 @@ function TTSEngine:play(on_word, on_complete, on_fail, concat_files)
         self.play_generation = (self.play_generation or 0) + 1
         local my_gen = self.play_generation
         self.playback_latency_ms = 0
+        self:_myttsPlaying(self._mytts_synth_text)
+        self._mytts_synth_text = nil
         -- Sentence served from the background prefetch slot: the WAV is on
         -- disk and no pipeline was dispatched for it, so play the file
         -- directly.  This must run BEFORE the stale-status check below:
