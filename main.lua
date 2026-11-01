@@ -3769,7 +3769,12 @@ function Audiobook:_claimMediaButtons()
         local session = BtMediaControl.getAndroidSession and BtMediaControl.getAndroidSession()
         if session then
             session:startSession(_("Audiobook"), "")
-            session:sendPlaybackStatus("paused")
+            -- startSession у Java-помощника помечает сессию как PLAYING. Если этого не
+            -- откатить, система и KOReader показывают «играет», хотя ничего не играет.
+            -- Раньше здесь стоял session:sendPlaybackStatus("paused") — такого метода у
+            -- сессии нет (это функция BtMediaControl), ошибка глоталась pcall, и статус
+            -- оставался PLAYING.
+            session:setPlaying(false, 0)
         else
             BtMediaControl.sendPlaybackStatus("paused")
         end

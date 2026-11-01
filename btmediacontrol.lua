@@ -135,6 +135,10 @@ function BtMediaControl._startAndroidMediaSession(plugin)
     end
     BtMediaControl._android_session = session
     session:startSession("Audiobook", "")
+    -- startSession создаёт Java-сессию; без флага следующий статус создавал её заново,
+    -- снова помечая сессию PLAYING.
+    BtMediaControl._android_session_started = true
+    BtMediaControl._last_sent_status = nil
     session:startPolling(plugin)
     logger.warn("BtMediaControl: Android MediaSession AVRCP active")
     return true

@@ -81,7 +81,11 @@ public class MediaSessionHelper {
                 // pause→play status update can briefly lose focus and was
                 // auto-pausing AirPods resume after ~0.5s.
                 if (!hasAudioFocus) requestFocus();
-                setStateInternal(PlaybackState.STATE_PLAYING, positionMs);
+                // Claiming the session must not claim that sound is coming out of it:
+                // with STATE_PLAYING here KOReader looked like it was playing while idle.
+                // PAUSED keeps the session the freshest for headset keys; setPlaying(true)
+                // flips it the moment playback really starts.
+                setStateInternal(PlaybackState.STATE_PAUSED, positionMs);
                 active = true;
                 scheduleModePoll();
             }
