@@ -2337,19 +2337,9 @@ function TTSEngine:prefetchAndroid(text)
         return skip("pipeline still synthesizing (status 0)")
     end
     self._android_prefetch_retries = 0
-    -- Drop a stale slot from an earlier sentence before filling anew — but never a slot that already holds
-    -- THIS text: wiping it is exactly how a ready lookahead used to be thrown away (the sentence then went
-    -- on demand and the engine synthesized the same text twice).
-    if self._prefetch_file and not sameText(self._prefetch_text, text) then
-        os.remove(self._prefetch_file)
-        self._prefetch_file = nil
-        self._prefetch_timing = nil
-        self._prefetch_text = nil
-    end
-    if self._android_prefetch2_file and not sameText(self._android_prefetch2_text, text) then
-        self:_androidCleanSlot2()
-    end
-    self._androidPrefetchInvalidate()
+    -- Drop a stale slot from an earlier sentence before filling anew.
+    self:_cleanPrefetch()
+    self:_androidPrefetchInvalidate()
     return self:_androidDispatchPrefetch(atts, text, 1)
 end
 
