@@ -3128,10 +3128,24 @@ function SyncController:_onAndroidSynthFailed(reason)
     -- twice per failure streak; a success resets both counters.
     if self._android_tts_fail_count >= 2 and (self._android_reconnects or 0) < 2
             and self.tts_engine and self.tts_engine.reconnectAndroidTts then
-        self._android_reconnects = (self._android_reconnects or 0) + 1
-        self._android_tts_fail_count = 0
-        local ok = self.tts_engine:reconnectAndroidTts()
-        logger.warn("SyncController: Android TTS reconnect", self._android_reconnects, "ok=", ok)
+        local controller = self
+        local engine = self.tts_engine
+        local gen = self._chain_generation or 0
+        local now = os.time()
+        -- Рвём соединение не сразу: старый экземпляр синтезатора должен успеть закрыться, иначе
+        -- система снимает процесс читалки нативным вызовом в уже разорванное соединение
+        -- (два подряд пустых клипа и мгновенный реконнект совпали с падением KOReader).
+        if now - (self._android_last_reconnect or 0) >= 10 then
+            self._android_last_reconnect = now
+            self._android_reconnects = (self._android_reconnects or 0) + 1
+            self._android_tts_fail_count = 0
+            UIManager:scheduleIn(2, function()
+                if (controller._chain_generation or 0) ~= gen then return end
+                local ok, res = pcall(function() return engine:reconnectAndroidTts() end)
+                logger.warn("SyncController: Android TTS reconnect", controller._android_reconnects,
+                    "ok=", ok, res)
+            end)
+        end
     elseif self._android_tts_fail_count >= 4 then
         UIManager:show(InfoMessage:new{
             text = _("The Android TTS engine stopped. Neural voices can be killed for memory; open the TTS app once, then start read-aloud again."),
