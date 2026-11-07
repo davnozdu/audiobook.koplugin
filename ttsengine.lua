@@ -60,6 +60,28 @@ local function dlog(...)
     end
 end
 
+--- Сравнение предложений без зависимости от типографики (KOReader присылает то же предложение с другим тире,
+--- кавычкой или неразрывным пробелом), иначе готовое аудио не засчитывалось и фраза синтезировалась заново.
+local function sameText(a, b)
+    if a == b then return true end
+    if type(a) ~= "string" or type(b) ~= "string" then return false end
+    -- Только точные байтовые замены: классы символов в Lua работают по байтам и испортили бы кириллицу.
+    local function norm(t)
+        t = t:gsub("\194\160", " ")   -- неразрывный пробел
+        t = t:gsub("\226\128\139", "") -- нулевой пробел
+        t = t:gsub("\194\173", "")    -- мягкий перенос
+        for _, d in ipairs({ "\226\128\144", "\226\128\145", "\226\128\146", "\226\128\147",
+                "\226\128\148", "\226\128\149", "\226\136\146" }) do
+            t = t:gsub(d, "-")
+        end
+        t = t:gsub("\194\171", '"'):gsub("\194\187", '"')
+        t = t:gsub("\226\128\158", '"'):gsub("\226\128\156", '"'):gsub("\226\128\157", '"')
+        t = t:gsub("\226\128\166", "...") -- многоточие
+        return (t:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+    return norm(a) == norm(b)
+end
+
 local TTSEngine = {
     -- Supported TTS backends
     BACKENDS = {
@@ -2134,7 +2156,7 @@ function TTSEngine:prefetch(text, use_espeak)
         return true  -- launched (or already in queue)
     end
     -- Don't prefetch the same text twice
-    if self._prefetch_text == text and self._prefetch_file then
+    if sameText(self._prefetch_text, text) and self._prefetch_file then
         return true
     end
     -- Clean up any previous prefetch
@@ -2206,15 +2228,15 @@ end
 --- lookahead instead of dispatching a duplicate on-demand synthesis
 --- (issue #96).
 function TTSEngine:getAndroidPrefetchStatus(text)
-    if self._prefetch_file and self._prefetch_text == text then
+    if self._prefetch_file and sameText(self._prefetch_text, text) then
         return "ready"
     end
-    if self._android_prefetch2_file and self._android_prefetch2_text == text then
+    if self._android_prefetch2_file and sameText(self._android_prefetch2_text, text) then
         return "ready"
     end
     if (self._android_prefetch_inflight
-                and self._android_prefetch_inflight_text == text)
-            or self._android_prefetch_queued_text == text then
+                and sameText(self._android_prefetch_inflight_text, text))
+            or sameText(self._android_prefetch_queued_text, text) then
         return "inflight"
     end
     return "none"
@@ -2277,10 +2299,10 @@ function TTSEngine:prefetchAndroid(text)
         return skip("helper not initialized")  -- the on-demand path lazy-inits
     end
     -- Already holding this text (pending or ready)?  Nothing to do.
-    if self._prefetch_file and self._prefetch_text == text then
+    if self._prefetch_file and sameText(self._prefetch_text, text) then
         return true
     end
-    if self._android_prefetch2_file and self._android_prefetch2_text == text then
+    if self._android_prefetch2_file and sameText(self._android_prefetch2_text, text) then
         return true
     end
     -- A background synthesis is already running: Java handles one utterance
@@ -2470,9 +2492,10 @@ Check if prefetched audio matches the given text and swap it in.
 @param text string The sentence text to check
 @return boolean true if prefetch was used
 --]]
+
 function TTSEngine:usePrefetched(text)
     -- Check single-slot prefetch (espeak-ng)
-    if self._prefetch_file and self._prefetch_text == text then
+    if self._prefetch_file and sameText(self._prefetch_text, text) then
         if self.current_audio_file then
             os.remove(self.current_audio_file)
         end
@@ -2493,7 +2516,7 @@ function TTSEngine:usePrefetched(text)
     end
     -- Check the second Android lookahead slot
     if self.backend == self.BACKENDS.ANDROID and self._android_prefetch2_file
-            and self._android_prefetch2_text == text then
+            and sameText(self._android_prefetch2_text, text) then
         if self.current_audio_file then
             os.remove(self.current_audio_file)
         end
@@ -2535,7 +2558,7 @@ _cleanPrefetch() when the file is no longer needed.
 --]]
 function TTSEngine:peekPrefetch(text)
     -- Check single-slot prefetch (espeak-ng)
-    if self._prefetch_file and self._prefetch_text == text then
+    if self._prefetch_file and sameText(self._prefetch_text, text) then
         local dur = self:getWavDurationMs(self._prefetch_file)
         return self._prefetch_file, self._prefetch_timing, dur
     end
