@@ -865,7 +865,9 @@ function SyncController:readNextSentence()
     -- gap the lookahead is meant to remove (issue #96).
     if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
             and self.tts_engine.getAndroidPrefetchStatus
-            and self.tts_engine:getAndroidPrefetchStatus(sentence.text) == "inflight" then
+            -- "ready" входит сюда же: слот мог заполниться между проверкой выше и этой строкой,
+            -- и тогда фраза уходила в синтез второй раз, хотя готовый файл уже лежал.
+            and self.tts_engine:getAndroidPrefetchStatus(sentence.text) ~= "none" then
         local waited_ms = 0
         local my_wait_gen = self._chain_generation or 0
         local function waitForAndroidPrefetch()
@@ -1220,7 +1222,10 @@ function SyncController:readNextSentence()
     logger.warn("SyncController: Synthesizing sentence", self.reading_sentence_idx, "(", sentence.text:sub(1,40), ")")
     if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
         self._android_ondemand = (self._android_ondemand or 0) + 1
-        dlog("android-sentence", "ondemand", "idx", self.reading_sentence_idx)
+        local st = "?"
+        pcall(function() st = self.tts_engine:getAndroidPrefetchStatus(sentence.text) end)
+        dlog("android-sentence", "ondemand", "idx", self.reading_sentence_idx, "status", st,
+            "slot", tostring(self.tts_engine._prefetch_text or self.tts_engine._android_prefetch2_text):sub(1, 24))
     end
 
     local success = self.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)
