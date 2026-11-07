@@ -11,6 +11,9 @@ local DebugLog = {}
 
 local MAX_LINES = 250
 local MAX_FILE_BYTES = 180 * 1024
+-- По умолчанию лог только в памяти: каждая строка раньше сразу шла в debug.log на флеш,
+-- а строки пишутся на каждое предложение. Файл включается настройкой «Журнал плагина».
+local _on_disk = false
 local _lines = {}
 local _path = nil
 local _initialized = false
@@ -24,6 +27,11 @@ end
 
 --- Initialize log path (call once from plugin init).
 -- @param plugin_dir string
+--- Включать/выключать запись на флеш. По умолчанию выключена: память дешёвая, флеш — нет.
+function DebugLog.setOnDisk(enabled)
+    _on_disk = enabled == true
+end
+
 function DebugLog.init(plugin_dir)
     if not plugin_dir or plugin_dir == "" then return end
     plugin_dir = plugin_dir:gsub("//+", "/"):gsub("/+$", "")
@@ -39,7 +47,7 @@ function DebugLog.init(plugin_dir)
         end
     end
     _initialized = true
-    DebugLog.log("DebugLog: ready path=", _path)
+    DebugLog.log("DebugLog: ready path=", _path, "disk=", tostring(_on_disk))
 end
 
 --- Append a debug line (also kept in memory for bug reports).
@@ -54,7 +62,7 @@ function DebugLog.log(...)
     while #_lines > MAX_LINES do
         table.remove(_lines, 1)
     end
-    if _path then
+    if _path and _on_disk then
         local f = io.open(_path, "a")
         if f then
             f:write(line, "\n")

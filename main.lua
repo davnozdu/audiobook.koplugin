@@ -140,7 +140,10 @@ function Audiobook:init()
         -- Persistent debug ring for Android/Boox (included in bug reports).
         local DebugLog = try_dofile(_utils_dir .. "debuglog.lua")
         if DebugLog and DebugLog.init then
-            pcall(function() DebugLog.init(_utils_dir) end)
+            pcall(function()
+                if DebugLog.setOnDisk then DebugLog.setOnDisk(false) end
+                DebugLog.init(_utils_dir)
+            end)
             self._debug_log = DebugLog
             package.loaded["audiobook_debuglog"] = DebugLog
         end

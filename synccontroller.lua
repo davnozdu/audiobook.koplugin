@@ -851,8 +851,7 @@ function SyncController:readNextSentence()
         self._piper_warmed_up = true
         if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
             self._android_slot_hits = (self._android_slot_hits or 0) + 1
-            dlog("android-sentence", "slot-hit", "idx", self.reading_sentence_idx,
-                "chars", #sentence.text, "text", (sentence.text:gsub("%s+", " ")))
+            dlog("android-sentence", "slot-hit", "idx", self.reading_sentence_idx)
         end
         controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
         controller:beginSentencePlayback(sentence)
@@ -1221,8 +1220,7 @@ function SyncController:readNextSentence()
     logger.warn("SyncController: Synthesizing sentence", self.reading_sentence_idx, "(", sentence.text:sub(1,40), ")")
     if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
         self._android_ondemand = (self._android_ondemand or 0) + 1
-        dlog("android-sentence", "ondemand", "idx", self.reading_sentence_idx,
-            "chars", #sentence.text, "text", (sentence.text:gsub("%s+", " ")))
+        dlog("android-sentence", "ondemand", "idx", self.reading_sentence_idx)
     end
 
     local success = self.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)

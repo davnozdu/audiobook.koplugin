@@ -2537,14 +2537,6 @@ Check if prefetched audio matches the given text and swap it in.
 @return boolean true if prefetch was used
 --]]
 
---- Только диагностика: пишем в debug.log, когда слот есть, но текст не совпал — без этого промах
---- упреждения выглядит как «движок считает одну фразу дважды» без причины.
-local function dlogSlotMiss(slot_text, text)
-    if type(slot_text) ~= "string" or type(text) ~= "string" then return end
-    dlog("android-slot", "miss", "want", #text, "have", #slot_text,
-        "w", text:sub(1, 20), "h", slot_text:sub(1, 20))
-end
-
 function TTSEngine:usePrefetched(text)
     -- Готовый клип этой фразы (Android): берём по тексту, в каком бы порядке он ни был посчитан.
     if self.backend == self.BACKENDS.ANDROID then
@@ -2557,18 +2549,11 @@ function TTSEngine:usePrefetched(text)
             self.timing_data = ready.timing
             self._android_prefetch_consumed = true
             self._mytts_playing_text = text
-            dlog("android-sentence", "cache-hit", "chars", #text, "left", self:_androidReadyCount())
             logger.dbg("TTSEngine: Using prefetched audio (cache)")
             return true
         end
     end
     -- Check single-slot prefetch (espeak-ng)
-    if self._prefetch_file and not sameText(self._prefetch_text, text) then
-        pcall(dlogSlotMiss, self._prefetch_text, text)
-    end
-    if self._android_prefetch2_file and not sameText(self._android_prefetch2_text, text) then
-        pcall(dlogSlotMiss, self._android_prefetch2_text, text)
-    end
     if self._prefetch_file and sameText(self._prefetch_text, text) then
         if self.current_audio_file then
             os.remove(self.current_audio_file)
