@@ -2222,12 +2222,68 @@ function TTSEngine:_androidCleanSlot2()
     self._prefetch2_timing = nil
 end
 
+--- Готовые клипы упреждения хранятся по тексту, а не по «слоту 1 / слоту 2».
+--- Раньше каждый новый запрос упреждения вызывал _cleanPrefetch() и стирал уже
+--- готовый клип другой фразы, поэтому читалка почти всегда просила фразу,
+--- которой в слоте не было (журнал: want 62 have 259), и синтезировала её
+--- заново — каждая фраза считалась дважды.  Кэш на три записи переживает
+--- забегание вперёд и не зависит от порядка предложений.
+local ANDROID_READY_SLOTS = 3
+
+function TTSEngine:_androidReadyPut(text, file, timing)
+    if not text or text == "" or not file then return end
+    self._android_ready = self._android_ready or {}
+    local list = self._android_ready
+    for i = #list, 1, -1 do
+        if sameText(list[i].text, text) then
+            if list[i].file and list[i].file ~= file then os.remove(list[i].file) end
+            table.remove(list, i)
+        end
+    end
+    list[#list + 1] = { text = text, file = file, timing = timing }
+    while #list > ANDROID_READY_SLOTS do
+        local old = table.remove(list, 1)
+        if old and old.file then os.remove(old.file) end
+    end
+end
+
+function TTSEngine:_androidReadyFind(text)
+    for _, e in ipairs(self._android_ready or {}) do
+        if sameText(e.text, text) then return e end
+    end
+    return nil
+end
+
+function TTSEngine:_androidReadyTake(text)
+    local list = self._android_ready or {}
+    for i = 1, #list do
+        if sameText(list[i].text, text) then
+            return table.remove(list, i)
+        end
+    end
+    return nil
+end
+
+function TTSEngine:_androidReadyCount()
+    return #(self._android_ready or {})
+end
+
+function TTSEngine:_androidReadyClear()
+    for _, e in ipairs(self._android_ready or {}) do
+        if e.file then os.remove(e.file) end
+    end
+    self._android_ready = {}
+end
+
 --- Lookahead status for a sentence: "ready" (a slot holds its audio),
 --- "inflight" (background synthesis still running or queued behind one), or
 --- "none".  Used by the sentence controller to wait out an in-flight
 --- lookahead instead of dispatching a duplicate on-demand synthesis
 --- (issue #96).
 function TTSEngine:getAndroidPrefetchStatus(text)
+    if self:_androidReadyFind(text) then
+        return "ready"
+    end
     if self._prefetch_file and sameText(self._prefetch_text, text) then
         return "ready"
     end
@@ -2337,9 +2393,9 @@ function TTSEngine:prefetchAndroid(text)
         return skip("pipeline still synthesizing (status 0)")
     end
     self._android_prefetch_retries = 0
-    -- Drop a stale slot from an earlier sentence before filling anew.
-    self:_cleanPrefetch()
-    self:_androidPrefetchInvalidate()
+    -- Раньше здесь стояли _cleanPrefetch() и _androidPrefetchInvalidate(): каждый
+    -- новый запрос стирал уже готовый клип ДРУГОЙ фразы, и она потом считалась
+    -- заново.  Готовые клипы живут в кэше по тексту и переживают забегание вперёд.
     return self:_androidDispatchPrefetch(atts, text, 1)
 end
 
@@ -2407,15 +2463,7 @@ function TTSEngine:_androidPollPrefetch(slot_path, text, slot_no, my_gen)
             engine:generateTimingEstimates(text)
             local timing = engine.timing_data
             engine.timing_data = saved_timing
-            if slot_no == 2 then
-                engine._android_prefetch2_file = slot_path
-                engine._android_prefetch2_text = text
-                engine._prefetch2_timing = timing
-            else
-                engine._prefetch_timing = timing
-                engine._prefetch_file = slot_path
-                engine._prefetch_text = text
-            end
+            engine:_androidReadyPut(text, slot_path, timing)
             logger.warn("TTSEngine: Android prefetch ready for:", text:sub(1, 40))
             dlog("android-prefetch", "ready", "slot", slot_no, "chars", #text)
             -- The engine is free: launch a queued follow-up if one waits.
@@ -2460,16 +2508,12 @@ function TTSEngine:_androidDispatchQueuedPrefetch()
     end
     local atts = self._android_tts
     if not atts then return end
-    local slot_no
-    if not self._android_prefetch2_file then
-        slot_no = 2
-    elseif not self._prefetch_file then
-        slot_no = 1
-    else
+    if self:_androidReadyCount() >= ANDROID_READY_SLOTS then
+        -- Впереди уже три готовые фразы: ещё одна не понадобится.
         return
     end
     self._android_prefetch_queued_text = nil
-    self:_androidDispatchPrefetch(atts, text, slot_no)
+    self:_androidDispatchPrefetch(atts, text, 1)
 end
 --- Tells MyTTS that [text] is starting to sound now: the engine holds that sentence's scene and sound cues until
 --- this call (the plugin writes sentences ahead, so the request time is one or two sentences early).
@@ -2502,6 +2546,22 @@ local function dlogSlotMiss(slot_text, text)
 end
 
 function TTSEngine:usePrefetched(text)
+    -- Готовый клип этой фразы (Android): берём по тексту, в каком бы порядке он ни был посчитан.
+    if self.backend == self.BACKENDS.ANDROID then
+        local ready = self:_androidReadyTake(text)
+        if ready and ready.file then
+            if self.current_audio_file then
+                os.remove(self.current_audio_file)
+            end
+            self.current_audio_file = ready.file
+            self.timing_data = ready.timing
+            self._android_prefetch_consumed = true
+            self._mytts_playing_text = text
+            dlog("android-sentence", "cache-hit", "chars", #text, "left", self:_androidReadyCount())
+            logger.dbg("TTSEngine: Using prefetched audio (cache)")
+            return true
+        end
+    end
     -- Check single-slot prefetch (espeak-ng)
     if self._prefetch_file and not sameText(self._prefetch_text, text) then
         pcall(dlogSlotMiss, self._prefetch_text, text)
@@ -2571,6 +2631,12 @@ _cleanPrefetch() when the file is no longer needed.
 @return number      Duration in ms
 --]]
 function TTSEngine:peekPrefetch(text)
+    -- Готовый клип этой фразы из кэша упреждения (Android): его длительность нужна
+    -- контроллеру, чтобы решить, ждать ли упреждение.
+    local ready = self:_androidReadyFind(text)
+    if ready and ready.file then
+        return ready.file, ready.timing, self:getWavDurationMs(ready.file)
+    end
     -- Check single-slot prefetch (espeak-ng)
     if self._prefetch_file and sameText(self._prefetch_text, text) then
         local dur = self:getWavDurationMs(self._prefetch_file)
@@ -2619,6 +2685,7 @@ function TTSEngine:_cleanPrefetch()
     self._prefetch_in_use = false
     -- Second Android lookahead slot and any queued follow-up
     self:_androidCleanSlot2()
+    self:_androidReadyClear()
     self._android_prefetch_queued_text = nil
     -- Clean Piper async queue
     self._piper:cleanQueue()
