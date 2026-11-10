@@ -69,7 +69,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" "platforms;android-34" > /dev/null 2>&1
           # Build the .dex
-          cd android && bash build-dex.sh
+          cd android && { bash build-dex.sh || { echo "dex build failed on this runner: the committed .dex files (built by «Android plugin build») are used"; git checkout -- tts_helper.dex media_session_helper.dex; }; }
           # Copy into the bundle
           cp tts_helper.dex media_session_helper.dex ../kobo-tts-bundle/audiobook.koplugin/android/
 
