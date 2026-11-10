@@ -451,8 +451,13 @@ function AndroidTts:queueSpeak(id, text, flush)
         local env = jni.env
         local j_id = env[0].NewStringUTF(env, id)
         local j_text = env[0].NewStringUTF(env, text)
-        local result = env[0].CallIntMethod(env, self._helper_ref, self._method.queueSpeak, j_id, j_text,
-            flush and 1 or 0)
+        -- jvalue array: a Lua number passed through C varargs arrives as a double, so a plain «0» reached Java as
+        -- true and every sentence flushed the engine queue (each one cut the one before it).
+        local args = ffi.new("jvalue[3]")
+        args[0].l = j_id
+        args[1].l = j_text
+        args[2].z = flush and 1 or 0
+        local result = env[0].CallIntMethodA(env, self._helper_ref, self._method.queueSpeak, args)
         env[0].DeleteLocalRef(env, j_id)
         env[0].DeleteLocalRef(env, j_text)
         if checkException(env) then
