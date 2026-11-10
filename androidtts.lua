@@ -29,6 +29,15 @@ local function fileExists(path)
     return false
 end
 
+
+--- Diagnostics: who touches the engine while the queue plays (each of these stops the engine's current utterance).
+local function qtrace(what)
+    local DL = package.loaded["audiobook_debuglog"]
+    if DL and DL.log then
+        pcall(DL.log, "engine " .. what .. " by", (debug.traceback("", 3):gsub("\n%s*", " | "):sub(1, 400)))
+    end
+end
+
 function AndroidTts:new(o)
     o = o or {}
     setmetatable(o, self)
@@ -409,6 +418,7 @@ Start synthesis to a WAV file (async).
 @return number  0 on successful dispatch, -1 if not ready, >0 on error
 --]]
 function AndroidTts:synthesizeToFile(text, output_path)
+    qtrace("synthesizeToFile")
     if not self._initialized or not self._helper_ref then return -1 end
     local android = self._android
     return android.jni:context(android.app.activity.vm, function(jni)
@@ -455,6 +465,7 @@ end
 
 --- Silence the engine and drop its queue.
 function AndroidTts:queueStop()
+    qtrace("queueStop")
     if not self:hasQueue() then return end
     local android = self._android
     android.jni:context(android.app.activity.vm, function(jni)
@@ -666,6 +677,7 @@ end
 --- never learned about the pause.  Reached through JNI field access, so the
 --- prebuilt helper .dex needs no new method.
 function AndroidTts:engineStop()
+    qtrace("engineStop")
     if not self._initialized or not self._helper_ref then return end
     local android = self._android
     pcall(function()
@@ -786,6 +798,7 @@ automatically on the Java side without needing a Lua poll round-trip.
 @return number  0 on successful dispatch, -1 if not ready, >0 on error
 --]]
 function AndroidTts:synthesizeAndPlay(text, output_path)
+    qtrace("synthesizeAndPlay")
     if not self._initialized or not self._helper_ref then return -1 end
     local android = self._android
     return android.jni:context(android.app.activity.vm, function(jni)
@@ -838,6 +851,7 @@ end
 Cancel the pipeline (synthesis and/or playback) and release audio focus.
 --]]
 function AndroidTts:stopPipeline()
+    qtrace("stopPipeline")
     if not self._initialized or not self._helper_ref then return end
     local android = self._android
     android.jni:context(android.app.activity.vm, function(jni)

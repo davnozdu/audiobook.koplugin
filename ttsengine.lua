@@ -1860,6 +1860,12 @@ end
 
 --- Silence the engine queue (pause, stop, jump). The next queueSpeakAndroid starts a new run.
 function TTSEngine:queueStopAndroid()
+    if self._queue_active then
+        local DL = package.loaded["audiobook_debuglog"]
+        if DL and DL.log then
+            pcall(DL.log, "queue stop by", (debug.traceback("", 2):gsub("\n%s*", " | "):sub(1, 400)))
+        end
+    end
     if self._android_tts and self._queue_active then
         pcall(function() self._android_tts:queueStop() end)
     end

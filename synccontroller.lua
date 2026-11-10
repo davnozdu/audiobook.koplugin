@@ -3989,6 +3989,7 @@ function SyncController:_queuePlay(sentence)
         -- A new run: start, jump, resume, recovery. Whatever the engine still had is dropped.
         self._q_run = (self._q_run or 0) + 1
         self._q_ids, self._q_queued, self._q_next = {}, {}, nil
+        self._q_started_in_run = false
         local id = self:_queueId(sentence.index)
         if not e:queueSpeakAndroid(id, sentence.text, true) then
             logger.warn("SyncController: queue dispatch failed; falling back to per-sentence playback")
@@ -4084,6 +4085,11 @@ function SyncController:_queueTick()
         self._q_changed_at = UIManager:getTime()
         logger.warn("SyncController: queue: engine refused", st.error)
         dlog("queue", "error", st.error)
+        -- A sentence of this run refused before any of the run was heard: the engine connection is dead (MyTTS was
+        -- updated or restarted). Bind again and go on from the current sentence.
+        if self._q_ids and self._q_ids[st.error] and not self._q_started_in_run then
+            return self:_queueRecover("engine refuses the queue", true)
+        end
         self:_queueOnDone(st.error)
     end
     if st.done ~= "" and st.done ~= self._q_last_done then
@@ -4119,6 +4125,7 @@ function SyncController:_queueOnStart(id)
     if not sentence then return end
     dlog("queue", "start", m.idx, "of", self.total_sentences, "page", self._q_page)
     self._q_recoveries = 0
+    self._q_started_in_run = true
     self:_noteHeard(sentence)
     self._tts_heard_audio = true
     self._tts_session_warm = true
@@ -4163,7 +4170,7 @@ function SyncController:_queueRecover(reason, lost)
     dlog("queue", "recover", self._q_recoveries, reason)
     local e = self.tts_engine
     e:queueStopAndroid()
-    if lost then pcall(function() e:reconnectAndroidTts() end) end
+    if lost or not self._q_started_in_run then pcall(function() e:reconnectAndroidTts() end) end
     if self._q_recoveries > self.QUEUE_MAX_RECOVERIES then
         logger.warn("SyncController: queue mode off for this session after", self._q_recoveries, "recoveries")
         self._q_disabled = true
