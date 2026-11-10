@@ -4111,9 +4111,13 @@ function SyncController:_queueOnStart(id)
         end
         return
     end
-    if m.page ~= self._q_page or not self.parsed_data then return end
+    if m.page ~= self._q_page or not self.parsed_data then
+        dlog("queue", "start-stale", id)
+        return
+    end
     local sentence = self.parsed_data.sentences[m.idx]
     if not sentence then return end
+    dlog("queue", "start", m.idx, "of", self.total_sentences, "page", self._q_page)
     self._q_recoveries = 0
     self:_noteHeard(sentence)
     self._tts_heard_audio = true
@@ -4141,6 +4145,7 @@ end
 
 function SyncController:_queueOnDone(id)
     local m = self._q_ids and self._q_ids[id]
+    dlog("queue", "done", m and m.idx or "?", "page", m and m.page or "?", "cur", self._q_page)
     if not m or m.page ~= self._q_page then return end
     -- The last sentence of the page ended and the next page is not in the queue: turn the page the usual way.
     if m.idx >= (self.total_sentences or 0) and not self._q_advancing

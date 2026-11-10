@@ -141,7 +141,10 @@ function Audiobook:init()
         local DebugLog = try_dofile(_utils_dir .. "debuglog.lua")
         if DebugLog and DebugLog.init then
             pcall(function()
-                if DebugLog.setOnDisk then DebugLog.setOnDisk(false) end
+                -- On flash only while the file «debug.on» sits in the plugin folder (diagnostics; off by default).
+                local marker = io.open(_utils_dir .. "debug.on", "r")
+                if marker then marker:close() end
+                if DebugLog.setOnDisk then DebugLog.setOnDisk(marker ~= nil) end
                 DebugLog.init(_utils_dir)
             end)
             self._debug_log = DebugLog

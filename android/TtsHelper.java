@@ -274,7 +274,8 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                         stopPlaybackInternal();
                         qRange = "";
                     }
-                    if (!hasAudioFocus) requestAudioFocus(speechAttributes());
+                    // No audio focus request here: the plugin's media session already holds it, and a second
+                    // request from the same app made that session see a focus loss and pause the reading.
                     tts.setAudioAttributes(speechAttributes());
                     Bundle params = new Bundle();
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
