@@ -91,6 +91,14 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
     /** Result of the most recent setVoice() (TextToSpeech result code). */
     private volatile int lastVoiceResult = 0;
 
+    // --- Engine queue (speak QUEUE_ADD): the engine plays one continuous stream, the plugin only follows it ---
+    /** Last queued utterance (id starts with "q:") the engine started / finished / failed. */
+    private volatile String qStarted = "";
+    private volatile String qDone = "";
+    private volatile String qError = "";
+    /** onRangeStart of the playing queued utterance: "id\tstart\tend" (characters of its text). */
+    private volatile String qRange = "";
+
     /** Utterance id of the last dispatched synthesis. Stale onDone/onError
      *  from a cancelled request (page turn, stop) must not mark the next
      *  sentence ready or failed. */
@@ -130,10 +138,29 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
             // can leave engines like SherpaTTS on a mismatched voice
             // until then.
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {                @Override
-                public void onStart(String utteranceId) {}
+                public void onStart(String utteranceId) {
+                    if (utteranceId != null && utteranceId.startsWith("q:")) {
+                        qStarted = utteranceId;
+                        qRange = "";
+                    }
+                }
+
+                @Override
+                public void onRangeStart(String utteranceId, int start, int end, int frame) {
+                    if (utteranceId != null && utteranceId.startsWith("q:")) {
+                        qRange = utteranceId + "\t" + start + "\t" + end;
+                    }
+                }
+
+                @Override
+                public void onStop(String utteranceId, boolean interrupted) {}
 
                 @Override
                 public void onDone(String utteranceId) {
+                    if (utteranceId != null && utteranceId.startsWith("q:")) {
+                        qDone = utteranceId;
+                        return;
+                    }
                     // Only the utterance this helper last dispatched may mark
                     // synthStatus: a stale onDone from a cancelled synthesis
                     // (page turn, stop) must not mark the next sentence ready.
@@ -173,6 +200,9 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
 
                 @Override
                 public void onError(String utteranceId, int errorCode) {
+                    if (utteranceId != null && utteranceId.startsWith("q:")) {
+                        qError = utteranceId;
+                    }
                     if (errorCode == TextToSpeech.ERROR_SERVICE) {
                         // Engine process died (task killer / force-stop).
                         // Further binder calls would hang or throw.
@@ -184,6 +214,9 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                 @Override
                 @SuppressWarnings("deprecation")
                 public void onError(String utteranceId) {
+                    if (utteranceId != null && utteranceId.startsWith("q:")) {
+                        qError = utteranceId;
+                    }
                     applyUtteranceError(utteranceId);
                 }
             });
@@ -223,6 +256,52 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
             pipelineActive = false;
             pendingPlayFile = null;
         }
+    }
+
+    /**
+     * Queue mode: hand one sentence to the engine's own queue (speak). The first of a run flushes the queue, the
+     * rest are added, so the engine plays one continuous stream and prepares the next sentences while the current
+     * one sounds; no files, no per-sentence player. The worker thread keeps the order of calls (and of setLanguage
+     * / setRate before them). Returns 0 when dispatched, -1 when the engine is not ready.
+     */
+    public int queueSpeak(final String id, final String text, final boolean flush) {
+        if (initStatus != TextToSpeech.SUCCESS || engineUnavailable) return -1;
+        worker.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (flush) {
+                        stopPlaybackInternal();
+                        qRange = "";
+                    }
+                    if (!hasAudioFocus) requestAudioFocus(speechAttributes());
+                    tts.setAudioAttributes(speechAttributes());
+                    Bundle params = new Bundle();
+                    params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
+                    int r = tts.speak(text, flush ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, params, id);
+                    if (r != TextToSpeech.SUCCESS) qError = id;
+                } catch (Exception e) {
+                    qError = id;
+                }
+            }
+        });
+        return 0;
+    }
+
+    /** Queue mode: silence the engine and drop everything queued (pause, stop, jump). */
+    public void queueStop() {
+        worker.post(new Runnable() {
+            @Override
+            public void run() {
+                try { tts.stop(); } catch (Exception ignored) {}
+                qRange = "";
+            }
+        });
+    }
+
+    /** Queue mode state for the plugin's poll: "started\ndone\nerror\nrange" (range = "id\tstart\tend" or ""). */
+    public String queueState() {
+        return qStarted + "\n" + qDone + "\n" + qError + "\n" + qRange + "\n" + (engineUnavailable ? "1" : "0");
     }
 
     /** Returns -1 while TTS engine is loading, 0 on success, >0 on error. */

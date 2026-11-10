@@ -275,6 +275,33 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
                 .. "system TTS engine (Google, SherpaTTS, …)."
             ),
         })
+        -- Engine queue (on by default for MyTTS): the sentences go to the engine's own queue and
+        -- play as one continuous stream; the per-sentence file path stays as the fallback.
+        table.insert(menu, {
+            text = _("Continuous playback through the engine queue"),
+            checked_func = function()
+                local sc = plugin.sync_controller
+                if sc and sc._queueMode then
+                    local e = plugin.tts_engine
+                    local default = e and e:_androidEnginePackage() == "com.davnozdu.supertonic.tts.fork"
+                    return plugin:getSetting("android_queue_mode", default) and true or false
+                end
+                return plugin:getSetting("android_queue_mode", false) and true or false
+            end,
+            callback = function()
+                local e = plugin.tts_engine
+                local default = e and e:_androidEnginePackage() == "com.davnozdu.supertonic.tts.fork"
+                plugin:setSetting("android_queue_mode", not plugin:getSetting("android_queue_mode", default))
+                if plugin.sync_controller then plugin.sync_controller._q_disabled = nil end
+            end,
+            help_text = _(
+                "Sentences are handed to the TTS engine a few at a time and play "
+                .. "as one continuous stream, like in other reading apps: no pause "
+                .. "between sentences or pages, and the highlight follows the voice. "
+                .. "On by default with MyTTS. Turn off to go back to per-sentence "
+                .. "audio files. Takes effect from the next sentence you start."
+            ),
+        })
         -- Background lookahead synthesis (off by default, on for MyTTS): removes most of
         -- the fixed pause between sentences by having the next sentence's
         -- audio ready before the current one finishes (issue #96).

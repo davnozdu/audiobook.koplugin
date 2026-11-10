@@ -816,6 +816,12 @@ function SyncController:readNextSentence()
         return
     end
 
+    -- Engine queue mode: the engine plays a continuous stream, this only keeps its queue filled.
+    if self:_queueMode() then
+        self:_queuePlay(sentence)
+        return
+    end
+
     self.state = self.STATE.LOADING
     local controller = self
 
@@ -1953,6 +1959,10 @@ function SyncController:_prefetchNextPage()
                     logger.warn("SyncController: Next page prefetched,",
                         #next_text, "chars,", queued, "of",
                         #parsed.sentences, "sentences queued for Piper")
+                elseif controller:_queueMode() then
+                    -- Queue mode: the first sentences of the next page join the engine queue (gapless page turn).
+                    controller._q_next_parsed = parsed
+                    controller:_queueFill()
                 else
                     local first_text = parsed.sentences[1].text
                     if first_text and first_text ~= "" then
@@ -2970,7 +2980,7 @@ function SyncController:resume(auto)
         if sentence and sentence.index
                 and self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
                 and not self._concat_sentences
-                and (not self.plugin or self.plugin:getSetting("resume_sentence_start", true)) then
+                and (self:_queueMode() or not self.plugin or self.plugin:getSetting("resume_sentence_start", true)) then
             logger.warn("SyncController: Resuming sentence", sentence.index, "from its start")
             self._chain_generation = (self._chain_generation or 0) + 1
             pcall(function() self.tts_engine:stop() end)
@@ -3433,6 +3443,7 @@ function SyncController:stop(opts)
     self._rotated_during_playback = false
     self._first_play_sentence_text = nil
     self:_cleanConcatFiles()
+    self:_queueReset()
 
     logger.warn("SyncController: Stopped")
 end
@@ -3897,6 +3908,266 @@ function SyncController:showTocPicker()
             current = current,
         })
     end
+end
+
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- Engine queue mode (Android, MyTTS by default)
+--
+-- The sentences go to the engine's own queue (TextToSpeech.speak, QUEUE_ADD), a few ahead of the voice. The engine
+-- plays them as one continuous stream and prepares the next ones while the current one sounds, so a busy KOReader
+-- (page render, highlight) can no longer open a gap: nothing here sits between two sentences. The plugin follows the
+-- engine's onStart to highlight, move the page, keep the queue filled. The first sentences of the next page are
+-- queued before the page ends, so a page turn is gapless too. Pause = stop the queue; resume = the current sentence
+-- again from its start (the engine still has its audio). A stalled or lost engine restarts the queue from the current
+-- sentence; after several failures in a row the session falls back to the per-sentence file path.
+-- ═══════════════════════════════════════════════════════════════════════
+
+SyncController.QUEUE_AHEAD = 6
+SyncController.QUEUE_POLL_S = 0.15
+SyncController.QUEUE_MAX_RECOVERIES = 3
+local MYTTS_PACKAGE = "com.davnozdu.supertonic.tts.fork"
+
+function SyncController:_queueMode()
+    if self._q_disabled then return false end
+    local e = self.tts_engine
+    if not e or e.backend ~= e.BACKENDS.ANDROID then return false end
+    local atts = e._android_tts or (e._ensureAndroidTts and e:_ensureAndroidTts())
+    if not (atts and atts.hasQueue and atts:hasQueue()) then return false end
+    local default = e:_androidEnginePackage() == MYTTS_PACKAGE
+    if not self.plugin then return default end
+    return self.plugin:getSetting("android_queue_mode", default) and true or false
+end
+
+function SyncController:_queueReset()
+    self._q_ids = {}          -- utterance id -> { page = token|"next", idx = n, text = s }
+    self._q_queued = {}       -- sentence idx of the current page -> id
+    self._q_page = nil        -- page token the maps belong to
+    self._q_next = nil        -- next-page sentences already queued: list of { id, text }
+    self._q_next_parsed = nil
+    self._q_advancing = nil
+    self._q_last_started, self._q_last_done, self._q_last_error = nil, nil, nil
+    self._q_changed_at = nil
+end
+
+local function qnorm(t) return Utils.ws(t or "") end
+
+function SyncController:_queueId(idx)
+    self._q_seq = (self._q_seq or 0) + 1
+    return "q:" .. tostring(self._q_run or 0) .. ":" .. tostring(self._q_seq) .. ":" .. tostring(idx)
+end
+
+--- Queue [sentence] (and the next ones). A sentence already in the queue only moves the bookkeeping: no flush, no gap.
+function SyncController:_queuePlay(sentence)
+    local e = self.tts_engine
+    local page = self._page_gen or 0
+    if not self._q_ids then self:_queueReset() end
+    if self._q_page ~= page then
+        -- A new page: sentences of it queued ahead (at the end of the previous one) are bound to their indices here.
+        self._q_queued = {}
+        self._q_page = page
+        if e._queue_active and self._q_next then
+            local bound = 0
+            for k, entry in ipairs(self._q_next) do
+                local s = self.parsed_data.sentences[sentence.index + k - 1]
+                if not s or qnorm(s.text) ~= qnorm(entry.text) then break end
+                self._q_ids[entry.id] = { page = page, idx = s.index, text = s.text }
+                self._q_queued[s.index] = entry.id
+                bound = bound + 1
+            end
+            logger.warn("SyncController: queue: next page bound", bound, "of", #self._q_next)
+            dlog("queue", "bind", bound, "of", #self._q_next)
+        end
+        self._q_next = nil
+        self._q_next_parsed = nil
+        self._q_advancing = nil
+    end
+    self.state = self.STATE.PLAYING
+    self.current_sentence = self.current_sentence or sentence
+    local queued = e._queue_active and self._q_queued[sentence.index]
+    if not queued then
+        -- A new run: start, jump, resume, recovery. Whatever the engine still had is dropped.
+        self._q_run = (self._q_run or 0) + 1
+        self._q_ids, self._q_queued, self._q_next = {}, {}, nil
+        local id = self:_queueId(sentence.index)
+        if not e:queueSpeakAndroid(id, sentence.text, true) then
+            logger.warn("SyncController: queue dispatch failed; falling back to per-sentence playback")
+            dlog("queue", "dispatch-failed")
+            self._q_disabled = true
+            self.reading_sentence_idx = sentence.index - 1
+            self._highest_dispatched_idx = sentence.index - 1
+            self:readNextSentence()
+            return
+        end
+        self._q_ids[id] = { page = page, idx = sentence.index, text = sentence.text }
+        self._q_queued[sentence.index] = id
+        self._q_changed_at = UIManager:getTime()
+        dlog("queue", "run", self._q_run, "from", sentence.index)
+    elseif queued == self._q_last_started then
+        -- Bound from the previous page and already sounding: show it now.
+        self:_queueOnStart(queued)
+    end
+    if self.playback_bar then
+        self.playback_bar:updatePlayState(true)
+    end
+    self:_applyBarVisibility()
+    self:_queueFill(sentence.index)
+    self:_queueEnsurePoll()
+end
+
+--- Keep [QUEUE_AHEAD] sentences queued past [from] (default: the one sounding), into the next page when it is known.
+function SyncController:_queueFill(from)
+    local e = self.tts_engine
+    if not e or not e._queue_active or not self.parsed_data or self.state ~= self.STATE.PLAYING then return end
+    from = from or self.reading_sentence_idx or 1
+    local last = math.min(self.total_sentences or 0, from + self.QUEUE_AHEAD)
+    for idx = from, last do
+        if not self._q_queued[idx] then
+            local s = self.parsed_data.sentences[idx]
+            if s and s.text and SyncController.speakable(s.text) then
+                local id = self:_queueId(idx)
+                if not e:queueSpeakAndroid(id, s.text, false) then return end
+                self._q_ids[id] = { page = self._q_page, idx = idx, text = s.text }
+                self._q_queued[idx] = id
+            else
+                self._q_queued[idx] = "skip"
+            end
+        end
+    end
+    local room = from + self.QUEUE_AHEAD - (self.total_sentences or 0)
+    if room <= 0 then return end
+    -- Near the end of the page: the next page joins the queue as soon as its text is known.
+    if not self._q_next_parsed then
+        if not self._next_page_prefetched then self:_prefetchNextPage() end
+        return
+    end
+    self._q_next = self._q_next or {}
+    local parsed = self._q_next_parsed
+    for k = #self._q_next + 1, math.min(#parsed.sentences, room) do
+        local s = parsed.sentences[k]
+        if not (s and s.text and SyncController.speakable(s.text)) then break end
+        local id = self:_queueId(k)
+        if not e:queueSpeakAndroid(id, s.text, false) then return end
+        self._q_ids[id] = { page = "next", idx = k, text = s.text }
+        table.insert(self._q_next, { id = id, text = s.text })
+    end
+end
+
+function SyncController:_queueEnsurePoll()
+    if self._q_polling then return end
+    self._q_polling = true
+    local controller = self
+    local function tick()
+        local e = controller.tts_engine
+        if controller.state ~= controller.STATE.PLAYING or not e or not e._queue_active then
+            controller._q_polling = false
+            return
+        end
+        local ok, err = pcall(controller._queueTick, controller)
+        if not ok then logger.warn("SyncController: queue tick failed:", err) end
+        UIManager:scheduleIn(controller.QUEUE_POLL_S, tick)
+    end
+    UIManager:scheduleIn(self.QUEUE_POLL_S, tick)
+end
+
+function SyncController:_queueTick()
+    local st = self.tts_engine:queueStateAndroid()
+    if not st then return end
+    if st.lost then return self:_queueRecover("engine lost", true) end
+    if st.started ~= "" and st.started ~= self._q_last_started then
+        self._q_last_started = st.started
+        self._q_changed_at = UIManager:getTime()
+        self:_queueOnStart(st.started)
+    end
+    if st.error ~= "" and st.error ~= self._q_last_error then
+        self._q_last_error = st.error
+        self._q_changed_at = UIManager:getTime()
+        logger.warn("SyncController: queue: engine refused", st.error)
+        dlog("queue", "error", st.error)
+        self:_queueOnDone(st.error)
+    end
+    if st.done ~= "" and st.done ~= self._q_last_done then
+        self._q_last_done = st.done
+        self._q_changed_at = UIManager:getTime()
+        self:_queueOnDone(st.done)
+    end
+    -- Nothing started or ended for far longer than the sentence could take: the engine is stuck or was restarted.
+    local cur = self.current_sentence
+    local limit = 25 + math.floor(((cur and cur.text and #cur.text) or 0) / 10)
+    if self._q_changed_at and time.to_s(UIManager:getTime() - self._q_changed_at) > limit then
+        self:_queueRecover("no progress for " .. limit .. " s", false)
+    end
+end
+
+function SyncController:_queueOnStart(id)
+    local m = self._q_ids and self._q_ids[id]
+    if not m then return end
+    if m.page == "next" then
+        -- The voice is already on the next page: turn it (the queue goes on; the new page binds what is queued).
+        if not self._q_advancing then
+            self._q_advancing = true
+            dlog("queue", "page-turn-on-start")
+            self:advanceToNextPage()
+        end
+        return
+    end
+    if m.page ~= self._q_page or not self.parsed_data then return end
+    local sentence = self.parsed_data.sentences[m.idx]
+    if not sentence then return end
+    self._q_recoveries = 0
+    self:_noteHeard(sentence)
+    self._tts_heard_audio = true
+    self._tts_session_warm = true
+    self:_disarmTtsWaitUi()
+    self:_rememberSpoken(sentence.text)
+    self.state = self.STATE.PLAYING
+    self.reading_sentence_idx = m.idx
+    self._highest_dispatched_idx = m.idx
+    self.current_sentence = sentence
+    self.current_sentence_index = sentence.index
+    self.current_word_index = 0
+    self._first_play_sentence_text = self._first_play_sentence_text or sentence.text
+    if self.playback_bar then
+        self.playback_bar:updatePlayState(true)
+        self.playback_bar:updateProgress(self:getProgress())
+        self:_refreshTtsTimeUi()
+    end
+    if self.plugin and self.plugin:getSetting("highlight_sentences", true) then
+        local ok, err = pcall(self.highlightCurrentSentence, self, sentence)
+        if not ok then logger.warn("SyncController: queue highlight failed:", err) end
+    end
+    self:_queueFill(m.idx)
+end
+
+function SyncController:_queueOnDone(id)
+    local m = self._q_ids and self._q_ids[id]
+    if not m or m.page ~= self._q_page then return end
+    -- The last sentence of the page ended and the next page is not in the queue: turn the page the usual way.
+    if m.idx >= (self.total_sentences or 0) and not self._q_advancing
+            and not (self._q_next and #self._q_next > 0) then
+        self._q_advancing = true
+        dlog("queue", "page-turn-on-done")
+        self:advanceToNextPage()
+    end
+end
+
+--- The engine stopped answering: the queue starts again from the sentence being read.
+function SyncController:_queueRecover(reason, lost)
+    self._q_recoveries = (self._q_recoveries or 0) + 1
+    logger.warn("SyncController: queue recovery", self._q_recoveries, ":", reason)
+    dlog("queue", "recover", self._q_recoveries, reason)
+    local e = self.tts_engine
+    e:queueStopAndroid()
+    if lost then pcall(function() e:reconnectAndroidTts() end) end
+    if self._q_recoveries > self.QUEUE_MAX_RECOVERIES then
+        logger.warn("SyncController: queue mode off for this session after", self._q_recoveries, "recoveries")
+        self._q_disabled = true
+    end
+    local idx = (self.current_sentence and self.current_sentence.index) or math.max(1, self.reading_sentence_idx or 1)
+    self.reading_sentence_idx = idx - 1
+    self._highest_dispatched_idx = idx - 1
+    self._q_changed_at = UIManager:getTime()
+    self:readNextSentence()
 end
 
 return SyncController

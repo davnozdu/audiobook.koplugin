@@ -286,6 +286,13 @@ function AndroidTts:init()
             "playMediaFile", "(Ljava/lang/String;)I")
         self._method.setPcmMode = getMethod(env, helper_class,
             "setPcmMode", "(Z)V")
+        -- Engine queue mode (newer tts_helper.dex): speak with QUEUE_ADD, follow onStart/onRangeStart.
+        self._method.queueSpeak = getMethod(env, helper_class,
+            "queueSpeak", "(Ljava/lang/String;Ljava/lang/String;Z)I")
+        self._method.queueStop = getMethod(env, helper_class,
+            "queueStop", "()V")
+        self._method.queueState = getMethod(env, helper_class,
+            "queueState", "()Ljava/lang/String;")
 
         if not self._method.getInitStatus
             or not self._method.playFile
@@ -418,6 +425,63 @@ function AndroidTts:synthesizeToFile(text, output_path)
         end
         return result
     end)
+end
+
+--- Engine queue mode is available (the helper .dex has the queue methods).
+function AndroidTts:hasQueue()
+    return self._initialized and self._helper_ref ~= nil and self._method.queueSpeak ~= nil
+        and self._method.queueStop ~= nil and self._method.queueState ~= nil
+end
+
+--- Queue one sentence in the engine (flush = start a new run). 0 when dispatched, -1 otherwise.
+function AndroidTts:queueSpeak(id, text, flush)
+    if not self:hasQueue() then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_id = env[0].NewStringUTF(env, id)
+        local j_text = env[0].NewStringUTF(env, text)
+        local result = env[0].CallIntMethod(env, self._helper_ref, self._method.queueSpeak, j_id, j_text,
+            flush and 1 or 0)
+        env[0].DeleteLocalRef(env, j_id)
+        env[0].DeleteLocalRef(env, j_text)
+        if checkException(env) then
+            logger.err("AndroidTts: queueSpeak threw exception")
+            return -1
+        end
+        return result
+    end)
+end
+
+--- Silence the engine and drop its queue.
+function AndroidTts:queueStop()
+    if not self:hasQueue() then return end
+    local android = self._android
+    android.jni:context(android.app.activity.vm, function(jni)
+        jni.env[0].CallVoidMethod(jni.env, self._helper_ref, self._method.queueStop)
+        if checkException(jni.env) then logger.err("AndroidTts: queueStop threw exception") end
+    end)
+end
+
+--- Queue state: started id, done id, error id, range {id, start, end} or nil, engine lost (bool).
+function AndroidTts:queueState()
+    if not self:hasQueue() then return nil end
+    local android = self._android
+    local raw = android.jni:context(android.app.activity.vm, function(jni)
+        local j_str = jni.env[0].CallObjectMethod(jni.env, self._helper_ref, self._method.queueState)
+        if checkException(jni.env) or j_str == nil then return nil end
+        local result = jni:to_string(j_str)
+        jni.env[0].DeleteLocalRef(jni.env, j_str)
+        return result
+    end)
+    if type(raw) ~= "string" then return nil end
+    local started, done, err, range, lost = raw:match("^(.-)\n(.-)\n(.-)\n(.-)\n(.-)$")
+    local r
+    if range and range ~= "" then
+        local rid, rs, re = range:match("^(.-)\t(%d+)\t(%d+)$")
+        if rid then r = { id = rid, start = tonumber(rs), stop = tonumber(re) } end
+    end
+    return { started = started or "", done = done or "", error = err or "", range = r, lost = lost == "1" }
 end
 
 --[[--

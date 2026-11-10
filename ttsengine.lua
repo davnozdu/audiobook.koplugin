@@ -1835,6 +1835,43 @@ function TTSEngine:_androidSelectLanguage(atts, text)
     end
 end
 
+--- Engine queue mode (MyTTS by default): one sentence goes to the engine's own queue. The engine plays one continuous
+--- stream and prepares the queued sentences while the current one sounds; the plugin only follows its onStart.
+--- @param id string    utterance id ("q:…")
+--- @param flush bool   start a new run (drops whatever the engine still had queued)
+--- @return boolean     true when dispatched
+function TTSEngine:queueSpeakAndroid(id, text, flush)
+    local atts = self:_ensureAndroidTts()
+    if not atts or not atts:hasQueue() then return false end
+    atts:setRate(self.rate or 1.0)
+    atts:setPitch(self:_androidPitchMultiplier(self.pitch))
+    self:_androidSelectLanguage(atts, text)
+    local r = atts:queueSpeak(id, text, flush)
+    -- Right after binding the engine can still report not-ready.
+    local tries = 0
+    while r == -1 and tries < 20 do
+        tries = tries + 1
+        os.execute("usleep " .. (tries <= 8 and 50000 or 100000))
+        r = atts:queueSpeak(id, text, flush)
+    end
+    if r == 0 then self._queue_active = true end
+    return r == 0
+end
+
+--- Silence the engine queue (pause, stop, jump). The next queueSpeakAndroid starts a new run.
+function TTSEngine:queueStopAndroid()
+    if self._android_tts and self._queue_active then
+        pcall(function() self._android_tts:queueStop() end)
+    end
+    self._queue_active = false
+end
+
+--- Queue state of the engine (see AndroidTts:queueState), or nil.
+function TTSEngine:queueStateAndroid()
+    if not self._android_tts then return nil end
+    return self._android_tts:queueState()
+end
+
 function TTSEngine:synthesizeAndroid(text, audio_file, callback)
     self._mytts_synth_text = text
     local atts = self:_ensureAndroidTts()
@@ -7132,6 +7169,7 @@ end
 Pause playback.
 --]]
 function TTSEngine:pause()
+    if self._queue_active then self:queueStopAndroid() end
     -- Не требуем is_speaking: между предложениями он уже false, и пауза в этот момент раньше просто игнорировалась —
     -- чтение продолжалось. Останавливаем игрока всегда; на простое pausePlayback безвреден.
     if not self.is_paused then
@@ -7215,6 +7253,7 @@ end
 Stop playback.
 --]]
 function TTSEngine:stop()
+    if self._queue_active then self:queueStopAndroid() end
     -- Always bump generation and clear state, even if not speaking.
     -- This ensures stale scheduled callbacks (launchAndStart, checkProcess,
     -- updateTiming) exit immediately regardless of what state we were in.
