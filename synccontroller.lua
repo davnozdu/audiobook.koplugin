@@ -1933,7 +1933,21 @@ function SyncController:_prefetchNextPage()
             -- of the next page's sentences will already be ready.
             local parsed = controller.text_parser:parse(next_text)
             if parsed and parsed.sentences and #parsed.sentences > 0 then
+                -- Queue mode looks at the next page before this page's last sentence has sounded. That sentence
+                -- already carries the start of the next page (_extendIncompleteLastSentence), so judge the carry as
+                -- if it had been heard; otherwise a short carried piece was queued again and its words sounded twice.
+                local saved = controller._spoken_norm
+                local last = controller:_queueMode() and controller.parsed_data
+                    and controller.parsed_data.sentences[controller.total_sentences or 0]
+                if last and last.text then
+                    controller._spoken_norm = {}
+                    for _, t in ipairs(saved or {}) do table.insert(controller._spoken_norm, t) end
+                    table.insert(controller._spoken_norm, Utils.ws(last.text))
+                end
                 controller:_skipCarriedPrefix(parsed, false)
+                controller._spoken_norm = saved
+                dlog("queue", "next-page carry", controller._tts_carry_skip and #controller._tts_carry_skip or 0,
+                    "first", parsed.sentences[1] and #parsed.sentences[1].text or 0)
             end
             if parsed and parsed.sentences and #parsed.sentences > 0 then
                 local is_piper = controller.tts_engine
