@@ -2947,8 +2947,17 @@ end
 Pause playback.
 @param auto bool  true when called by the overlay auto-pause logic
 --]]
+--- Tell Android (media session) whether we play: a pause from the bar used to leave it «playing».
+function SyncController:_publishPlaying(playing)
+    local p = self.plugin
+    if not p then return end
+    local f = playing and p.notifyAudioPlaying or p.notifyAudioPaused
+    if f then pcall(f, p) end
+end
+
 function SyncController:pause(auto)
     if self.state == self.STATE.PLAYING then
+        self:_publishPlaying(false)
         self.state = self.STATE.PAUSED
         self.pause_time = UIManager:getTime()
         self.tts_engine:pause()
@@ -2984,6 +2993,7 @@ function SyncController:resume(auto)
         end
 
         self.state = self.STATE.PLAYING
+        self:_publishPlaying(true)
         -- Clear the user-paused flag on any successful resume
         self._user_paused = false
 
@@ -4138,6 +4148,7 @@ function SyncController:_queueOnStart(id)
     local sentence = self.parsed_data.sentences[m.idx]
     if not sentence then return end
     dlog("queue", "start", m.idx, "of", self.total_sentences, "page", self._q_page)
+    self:_publishPlaying(true)
     self._q_recoveries = 0
     self._q_started_in_run = true
     self:_noteHeard(sentence)
