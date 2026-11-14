@@ -25,12 +25,17 @@ local function dlog(...)
     end
 end
 
--- Words of a text exactly as extracted (case and punctuation kept): two extracts of the same page edge
--- repeat it letter for letter, while the author's own repetition («Да, да», «Нет — нет») differs.
+-- Words of a text exactly as extracted: two extracts of the same page edge repeat it letter for letter, while the
+-- author's own repetition differs («Да, да», «тянет, тянет…»). One extraction artefact is allowed: the last word of
+-- this page may come without the punctuation that follows it on the next one («расточительна» / «расточительна,»).
 local function _edgeWords(text)
     local out = {}
     for w in Utils.ws(text):gmatch("%S+") do out[#out + 1] = w end
     return out
+end
+
+local function _bare(w)
+    return (w:gsub("[%p]+$", ""):gsub("\194\187$", ""):gsub("\226\128[\156\157\148\147\166]$", ""))
 end
 
 -- How many leading words of [cont] repeat the last words of [text] (at most 8; 0 when none).
@@ -39,7 +44,9 @@ local function _overlapWords(text, cont)
     for n = math.min(8, #a, #b - 1), 1, -1 do
         local same = true
         for i = 1, n do
-            if a[#a - n + i] ~= b[i] or b[i] == "" then same = false; break end
+            local x, y = a[#a - n + i], b[i]
+            local edge = i == n and x == _bare(x) and x == _bare(y)
+            if (x ~= y and not edge) or y == "" then same = false; break end
         end
         if same then return n end
     end
