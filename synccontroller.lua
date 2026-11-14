@@ -165,6 +165,9 @@ Parses text into sentences and reads them one-by-one, chaining automatically.
 function SyncController:start(text, opts)
     opts = opts or {}
     local keep_text = opts.keep_text and true or false
+    -- A new start may be anywhere in the book: a peek of the next view made elsewhere must never be glued on.
+    self._wrap_peek_text = nil
+    self._wrap_peek_view = nil
     -- XPointer of the selection a from-here start should anchor at.  Text
     -- matching alone can lose the selection when the playback bar re-lays
     -- the page out; the xpointer survives the reflow (issue #96).
@@ -455,6 +458,19 @@ function SyncController:_skipAlreadySpoken(parsed)
     return 1
 end
 
+--- Where the reader stands now (rolling: the document position; paging: the page), or nil.
+function SyncController:_viewIdentity()
+    local ui = self.plugin and self.plugin.ui
+    local doc = ui and ui.document
+    if not doc then return nil end
+    local ok, id = pcall(function()
+        if ui.rolling then return "pos:" .. tostring(doc:getCurrentPos()) end
+        if ui.paging and ui.getCurrentPage then return "page:" .. tostring(ui:getCurrentPage()) end
+        return nil
+    end)
+    return ok and id or nil
+end
+
 --- If the last visible sentence has no .?!, append the start of the next page.
 function SyncController:_extendIncompleteLastSentence(parsed)
     if not parsed or not parsed.sentences or #parsed.sentences == 0 then
@@ -464,8 +480,13 @@ function SyncController:_extendIncompleteLastSentence(parsed)
     if not last or not last.text or _sentenceHasTerminator(last.text) then
         return
     end
-    local next_text = self._wrap_peek_text
+    -- The peek is valid only for the view it was made from: after a pause, a jump, a restart of the engine the
+    -- reader may be elsewhere, and a stale peek glued text from another chapter onto this page's last sentence.
+    local view = self:_viewIdentity()
+    local next_text = (view ~= nil and self._wrap_peek_view == view) and self._wrap_peek_text or nil
     if not next_text or next_text == "" then
+        self._wrap_peek_text = nil
+        self._wrap_peek_view = nil
         if self.plugin and self.plugin.peekNextPageText then
             next_text = self.plugin:peekNextPageText()
             if next_text and next_text ~= "" then
@@ -473,6 +494,7 @@ function SyncController:_extendIncompleteLastSentence(parsed)
                 -- be passed to start() after GotoViewRel, so a peek of the
                 -- *current* view re-read the page we just finished.
                 self._wrap_peek_text = next_text
+                self._wrap_peek_view = view
             end
         end
     end
@@ -2938,6 +2960,7 @@ function SyncController:advanceToNextPage()
     self._next_page_text = nil
     self._next_page_prefetched = false
     self._wrap_peek_text = nil
+    self._wrap_peek_view = nil
     self._page_turn_gen = (self._page_turn_gen or 0) + 1
     local gen = self._page_turn_gen
 
@@ -3509,6 +3532,7 @@ function SyncController:stop(opts)
     self._next_page_text = nil
     self._next_page_prefetched = false
     self._wrap_peek_text = nil
+    self._wrap_peek_view = nil
     self._tts_carry_skip = nil
     self._spoken_norm = nil
     self._empty_skip_advances = nil
