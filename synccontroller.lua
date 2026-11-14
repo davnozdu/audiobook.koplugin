@@ -487,6 +487,14 @@ function SyncController:_extendIncompleteLastSentence(parsed)
     -- line; spaceless scripts get a character-count threshold instead (the
     -- old Latin-only guard refused the carry for every CJK page, cutting each
     -- sentence straddling the page break, issue #96).
+    -- The whole unfinished tail of this page opens the next view as well («Лука» / «Лука отыскал…»): it is the
+    -- start of a sentence the next page reads in full, not a heading. Drop it here, or it is heard twice.
+    local tail_words = #_edgeWords(last.text)
+    if tail_words > 0 and _overlapWords(last.text, first.text) == tail_words and #_edgeWords(first.text) > tail_words then
+        table.remove(parsed.sentences)
+        dlog("page-tail-dropped", tail_words)
+        return
+    end
     if not Utils.shouldCarryPageBoundary(last.text, first.text) then
         return
     end
