@@ -25,6 +25,34 @@ local function dlog(...)
     end
 end
 
+-- Words of a text exactly as extracted (case and punctuation kept): two extracts of the same page edge
+-- repeat it letter for letter, while the author's own repetition («Да, да», «Нет — нет») differs.
+local function _edgeWords(text)
+    local out = {}
+    for w in Utils.ws(text):gmatch("%S+") do out[#out + 1] = w end
+    return out
+end
+
+-- How many leading words of [cont] repeat the last words of [text] (at most 8; 0 when none).
+local function _overlapWords(text, cont)
+    local a, b = _edgeWords(text), _edgeWords(cont)
+    for n = math.min(8, #a, #b - 1), 1, -1 do
+        local same = true
+        for i = 1, n do
+            if a[#a - n + i] ~= b[i] or b[i] == "" then same = false; break end
+        end
+        if same then return n end
+    end
+    return 0
+end
+
+-- [cont] without its first [n] words (original spelling and punctuation kept).
+local function _dropWords(cont, n)
+    local rest = Utils.ws(cont)
+    for _ = 1, n do rest = rest:gsub("^%S+%s*", "", 1) end
+    return rest
+end
+
 -- ── Constants ────────────────────────────────────────────────────────
 -- Number of sentences to prefetch ahead for Piper TTS.
 -- With BATCH_SIZE=1 and 2 servers × 4 pipeline depth = 8 slots,
@@ -463,9 +491,21 @@ function SyncController:_extendIncompleteLastSentence(parsed)
         last.text = last.text:gsub("\194\173$", ""):gsub("%-$", "")
         joiner = ""
     end
+    -- The peek starts one screen height lower, but the visible page is shorter (margins, the bottom bar):
+    -- the next view may begin inside the last line already on this page («…не было даже» + «даже в июле.»).
+    -- Drop the words the continuation repeats. The carry skip keeps the full first sentence of the next page.
+    local carry = cont
+    if joiner == " " then
+        local dropped = _overlapWords(last.text, cont)
+        if dropped > 0 then
+            dlog("page-wrap-overlap", dropped)
+            cont = _dropWords(cont, dropped)
+        end
+    end
+    if cont == "" then return end
     last.text = last.text .. joiner .. cont
     last.end_type = first.end_type or last.end_type
-    self._tts_carry_skip = Utils.ws(cont)
+    self._tts_carry_skip = Utils.ws(carry)
     last.words = {}
     local words = self.text_parser:parseWords(last.text)
     for _, w in ipairs(words) do
@@ -4136,7 +4176,7 @@ function SyncController:_queueOnStart(id)
         -- The voice is already on the next page: turn it (the queue goes on; the new page binds what is queued).
         if not self._q_advancing then
             self._q_advancing = true
-            dlog("queue", "page-turn-on-start")
+            dlog("queue", "page-turn-on-start", id)
             self:advanceToNextPage()
         end
         return
@@ -4147,7 +4187,7 @@ function SyncController:_queueOnStart(id)
     end
     local sentence = self.parsed_data.sentences[m.idx]
     if not sentence then return end
-    dlog("queue", "start", m.idx, "of", self.total_sentences, "page", self._q_page)
+    dlog("queue", "start", m.idx, "of", self.total_sentences, "page", self._q_page, "id", id)
     self:_publishPlaying(true)
     self._q_recoveries = 0
     self._q_started_in_run = true

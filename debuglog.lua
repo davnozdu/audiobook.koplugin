@@ -71,6 +71,20 @@ function DebugLog.log(...)
     end
 end
 
+--- A line with book text (queued sentences): written to debug.log only while «debug.on» is present,
+-- never kept in the in-memory ring that goes into bug reports.
+function DebugLog.text(...)
+    if not (_path and _on_disk) then return end
+    local n = select("#", ...)
+    local parts = {}
+    for i = 1, n do parts[i] = tostring(select(i, ...)) end
+    local f = io.open(_path, "a")
+    if f then
+        f:write(os.date("!%Y-%m-%dT%H:%M:%SZ "), table.concat(parts, " "), "\n")
+        f:close()
+    end
+end
+
 --- Return the in-memory tail (and last lines from disk if memory is empty).
 -- @param max_lines number|nil
 -- @return string

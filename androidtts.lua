@@ -446,6 +446,8 @@ end
 --- Queue one sentence in the engine (flush = start a new run). 0 when dispatched, -1 otherwise.
 function AndroidTts:queueSpeak(id, text, flush)
     if not self:hasQueue() then return -1 end
+    local DL = package.loaded["audiobook_debuglog"]
+    if DL and DL.text then pcall(DL.text, "q+", id, flush and "flush" or "add", "«" .. tostring(text) .. "»") end
     local android = self._android
     return android.jni:context(android.app.activity.vm, function(jni)
         local env = jni.env
