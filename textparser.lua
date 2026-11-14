@@ -142,6 +142,31 @@ Parse text into sentences.
 @param max_chunk number|nil  Long-sentence split cap (default MAX_CHUNK_CHARS)
 @return table Array of sentence objects
 --]]
+-- True when the run of «.» at [s, e] of [line] does not end a sentence (see parseSentences).
+function TextParser._abbreviationStop(line, s, e)
+    local mark = line:sub(s, e):gsub("%s+$", "")
+    if mark ~= "." then return false end
+    e = s + #mark - 1
+    local after = line:match("^%s+(.)", e + 1) and line:sub(e + 1):match("^%s+([%z\1-\127\194-\244][\128-\191]*)")
+    if not after then return false end -- end of line: a real end
+    -- lowercase next word (Latin or Cyrillic а-я, ё): the sentence goes on
+    local b1, b2 = after:byte(1), after:byte(2)
+    local lower = (b1 >= 97 and b1 <= 122)
+        or (b1 == 0xD0 and b2 and b2 >= 0xB0 and b2 <= 0xBF)
+        or (b1 == 0xD1 and b2 and ((b2 >= 0x80 and b2 <= 0x8F) or b2 == 0x91))
+    if lower then return true end
+    -- an initial: one capital letter right before the period, after a space or the line start
+    local before = line:sub(1, s - 1)
+    local letter = before:match("[%s%(«\"]([%z\1-\127\194-\244][\128-\191]*)$") or before:match("^([%z\1-\127\194-\244][\128-\191]*)$")
+    if letter then
+        local c1, c2 = letter:byte(1), letter:byte(2)
+        local upper = (c1 >= 65 and c1 <= 90 and #letter == 1)
+            or (c1 == 0xD0 and c2 and ((c2 >= 0x90 and c2 <= 0xAF) or c2 == 0x81) and #letter == 2)
+        if upper then return true end
+    end
+    return false
+end
+
 function TextParser:parseSentences(text, max_chunk)
     max_chunk = max_chunk or MAX_CHUNK_CHARS
     local sentences = {}
@@ -210,6 +235,21 @@ function TextParser:parseSentences(text, max_chunk)
                     consider(line:find(term .. cjk_closers, pos))
                 end
                 local pstart, pend = best_s, best_e
+                -- A period is not a sentence end inside an abbreviation or before initials: «и т. д.», «т. е.»,
+                -- «см. выше», «А. И. Куприн». A new sentence starts with a capital, a digit, a dash or a quote;
+                -- a lowercase word after the period continues the sentence, and a single capital letter before
+                -- the period is an initial. Only «.»: «?» and «!» keep splitting dialogue as before.
+                local scan = pos
+                while pstart and TextParser._abbreviationStop(line, pstart, pend) do
+                    scan = pend + 1
+                    best_s, best_e = nil, nil
+                    consider(line:find("[%.%?!]+%s", scan))
+                    consider(line:find("[%.%?!]+$", scan))
+                    for _, term in ipairs(cjk_endings) do
+                        consider(line:find(term .. cjk_closers, scan))
+                    end
+                    pstart, pend = best_s, best_e
+                end
                 if pstart then
                     -- Include the punctuation but not the trailing space
                     local seg_end = pend
