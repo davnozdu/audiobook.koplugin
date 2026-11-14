@@ -145,7 +145,10 @@ Parse text into sentences.
 -- True when the run of «.» at [s, e] of [line] does not end a sentence (see parseSentences).
 function TextParser._abbreviationStop(line, s, e)
     local mark = line:sub(s, e):gsub("%s+$", "")
-    if mark ~= "." then return false end
+    -- An ellipsis before a lowercase word is a pause inside one sentence («Девочки… подождите… не бранитесь»):
+    -- split there, every two words become a separate utterance and the line is read word by word.
+    local ellipsis = mark == "..." or mark == "\226\128\166"
+    if mark ~= "." and not ellipsis then return false end
     e = s + #mark - 1
     local after = line:match("^%s+(.)", e + 1) and line:sub(e + 1):match("^%s+([%z\1-\127\194-\244][\128-\191]*)")
     if not after then return false end -- end of line: a real end
@@ -155,6 +158,7 @@ function TextParser._abbreviationStop(line, s, e)
         or (b1 == 0xD0 and b2 and b2 >= 0xB0 and b2 <= 0xBF)
         or (b1 == 0xD1 and b2 and ((b2 >= 0x80 and b2 <= 0x8F) or b2 == 0x91))
     if lower then return true end
+    if ellipsis then return false end
     -- an initial: one capital letter right before the period, after a space or the line start
     local before = line:sub(1, s - 1)
     local letter = before:match("[%s%(«\"]([%z\1-\127\194-\244][\128-\191]*)$") or before:match("^([%z\1-\127\194-\244][\128-\191]*)$")
