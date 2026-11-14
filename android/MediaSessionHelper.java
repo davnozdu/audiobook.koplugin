@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
+import android.media.AudioFormat;
+import android.media.AudioTrack;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
@@ -308,9 +310,49 @@ public class MediaSessionHelper {
                 state == PlaybackState.STATE_PLAYING ? 1.0f : 0.0f);
         session.setPlaybackState(b.build());
         if (!session.isActive()) session.setActive(true);
+        holdMediaButtons(state == PlaybackState.STATE_PLAYING);
+    }
+
+    // Android gives headset keys to the session of the app whose own player is active.
+    // In queue mode the TTS engine plays the speech in ITS process, so KOReader played
+    // nothing and "Media button session" became null: headset keys stopped working.
+    // While reading, a static looping buffer of zeros keeps KOReader's uid playing.
+    // No focus request, no thread, no audible sound; stopped on pause/stop/release.
+    private AudioTrack silentTrack;
+
+    private void holdMediaButtons(boolean on) {
+        if (on == (silentTrack != null)) return;
+        if (!on) {
+            try { silentTrack.stop(); } catch (Exception ignored) {}
+            try { silentTrack.release(); } catch (Exception ignored) {}
+            silentTrack = null;
+            return;
+        }
+        if (Build.VERSION.SDK_INT < 23) return;
+        try {
+            int frames = 8000;
+            AudioTrack t = new AudioTrack.Builder()
+                .setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                .setAudioFormat(new AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(16000)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .setBufferSizeInBytes(frames * 2)
+                .build();
+            t.write(new short[frames], 0, frames);
+            t.setLoopPoints(0, frames, -1);
+            t.play();
+            silentTrack = t;
+        } catch (Exception e) {
+            silentTrack = null;
+        }
     }
 
     private void releaseSessionLocked() {
+        holdMediaButtons(false);
         if (session != null) {
             try { session.setActive(false); } catch (Exception ignored) {}
             try { session.release(); } catch (Exception ignored) {}
