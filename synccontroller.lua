@@ -168,6 +168,12 @@ function SyncController:start(text, opts)
     local keep_text = opts.keep_text and true or false
     -- Set only by the automatic page turn: the sentence running into this view from the previous one was heard.
     self._xp_turned = opts.xp_turned and true or nil
+    if not opts.xp_turned then
+        self._q_spoken_end = nil
+        self._xp_cache = nil
+        -- A user jump during an asynchronous page transition is still a new run.
+        if self.tts_engine and self.tts_engine._queue_active then self.tts_engine:queueStopAndroid() end
+    end
     -- A new start may be anywhere in the book: a peek of the next view made elsewhere must never be glued on.
     self._wrap_peek_text = nil
     self._wrap_peek_view = nil
@@ -700,6 +706,9 @@ function SyncController:_beginReading(text, created_bar, keep_text)
                     self:advanceToNextPage()
                     return
                 end
+                -- Never fall back to screen text here: it is the already sounding sentence's tail.
+                self:stop()
+                return
             end
         end
     end
@@ -4145,7 +4154,7 @@ function SyncController:_xpView(anchor)
     local cache = self._xp_cache
     self._xp_cache = nil
     local parser = self.text_parser
-    local ok, v, why = pcall(XpText.build, doc, function(t) return parser:parse(t) end, { anchor = anchor })
+    local ok, v, why = pcall(XpText.build, doc, function(t) return parser:parse(t) end, { anchor = anchor, ahead_pages = 6 })
     if not ok then why, v = tostring(v), nil end
     if not v then
         logger.warn("SyncController: reading by position unavailable here (", why, "); screen text used")
@@ -4162,11 +4171,13 @@ function SyncController:_xpView(anchor)
             -- This view was queued at the end of the previous one: the very same sentences, so the queue binds. The
             -- cached list may lack a last sentence the earlier walk could not finish: take it from the fresh build.
             list = {}
-            for _, c in ipairs(cache.list) do list[#list + 1] = c end
+            for _, c in ipairs(cache.list) do
+                if XpText.within(doc, c.xp0, v.view_start, v.next_start) then list[#list + 1] = c end
+            end
             local tail = list[#list]
             for _, s in ipairs(v.current) do
-                if tail.xp0 and s.xp0 and XpText.within(doc, s.xp0, tail.xp0, nil) and s.xp0 ~= tail.xp0
-                        and not XpText.within(doc, tail.xp0, s.xp0, nil) then
+                if not tail or (tail.xp0 and s.xp0 and XpText.within(doc, s.xp0, tail.xp0, nil) and s.xp0 ~= tail.xp0
+                        and not XpText.within(doc, tail.xp0, s.xp0, nil)) then
                     list[#list + 1] = s
                 end
             end
@@ -4175,6 +4186,27 @@ function SyncController:_xpView(anchor)
             -- A fresh start on a view that opens inside a sentence: read that sentence from its beginning.
             table.insert(list, 1, v.prev_tail)
             source = "with-prev"
+        end
+    end
+    -- A view can start inside an utterance already started on the preceding view. Text matching cannot
+    -- distinguish an extraction tail from an author's repetition: compare document positions instead.
+    if turned and self._q_spoken_end then
+        local kept = {}
+        for _, s in ipairs(list) do
+            if s.xp0 and XpText.within(doc, s.xp0, self._q_spoken_end, nil) then kept[#kept + 1] = s end
+        end
+        list = kept
+        local playing = self._q_ids and self._q_ids[self._q_current_id]
+        if playing and not playing.terminal and playing.xp0 and playing.xp1
+                and XpText.within(doc, playing.xp1, v.view_start, nil)
+                and (not v.next_start or not XpText.within(doc, playing.xp0, v.next_start, nil)) then
+            -- Keep the sounding utterance as the current item (also for pause/resume), bound to the same ID.
+            local carry = { text = playing.text, xp0 = playing.xp0, xp1 = playing.xp1, words = {} }
+            if v.next_start and XpText.within(doc, playing.xp1, v.next_start, nil) then
+                local prefix = doc:getTextFromXPointers(playing.xp0, v.next_start) or ""
+                carry.turn_at = XpText.utf16AtKey(carry.text, #XpText.key(prefix))
+            end
+            table.insert(list, 1, carry)
         end
     end
     self._xp_next_parsed = (#v.next > 0) and _xpParsed(v.next) or nil
@@ -4196,6 +4228,9 @@ function SyncController:_xpTurnInsideSentence(sentence)
 end
 
 SyncController.QUEUE_AHEAD = 6
+SyncController.QUEUE_TARGET_S = 60
+SyncController.QUEUE_MAX_ITEMS = 64
+SyncController.QUEUE_MAX_CHARS = 12000
 SyncController.QUEUE_POLL_S = 0.15
 SyncController.QUEUE_MAX_RECOVERIES = 3
 -- How long a new run waits for an engine that is still binding before the session falls back to the file path.
@@ -4215,6 +4250,7 @@ end
 
 function SyncController:_queueReset()
     self._q_ids = {}          -- utterance id -> { page = token|"next", idx = n, text = s }
+    self._q_positions = {}    -- exact document range -> id; identical words at different positions stay distinct
     self._q_queued = {}       -- sentence idx of the current page -> id
     self._q_page = nil        -- page token the maps belong to
     self._q_next = nil        -- next-page sentences already queued: list of { id, text }
@@ -4223,9 +4259,35 @@ function SyncController:_queueReset()
     self._q_last_started, self._q_last_done, self._q_last_error = nil, nil, nil
     self._q_changed_at = nil
     self._q_backlog = nil
+    self._q_spoken_end = nil
+    self._q_current_id = nil
 end
 
 local function qnorm(t) return Utils.ws(t or "") end
+local function qposition(s)
+    if s and s.xp0 and s.xp1 then return s.xp0 .. "\0" .. s.xp1 end
+end
+
+function SyncController:_queueRemember(id, sentence, page, idx)
+    local pos = qposition(sentence)
+    self._q_ids[id] = { page = page, idx = idx, text = sentence.text,
+        xp0 = sentence.xp0, xp1 = sentence.xp1, position = pos }
+    if pos then self._q_positions[pos] = id end
+end
+
+function SyncController:_queuePrune()
+    for id, m in pairs(self._q_ids) do
+        local past = m.page ~= self._q_page and m.page ~= "next"
+        local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
+        if m.page == "next" and m.xp1 and self._q_spoken_end and doc then
+            past = XpText.within(doc, self._q_spoken_end, m.xp1, nil)
+        end
+        if past and m.terminal then
+            if m.position then self._q_positions[m.position] = nil end
+            self._q_ids[id] = nil
+        end
+    end
+end
 
 function SyncController:_queueId(idx)
     self._q_seq = (self._q_seq or 0) + 1
@@ -4242,12 +4304,19 @@ function SyncController:_queuePlay(sentence, retry)
         -- A new page: sentences of it queued ahead (at the end of the previous one) are bound to their indices here.
         self._q_queued = {}
         self._q_page = page
-        if e._queue_active and self._q_next then
+        if e._queue_active and self.parsed_data.by_position then
+            for _, s in ipairs(self.parsed_data.sentences) do
+                local id = self._q_positions[qposition(s)]
+                local m = id and self._q_ids[id]
+                if m then m.page, m.idx = page, s.index; self._q_queued[s.index] = id end
+            end
+        elseif e._queue_active and self._q_next then
             local bound = 0
             for k, entry in ipairs(self._q_next) do
                 local s = self.parsed_data.sentences[sentence.index + k - 1]
                 if not s or qnorm(s.text) ~= qnorm(entry.text) then break end
-                self._q_ids[entry.id] = { page = page, idx = s.index, text = s.text }
+                local m = self._q_ids[entry.id]
+                if m then m.page, m.idx = page, s.index end
                 self._q_queued[s.index] = entry.id
                 bound = bound + 1
             end
@@ -4257,6 +4326,7 @@ function SyncController:_queuePlay(sentence, retry)
         self._q_next = nil
         self._q_next_parsed = nil
         self._q_advancing = nil
+        self:_queuePrune()
     end
     self.state = self.STATE.PLAYING
     self.current_sentence = self.current_sentence or sentence
@@ -4264,7 +4334,7 @@ function SyncController:_queuePlay(sentence, retry)
     if not queued then
         -- A new run: start, jump, resume, recovery. Whatever the engine still had is dropped.
         self._q_run = (self._q_run or 0) + 1
-        self._q_ids, self._q_queued, self._q_next = {}, {}, nil
+        self._q_ids, self._q_positions, self._q_queued, self._q_next = {}, {}, {}, nil
         self._q_backlog = nil
         self._q_started_in_run = false
         local id = self:_queueId(sentence.index)
@@ -4296,13 +4366,19 @@ function SyncController:_queuePlay(sentence, retry)
             return
         end
         self._q_pending_since = nil
-        self._q_ids[id] = { page = page, idx = sentence.index, text = sentence.text }
+        self:_queueRemember(id, sentence, page, sentence.index)
+        self._q_first_id = id
         self._q_queued[sentence.index] = id
         self._q_changed_at = UIManager:getTime()
         dlog("queue", "run", self._q_run, "from", sentence.index)
     elseif queued == self._q_last_started then
         -- Bound from the previous page and already sounding: show it now.
         self:_queueOnStart(queued)
+    end
+    if queued and self._q_ids[queued] and self._q_ids[queued].terminal then
+        self.reading_sentence_idx = sentence.index
+        self:readNextSentence()
+        return
     end
     if self.playback_bar then
         self.playback_bar:updatePlayState(true)
@@ -4317,37 +4393,63 @@ function SyncController:_queueFill(from)
     local e = self.tts_engine
     if not e or not e._queue_active or not self.parsed_data or self.state ~= self.STATE.PLAYING then return end
     from = from or self.reading_sentence_idx or 1
-    local last = math.min(self.total_sentences or 0, from + self.QUEUE_AHEAD)
-    for idx = from, last do
-        if not self._q_queued[idx] then
-            local s = self.parsed_data.sentences[idx]
-            if s and s.text and SyncController.speakable(s.text) then
-                local id = self:_queueId(idx)
-                if not e:queueSpeakAndroid(id, s.text, false) then return end
-                self._q_ids[id] = { page = self._q_page, idx = idx, text = s.text }
-                self._q_queued[idx] = id
-            else
-                self._q_queued[idx] = "skip"
-            end
-        end
+    local count, chars, seconds = 0, 0, 0
+    local rate = math.max(0.25, tonumber(e.rate) or 1)
+    local function room()
+        return count < self.QUEUE_MAX_ITEMS and chars < self.QUEUE_MAX_CHARS
+            and (count <= self.QUEUE_AHEAD or seconds < self.QUEUE_TARGET_S)
     end
-    local room = from + self.QUEUE_AHEAD - (self.total_sentences or 0)
-    if room <= 0 then return end
-    -- Near the end of the page: the next page joins the queue as soon as its text is known.
+    local function add(sentence, page, idx)
+        if not (sentence and SyncController.speakable(sentence.text)) then return true, "skip" end
+        local pos = qposition(sentence)
+        local id = pos and self._q_positions[pos]
+        if not id and page ~= "next" then id = self._q_queued[idx] end
+        local m = id and self._q_ids[id]
+        local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
+        if pos and not m and self._q_spoken_end and doc
+                and not XpText.within(doc, sentence.xp0, self._q_spoken_end, nil) then return true, "skip" end
+        if m and m.terminal then return true, id end
+        if not room() or (count > 0 and chars + #sentence.text > self.QUEUE_MAX_CHARS) then return false end
+        if not id then
+            id = self:_queueId(idx)
+            if not e:queueSpeakAndroid(id, sentence.text, false) then return false end
+            self:_queueRemember(id, sentence, page, idx)
+        end
+        count, chars = count + 1, chars + #sentence.text
+        local words = 0
+        for _ in sentence.text:gmatch("%S+") do words = words + 1 end
+        -- Learned from audible start/done, when available. Estimate without counting UTF-8 bytes as letters.
+        seconds = seconds + math.max(0.4, words / (self._q_words_per_second or 2.7) / rate)
+        return true, id
+    end
+    for idx = from, self.total_sentences or 0 do
+        local ok, id = add(self.parsed_data.sentences[idx], self._q_page, idx)
+        if not ok then return end
+        self._q_queued[idx] = id
+    end
+    if self.plugin and not self.plugin:getSetting("auto_advance", true) then return end
+    if not room() then return end
     if not self._q_next_parsed then
         if not self._next_page_prefetched then self:_prefetchNextPage() end
         return
     end
-    self._q_next = self._q_next or {}
-    local parsed = self._q_next_parsed
-    for k = #self._q_next + 1, math.min(#parsed.sentences, room) do
-        local s = parsed.sentences[k]
-        if not (s and s.text and SyncController.speakable(s.text)) then break end
-        local id = self:_queueId(k)
-        if not e:queueSpeakAndroid(id, s.text, false) then return end
-        self._q_ids[id] = { page = "next", idx = k, text = s.text }
-        table.insert(self._q_next, { id = id, text = s.text })
+    local future = {}
+    for k, sentence in ipairs(self._q_next_parsed.sentences) do
+        -- In the screen path a future sentence has no position; preserve its already queued ordinal ID.
+        local old = self._q_next and self._q_next[k]
+        if old and not qposition(sentence) then
+            count, chars = count + 1, chars + #sentence.text
+            seconds = seconds + math.max(0.4, #sentence.text / 15 / rate)
+            future[#future + 1] = old
+        else
+            local ok, id = add(sentence, "next", k)
+            if not ok then break end
+            future[#future + 1] = { id = id, text = sentence.text }
+        end
     end
+    self._q_next = future
+    self._q_buffer_seconds = seconds
+
 end
 
 function SyncController:_queueEnsurePoll()
@@ -4388,11 +4490,11 @@ function SyncController:_queueTick()
             return
         end
         local mine = self._q_ids and self._q_ids[ev.id]
-        if ev.kind == "S" then
+        if ev.kind == "S" and mine then
             self._q_last_started = ev.id
             self._q_changed_at = UIManager:getTime()
             self:_queueOnStart(ev.id)
-        elseif ev.kind == "D" then
+        elseif ev.kind == "D" and mine then
             self._q_last_done = ev.id
             self._q_changed_at = UIManager:getTime()
             self:_queueOnDone(ev.id)
@@ -4404,7 +4506,7 @@ function SyncController:_queueTick()
                 -- Refused before anything of this run was heard: the run itself is dead (the engine dropped the
                 -- connection, MyTTS was updated or restarted). The other sentences of the run were refused with it;
                 -- one recovery for all of them.
-                if not self._q_started_in_run then
+                if not self._q_started_in_run and ev.id == self._q_first_id then
                     return self:_queueRecover("engine refuses the queue (" .. tostring(ev.extra) .. ")", true)
                 end
                 -- One sentence the engine could not say (e.g. a language it has no voice for): go on.
@@ -4412,7 +4514,7 @@ function SyncController:_queueTick()
             end
         elseif ev.kind == "X" then
             if mine then dlog("queue", "engine-stop", ev.id, ev.extra) end
-        elseif ev.kind == "R" then
+        elseif ev.kind == "R" and mine then
             self:_queueOnRange(ev.id, ev.extra)
         end
     end
@@ -4429,22 +4531,22 @@ function SyncController:_queueTickLegacy()
     local st = self.tts_engine:queueStateAndroid()
     if not st then return end
     if st.lost then return self:_queueRecover("engine lost", true) end
-    if st.started ~= "" and st.started ~= self._q_last_started then
+    if st.started ~= "" and st.started ~= self._q_last_started and self._q_ids[st.started] then
         self._q_last_started = st.started
         self._q_changed_at = UIManager:getTime()
         self:_queueOnStart(st.started)
     end
-    if st.error ~= "" and st.error ~= self._q_last_error then
+    if st.error ~= "" and st.error ~= self._q_last_error and self._q_ids[st.error] then
         self._q_last_error = st.error
         self._q_changed_at = UIManager:getTime()
         logger.warn("SyncController: queue: engine refused", st.error)
         dlog("queue", "error", st.error)
-        if self._q_ids and self._q_ids[st.error] and not self._q_started_in_run then
+        if st.error == self._q_first_id and not self._q_started_in_run then
             return self:_queueRecover("engine refuses the queue", true)
         end
         self:_queueOnDone(st.error)
     end
-    if st.done ~= "" and st.done ~= self._q_last_done then
+    if st.done ~= "" and st.done ~= self._q_last_done and self._q_ids[st.done] then
         self._q_last_done = st.done
         self._q_changed_at = UIManager:getTime()
         self:_queueOnDone(st.done)
@@ -4473,6 +4575,9 @@ end
 function SyncController:_queueOnStart(id)
     local m = self._q_ids and self._q_ids[id]
     if not m then return end
+    m.started_at = m.started_at or UIManager:getTime()
+    self._q_current_id = id
+    if m.xp1 then self._q_spoken_end = m.xp1 end
     if m.page == "next" then
         -- The voice is already on the next page: turn it (the queue goes on; the new page binds what is queued).
         if not self._q_advancing then
@@ -4519,13 +4624,30 @@ end
 function SyncController:_queueOnDone(id)
     local m = self._q_ids and self._q_ids[id]
     dlog("queue", "done", m and m.idx or "?", "page", m and m.page or "?", "cur", self._q_page)
-    if not m or m.page ~= self._q_page then return end
-    -- The last sentence of the page ended and the next page is not in the queue: turn the page the usual way.
-    if m.idx >= (self.total_sentences or 0) and not self._q_advancing
-            and not (self._q_next and #self._q_next > 0) then
+    if not m then return end
+    m.terminal = true
+    if self._q_current_id == id then self._q_current_id = nil end
+    if m.started_at then
+        local elapsed = time.to_s(UIManager:getTime() - m.started_at)
+        local words = 0
+        for _ in m.text:gmatch("%S+") do words = words + 1 end
+        if elapsed > 0.5 then
+            local wps = math.max(1, math.min(6, words / elapsed / math.max(0.25, self.tts_engine.rate or 1)))
+            self._q_words_per_second = (self._q_words_per_second or wps) * 0.8 + wps * 0.2
+        end
+    end
+    if m.page ~= self._q_page then self:_queuePrune(); return end
+    -- A future synthesis error is terminal for that ID, but never moves the playback cursor. The whole
+    -- page is complete only once every speakable entry is terminal (punctuation-only tails need no callback).
+    for idx, s in ipairs(self.parsed_data.sentences) do
+        local entry = self._q_ids[self._q_queued[idx]]
+        if SyncController.speakable(s.text) and not (entry and entry.terminal) then return end
+    end
+    if not self._q_advancing then
         self._q_advancing = true
         dlog("queue", "page-turn-on-done")
-        self:advanceToNextPage()
+        if not self.plugin or self.plugin:getSetting("auto_advance", true) then self:advanceToNextPage()
+        else self:stop() end
     end
 end
 

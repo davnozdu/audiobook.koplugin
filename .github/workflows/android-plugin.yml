@@ -24,6 +24,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Check queue and page boundaries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit
+          luajit dev/test_engine_queue.lua
+          luajit dev/test_wrap_carry.lua
+          luajit dev/lua_semantics_check.lua
+
       - name: Install Android build tools
         run: |
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"

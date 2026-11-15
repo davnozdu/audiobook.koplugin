@@ -199,7 +199,9 @@ function XpText.build(doc, parse, opts)
         if ok and type(n) == "number" and n >= 1 then nvis = n end
     end
     local next_start = (page + nvis <= count) and doc:getPageXPointer(page + nvis) or nil
-    local after_next = (page + 2 * nvis <= count) and doc:getPageXPointer(page + 2 * nvis) or nil
+    -- A bounded document window, independent of screen turns: short dialogue pages must not starve the queue.
+    local ahead_pages = math.max(2, math.min(8, opts.ahead_pages or 2))
+    local after_next = (page + ahead_pages * nvis <= count) and doc:getPageXPointer(page + ahead_pages * nvis) or nil
 
     local first = XpText.firstWordAt(doc, view_start)
     if not first then return nil, "no words on the view" end
@@ -221,7 +223,7 @@ function XpText.build(doc, parse, opts)
 
     local out = { current = {}, next = {}, prev_tail = nil,
                   view_start = view_start, next_start = next_start, after_next = after_next, parsed = parsed }
-    local walked_to_end = not after_next
+    local walked_to_end = doc:getNextVisibleWordStart(words[#words].xs) == nil
     local last_index = #parsed.sentences
     for i, s in ipairs(parsed.sentences) do
         if s.xp0 then

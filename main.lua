@@ -1490,7 +1490,8 @@ function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if MyTTSBridge and UIManager then
         -- A new start: MyTTS may have restarted meanwhile, the pages go again.
         MyTTSBridge._sent_index, MyTTSBridge._last_ahead = nil, nil
-        UIManager:scheduleIn(1, function() MyTTSBridge.ahead(self) end)
+        pcall(MyTTSBridge.prime, self)
+        UIManager:scheduleIn(0.1, function() MyTTSBridge.ahead(self) end)
     end
     local page_text = text or self:getCurrentPageText()
     if not page_text or page_text == "" then

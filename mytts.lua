@@ -200,6 +200,19 @@ local function aheadText(plugin)
     return current .. glue .. following
 end
 
+--- Establish paragraph ownership before the first queued speak. The provider only enqueues background work.
+--- Exact sentences are sent by ahead() once the controller has parsed the settled view.
+function MyTTS.prime(plugin)
+    if not MyTTS.available() then return end
+    local doc = plugin.ui and plugin.ui.document
+    if not (plugin.ui and plugin.ui.rolling and doc and doc.getTextFromXPointers) then return end
+    local ok, text = pcall(aheadText, plugin)
+    local okj, json = pcall(require, "json")
+    if ok and type(text) == "string" and text ~= "" and okj then
+        MyTTS.call("prepare", json.encode({text = jniText(text, MyTTS.AHEAD_CHARS), sentences = {}}))
+    end
+end
+
 --- The text about to be read aloud goes to MyTTS with the exact sentences this plugin will send: MyTTS prepares the
 --- paragraphs by its LLM (stress, ё, punctuation, voices) and makes their audio ahead into its RAM cache, so each sentence
 --- plays at once, also through a dropped connection while the buffer lasts. Only while reading aloud, on start and on
