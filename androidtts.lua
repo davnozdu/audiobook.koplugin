@@ -302,6 +302,9 @@ function AndroidTts:init()
             "queueStop", "()V")
         self._method.queueState = getMethod(env, helper_class,
             "queueState", "()Ljava/lang/String;")
+        -- Optional (helper ≥ 0.6.7): ordered queue events; older helpers only have queueState.
+        self._method.queueEvents = getMethod(env, helper_class,
+            "queueEvents", "()Ljava/lang/String;")
 
         if not self._method.getInitStatus
             or not self._method.playFile
@@ -500,6 +503,32 @@ function AndroidTts:queueState()
         if rid then r = { id = rid, start = tonumber(rs), stop = tonumber(re) } end
     end
     return { started = started or "", done = done or "", error = err or "", range = r, lost = lost == "1" }
+end
+
+--- Ordered queue events since the last call: list of { kind = "S"|"D"|"E"|"X"|"R", id = s, extra = s }, and lost.
+--- nil when the helper has no event log (older .dex): the caller falls back to queueState().
+function AndroidTts:queueEvents()
+    if not self:hasQueue() or not self._method.queueEvents then return nil end
+    local android = self._android
+    local raw = android.jni:context(android.app.activity.vm, function(jni)
+        local j_str = jni.env[0].CallObjectMethod(jni.env, self._helper_ref, self._method.queueEvents)
+        if checkException(jni.env) or j_str == nil then return nil end
+        local result = jni:to_string(j_str)
+        jni.env[0].DeleteLocalRef(jni.env, j_str)
+        return result
+    end)
+    if type(raw) ~= "string" then return nil end
+    local events, lost = {}, false
+    for line in raw:gmatch("[^\n]+") do
+        local flag = line:match("^lost\t(%d)$")
+        if flag then
+            lost = flag == "1"
+        else
+            local seq, kind, id, extra = line:match("^(%d+)\t(%u)\t([^\t]*)\t?(.*)$")
+            if seq then events[#events + 1] = { seq = tonumber(seq), kind = kind, id = id, extra = extra or "" } end
+        end
+    end
+    return events, lost
 end
 
 --[[--

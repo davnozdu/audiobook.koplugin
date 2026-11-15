@@ -213,6 +213,11 @@ function HighlightManager:highlightSentence(sentence, parsed_data)
     -- Returns true when the sentence was found and highlighted on the
     -- visible page (callers use this for read-along page advancement).
     if self.ui.rolling then
+        -- Sentences read by document position carry their exact range: draw it, no text search on the screen.
+        if sentence.xp0 and sentence.xp1 then
+            local done = self:_highlightByXPointers(doc, sentence)
+            if done ~= nil then return done end
+        end
         -- Storyteller / EPUB3 Media Overlays: prefer the SMIL fragment id
         -- (Readest-style) over fuzzy on-screen text matching.
         if sentence.fragment_id then
@@ -559,6 +564,44 @@ function HighlightManager:_highlightByFragmentId(doc, fragment_id, sentence)
     dlog("hl-frag", "drawn_w", #foldedWords(drawn), "want_w", #foldedWords(want),
         "nbox", on_screen, "id", tostring(fragment_id))
     self:_refreshHighlight(boxes, doc:getCurrentPage())
+    return true
+end
+
+--- Highlight [sentence] from its exact document range (xp0..xp1). Only the part on the screen is painted: a sentence
+--- running onto the next page shows its visible lines. Returns true when something is visible, false when the range
+--- is off the screen, nil when the document could not answer (the caller then searches the text as before).
+function HighlightManager:_highlightByXPointers(doc, sentence)
+    local boxes
+    local ok = pcall(function() boxes = doc:getScreenBoxesFromPositions(sentence.xp0, sentence.xp1, true) end)
+    if not ok or type(boxes) ~= "table" then return nil end
+    local sw, sh = Screen:getWidth(), Screen:getHeight()
+    local bar_top = self:_overlayBarTop()
+    local limit = (bar_top and bar_top > 0 and bar_top < sh) and bar_top or sh
+    local visible = {}
+    for _, b in ipairs(boxes) do
+        if b.w and b.h and b.w > 0 and b.h > 0 and b.x < sw and (b.x + b.w) > 0
+                and b.y >= 0 and (b.y + b.h) <= limit + 2 then
+            visible[#visible + 1] = b
+        end
+    end
+    if #visible == 0 then
+        dlog("hl-xp-offpage", sentence.index)
+        return false
+    end
+    self.is_highlighting = true
+    self._pending_boxes = nil
+    if self.current_style == self.STYLES.INVERT then
+        -- Native crengine selection, as the text-search path draws it.
+        pcall(function() doc:getTextFromXPointers(sentence.xp0, sentence.xp1, true) end)
+        self._selection_active = true
+    else
+        self._pending_boxes = visible
+        self:_captureViewForBoxes()
+        self:_ensureViewModule()
+        self._selection_active = false
+    end
+    dlog("hl-xp", sentence.index, "nbox", #visible, "of", #boxes)
+    self:_refreshHighlight(visible, doc:getCurrentPage())
     return true
 end
 

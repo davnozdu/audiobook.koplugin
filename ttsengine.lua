@@ -1840,22 +1840,28 @@ end
 --- @param id string    utterance id ("q:…")
 --- @param flush bool   start a new run (drops whatever the engine still had queued)
 --- @return boolean     true when dispatched
+--- @return string|nil  on failure: "pending" (the engine is still binding: try again shortly) or "unavailable"
 function TTSEngine:queueSpeakAndroid(id, text, flush)
     local atts = self:_ensureAndroidTts()
-    if not atts or not atts:hasQueue() then return false end
+    if not atts or not atts:hasQueue() then return false, "unavailable" end
+    -- Right after binding the engine reports not-ready for a moment. The caller retries on a timer: sleeping here
+    -- froze KOReader's UI for up to 1.6 s.
+    if atts:getInitStatus() == -1 then return false, "pending" end
     atts:setRate(self.rate or 1.0)
     atts:setPitch(self:_androidPitchMultiplier(self.pitch))
     self:_androidSelectLanguage(atts, text)
     local r = atts:queueSpeak(id, text, flush)
-    -- Right after binding the engine can still report not-ready.
-    local tries = 0
-    while r == -1 and tries < 20 do
-        tries = tries + 1
-        os.execute("usleep " .. (tries <= 8 and 50000 or 100000))
-        r = atts:queueSpeak(id, text, flush)
+    if r == 0 then
+        self._queue_active = true
+        return true
     end
-    if r == 0 then self._queue_active = true end
-    return r == 0
+    return false, atts:getInitStatus() == -1 and "pending" or "unavailable"
+end
+
+--- Ordered queue events (see AndroidTts:queueEvents), or nil when the helper is older than the event log.
+function TTSEngine:queueEventsAndroid()
+    if not self._android_tts then return nil end
+    return self._android_tts:queueEvents()
 end
 
 --- Silence the engine queue (pause, stop, jump). The next queueSpeakAndroid starts a new run.
@@ -7175,6 +7181,9 @@ end
 Pause playback.
 --]]
 function TTSEngine:pause()
+    -- Queue mode: queueStop already silences the engine (tts.stop on the helper's worker); a second stop from the
+    -- UI thread (engineStop below) raced the worker and is not needed.
+    local queue_was_active = self._queue_active
     if self._queue_active then self:queueStopAndroid() end
     -- Не требуем is_speaking: между предложениями он уже false, и пауза в этот момент раньше просто игнорировалась —
     -- чтение продолжалось. Останавливаем игрока всегда; на простое pausePlayback безвреден.
@@ -7189,7 +7198,7 @@ function TTSEngine:pause()
             -- The engine never sees the app's MediaPlayer pause; a stop lets it
             -- silence what it plays itself (MyTTS background music).  It also
             -- drops an in-flight lookahead, which is redone on resume.
-            self._android_tts:engineStop()
+            if not queue_was_active then self._android_tts:engineStop() end
             self:_androidPrefetchInvalidate()
         -- PocketBook InkView: no direct pause API; audio plays to natural
         -- end but word-highlighting and sentence advance are suspended.

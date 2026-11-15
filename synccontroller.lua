@@ -16,6 +16,7 @@ local T = require("ffi/util").template
 -- Shared utility modules (DRY: eliminates duplicated getPluginPath, ws)
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
 local Utils = dofile(_utils_dir .. "utils.lua")
+local XpText = dofile(_utils_dir .. "xptext.lua")
 local PLUGIN_PATH = _utils_dir
 
 local function dlog(...)
@@ -165,6 +166,8 @@ Parses text into sentences and reads them one-by-one, chaining automatically.
 function SyncController:start(text, opts)
     opts = opts or {}
     local keep_text = opts.keep_text and true or false
+    -- Set only by the automatic page turn: the sentence running into this view from the previous one was heard.
+    self._xp_turned = opts.xp_turned and true or nil
     -- A new start may be anywhere in the book: a peek of the next view made elsewhere must never be glued on.
     self._wrap_peek_text = nil
     self._wrap_peek_view = nil
@@ -671,6 +674,35 @@ the page (see the deferral in start()).
 @param keep_text boolean  true for "read from here" (sliced page suffix)
 --]]
 function SyncController:_beginReading(text, created_bar, keep_text)
+    -- Reading by document position (EPUB/FB2 with the engine queue): exact sentences, no screen extraction, no peek.
+    self._xp_next_parsed = nil
+    if self:_xpMode() then
+        local anchor = keep_text and self._from_here_anchor_xp or nil
+        if not keep_text or anchor then
+            local carry = self._xp_carry_highlight
+            self._xp_carry_highlight = nil
+            local parsed, empty_after_turn = self:_xpView(anchor)
+            if parsed then
+                self._tts_carry_skip = nil
+                if anchor then self._spoken_norm = {} end
+                local r = self:_beginReadingParsed(nil, created_bar, keep_text, parsed)
+                -- Turned inside a sentence: its rest is sounding on this view now; show it until the next one starts.
+                if carry and self.plugin and self.plugin:getSetting("highlight_sentences", true)
+                        and not (self.plugin._app_in_background) then
+                    pcall(function() self.highlight_manager:highlightSentence(carry, self.parsed_data) end)
+                end
+                return r
+            elseif empty_after_turn then
+                -- The whole view is the middle of a sentence begun on the previous one, already heard: go on.
+                self._empty_skip_advances = (self._empty_skip_advances or 0) + 1
+                if self._empty_skip_advances <= 3 then
+                    dlog("xp", "view-inside-sentence")
+                    self:advanceToNextPage()
+                    return
+                end
+            end
+        end
+    end
     -- Page-turn snapshots can miss the first CRE line(s). Prefer a longer
     -- live capture so those sentences are actually spoken.
     -- Do not do this for "read from here": that text is a shorter suffix
@@ -735,13 +767,13 @@ Parse the anchored page text and begin sentence playback.  Split out of
 _beginReading so the xpointer-anchored paths can land here after their own
 view settles.
 --]]
-function SyncController:_beginReadingParsed(text, created_bar, keep_text)
-    -- Parse the full text into sentences and words
-    self.parsed_data = self.text_parser:parse(text)
+function SyncController:_beginReadingParsed(text, created_bar, keep_text, pre_parsed)
+    -- Parse the full text into sentences and words (or take the sentences read by position: they need no carry work)
+    self.parsed_data = pre_parsed or self.text_parser:parse(text)
 
     local skipped_carry = 0
     local skipped_spoken = 0
-    if self.parsed_data then
+    if self.parsed_data and not pre_parsed then
         if not keep_text then
             skipped_carry = self:_skipCarriedPrefix(self.parsed_data, true)
             skipped_spoken = self:_skipAlreadySpoken(self.parsed_data)
@@ -1992,6 +2024,21 @@ page transition is near-instant.
 function SyncController:_prefetchNextPage()
     if self._next_page_prefetched then return end
     if not self.plugin or not self.plugin.ui then return end
+    -- Read by position: the next view's sentences are already known exactly (same build as this view), nothing to peek.
+    if self._xp_next_parsed and self:_queueMode() then
+        self._next_page_prefetched = true
+        self._q_next_parsed = self._xp_next_parsed
+        dlog("queue", "next-page xp", #self._xp_next_parsed.sentences)
+        self:_queueFill()
+        return
+    end
+    -- The view was read by position but no sentence starts on the next one (it is the middle of this view's last
+    -- sentence, or the book ends): a screen peek would only glue that middle on again. The page turns when the
+    -- sentence is done.
+    if self.parsed_data and self.parsed_data.by_position then
+        self._next_page_prefetched = true
+        return
+    end
 
     self._next_page_prefetched = true
     local plugin = self.plugin
@@ -2952,6 +2999,35 @@ function SyncController:advanceToNextPage()
     end)
 
     ui:handleEvent(Event:new("GotoViewRel", 1))
+
+    -- Read by position: the view moved once its position did; no waiting for two equal screen extracts.
+    if self:_xpMode() then
+        self._next_page_text = nil
+        self._next_page_prefetched = false
+        self._page_turn_gen = (self._page_turn_gen or 0) + 1
+        local xgen = self._page_turn_gen
+        local tries = 0
+        local function tryXp()
+            if self.state == self.STATE.STOPPED or self._page_turn_gen ~= xgen then return end
+            local after_xp
+            pcall(function() after_xp = ui.document:getXPointer() end)
+            if after_xp and after_xp ~= before_xp then
+                dlog("xp", "turn", tries)
+                self:start("", { xp_turned = true })
+                return
+            end
+            tries = tries + 1
+            if tries < 15 then
+                UIManager:scheduleIn(0.1, tryXp)
+            else
+                dlog("page-turn-stuck", "xp")
+                logger.warn("SyncController: Page turn did not change the view")
+                self:stop()
+            end
+        end
+        UIManager:scheduleIn(0.05, tryXp)
+        return
+    end
 
     -- Never start() from peeked text: peekNextPageText can return the page
     -- we just finished, which re-reads it.  Do not issue a second GotoViewRel
@@ -4026,9 +4102,104 @@ end
 -- sentence; after several failures in a row the session falls back to the per-sentence file path.
 -- ═══════════════════════════════════════════════════════════════════════
 
+-- ═══════════════════════════════════════════════════════════════════════
+-- Reading by document position (xptext.lua): EPUB/FB2 in queue mode.
+-- ═══════════════════════════════════════════════════════════════════════
+
+function SyncController:_xpMode()
+    if self._xp_disabled then return false end
+    local ui = self.plugin and self.plugin.ui
+    local doc = ui and ui.document
+    if not (ui and ui.rolling and doc and doc.getNextVisibleWordStart and doc.getTextFromXPointers) then return false end
+    if self.plugin.getSetting and not self.plugin:getSetting("xp_reading", true) then return false end
+    return self:_queueMode()
+end
+
+--- Sentences of [list] (xptext sentences) in the parsed_data shape the controller uses.
+local function _xpParsed(list)
+    local parsed = { sentences = {}, words = {}, text = "", by_position = true }
+    local texts = {}
+    for i, s in ipairs(list) do
+        local ns = { index = i, text = s.text, end_type = s.end_type, start_pos = 0, end_pos = 0, words = {},
+                     xp0 = s.xp0, xp1 = s.xp1, xp_turn_at = s.turn_at }
+        for _, w in ipairs(s.words or {}) do
+            local nw = {}
+            for k, v in pairs(w) do nw[k] = v end
+            nw.sentence_index = i
+            ns.words[#ns.words + 1] = nw
+            parsed.words[#parsed.words + 1] = nw
+        end
+        parsed.sentences[i] = ns
+        texts[i] = s.text
+    end
+    parsed.text = table.concat(texts, " ")
+    return parsed
+end
+
+--- Build the current view by position. Returns parsed_data, or nil (and true when the view holds only the middle of a
+--- sentence already heard). Remembers the next view for the queue and for the next page turn.
+function SyncController:_xpView(anchor)
+    local doc = self.plugin.ui.document
+    local turned = self._xp_turned
+    self._xp_turned = nil
+    local cache = self._xp_cache
+    self._xp_cache = nil
+    local parser = self.text_parser
+    local ok, v, why = pcall(XpText.build, doc, function(t) return parser:parse(t) end, { anchor = anchor })
+    if not ok then why, v = tostring(v), nil end
+    if not v then
+        logger.warn("SyncController: reading by position unavailable here (", why, "); screen text used")
+        dlog("xp", "fallback", why)
+        return nil
+    end
+    local list = v.current
+    local source = "built"
+    if not anchor then
+        -- Only the automatic turn uses the view queued ahead; a fresh start (play, jump, after a stop) builds anew.
+        local same = turned and cache and cache.at and v.view_start and XpText.within(doc, v.view_start, cache.at, nil)
+            and XpText.within(doc, cache.at, v.view_start, nil)
+        if same and #cache.list > 0 then
+            -- This view was queued at the end of the previous one: the very same sentences, so the queue binds. The
+            -- cached list may lack a last sentence the earlier walk could not finish: take it from the fresh build.
+            list = {}
+            for _, c in ipairs(cache.list) do list[#list + 1] = c end
+            local tail = list[#list]
+            for _, s in ipairs(v.current) do
+                if tail.xp0 and s.xp0 and XpText.within(doc, s.xp0, tail.xp0, nil) and s.xp0 ~= tail.xp0
+                        and not XpText.within(doc, tail.xp0, s.xp0, nil) then
+                    list[#list + 1] = s
+                end
+            end
+            source = "cached"
+        elseif not turned and v.prev_tail then
+            -- A fresh start on a view that opens inside a sentence: read that sentence from its beginning.
+            table.insert(list, 1, v.prev_tail)
+            source = "with-prev"
+        end
+    end
+    self._xp_next_parsed = (#v.next > 0) and _xpParsed(v.next) or nil
+    self._xp_cache = (v.next_start and #v.next > 0) and { at = v.next_start, list = v.next } or nil
+    dlog("xp", "view", #list, "next", #v.next, source, turned and "turned" or "", anchor and "anchor" or "")
+    if #list == 0 then return nil, turned end
+    self._empty_skip_advances = 0
+    return _xpParsed(list)
+end
+
+--- The voice reached the part of the page's last sentence that lies on the next view: turn now, keep the sentence
+--- highlighted there.
+function SyncController:_xpTurnInsideSentence(sentence)
+    if self._q_advancing then return end
+    self._q_advancing = true
+    self._xp_carry_highlight = { xp0 = sentence.xp0, xp1 = sentence.xp1, text = sentence.text, index = 0 }
+    dlog("xp", "turn-inside", sentence.index)
+    self:advanceToNextPage()
+end
+
 SyncController.QUEUE_AHEAD = 6
 SyncController.QUEUE_POLL_S = 0.15
 SyncController.QUEUE_MAX_RECOVERIES = 3
+-- How long a new run waits for an engine that is still binding before the session falls back to the file path.
+SyncController.QUEUE_PENDING_MAX_S = 6
 local MYTTS_PACKAGE = "com.davnozdu.supertonic.tts.fork"
 
 function SyncController:_queueMode()
@@ -4051,6 +4222,7 @@ function SyncController:_queueReset()
     self._q_advancing = nil
     self._q_last_started, self._q_last_done, self._q_last_error = nil, nil, nil
     self._q_changed_at = nil
+    self._q_backlog = nil
 end
 
 local function qnorm(t) return Utils.ws(t or "") end
@@ -4061,8 +4233,9 @@ function SyncController:_queueId(idx)
 end
 
 --- Queue [sentence] (and the next ones). A sentence already in the queue only moves the bookkeeping: no flush, no gap.
-function SyncController:_queuePlay(sentence)
+function SyncController:_queuePlay(sentence, retry)
     local e = self.tts_engine
+    if not retry then self._q_pending_since = nil end
     local page = self._page_gen or 0
     if not self._q_ids then self:_queueReset() end
     if self._q_page ~= page then
@@ -4092,17 +4265,37 @@ function SyncController:_queuePlay(sentence)
         -- A new run: start, jump, resume, recovery. Whatever the engine still had is dropped.
         self._q_run = (self._q_run or 0) + 1
         self._q_ids, self._q_queued, self._q_next = {}, {}, nil
+        self._q_backlog = nil
         self._q_started_in_run = false
         local id = self:_queueId(sentence.index)
-        if not e:queueSpeakAndroid(id, sentence.text, true) then
-            logger.warn("SyncController: queue dispatch failed; falling back to per-sentence playback")
-            dlog("queue", "dispatch-failed")
+        local ok, why = e:queueSpeakAndroid(id, sentence.text, true)
+        if not ok then
+            -- The engine is still binding (just reconnected, MyTTS restarted): try again on a timer, never by sleeping
+            -- on the UI thread. Only an engine that stays away falls back to the per-sentence file path.
+            local now = UIManager:getTime()
+            self._q_pending_since = self._q_pending_since or now
+            if why == "pending" and time.to_s(now - self._q_pending_since) < self.QUEUE_PENDING_MAX_S then
+                dlog("queue", "engine-pending", sentence.index)
+                local controller, run, gen = self, self._q_run, self._page_gen
+                UIManager:scheduleIn(0.1, function()
+                    if controller.state == controller.STATE.PLAYING and controller._q_run == run
+                            and controller._page_gen == gen and controller.parsed_data
+                            and controller.parsed_data.sentences[sentence.index] == sentence then
+                        controller:_queuePlay(sentence, true)
+                    end
+                end)
+                return
+            end
+            self._q_pending_since = nil
+            logger.warn("SyncController: queue dispatch failed (", why, "); falling back to per-sentence playback")
+            dlog("queue", "dispatch-failed", why)
             self._q_disabled = true
             self.reading_sentence_idx = sentence.index - 1
             self._highest_dispatched_idx = sentence.index - 1
             self:readNextSentence()
             return
         end
+        self._q_pending_since = nil
         self._q_ids[id] = { page = page, idx = sentence.index, text = sentence.text }
         self._q_queued[sentence.index] = id
         self._q_changed_at = UIManager:getTime()
@@ -4174,7 +4367,65 @@ function SyncController:_queueEnsurePoll()
     UIManager:scheduleIn(self.QUEUE_POLL_S, tick)
 end
 
+--- Follow the engine: every start, end, error and stop since the last tick, in the order they happened.
 function SyncController:_queueTick()
+    local e = self.tts_engine
+    local events, lost = e:queueEventsAndroid()
+    if events == nil then return self:_queueTickLegacy() end
+    if lost then return self:_queueRecover("engine lost", true) end
+    -- Events left over when a handler turned the page or started a new run (the state was not PLAYING) come first.
+    if self._q_backlog then
+        local all = self._q_backlog
+        for _, ev in ipairs(events) do all[#all + 1] = ev end
+        events = all
+        self._q_backlog = nil
+    end
+    for i, ev in ipairs(events) do
+        if self.state ~= self.STATE.PLAYING or not e._queue_active then
+            local rest = {}
+            for k = i, #events do rest[#rest + 1] = events[k] end
+            self._q_backlog = rest
+            return
+        end
+        local mine = self._q_ids and self._q_ids[ev.id]
+        if ev.kind == "S" then
+            self._q_last_started = ev.id
+            self._q_changed_at = UIManager:getTime()
+            self:_queueOnStart(ev.id)
+        elseif ev.kind == "D" then
+            self._q_last_done = ev.id
+            self._q_changed_at = UIManager:getTime()
+            self:_queueOnDone(ev.id)
+        elseif ev.kind == "E" then
+            if mine then
+                self._q_changed_at = UIManager:getTime()
+                logger.warn("SyncController: queue: engine refused", ev.id, ev.extra)
+                dlog("queue", "error", ev.id, ev.extra)
+                -- Refused before anything of this run was heard: the run itself is dead (the engine dropped the
+                -- connection, MyTTS was updated or restarted). The other sentences of the run were refused with it;
+                -- one recovery for all of them.
+                if not self._q_started_in_run then
+                    return self:_queueRecover("engine refuses the queue (" .. tostring(ev.extra) .. ")", true)
+                end
+                -- One sentence the engine could not say (e.g. a language it has no voice for): go on.
+                self:_queueOnDone(ev.id)
+            end
+        elseif ev.kind == "X" then
+            if mine then dlog("queue", "engine-stop", ev.id, ev.extra) end
+        elseif ev.kind == "R" then
+            self:_queueOnRange(ev.id, ev.extra)
+        end
+    end
+    -- Nothing started or ended for far longer than the sentence could take: the engine is stuck or was restarted.
+    local cur = self.current_sentence
+    local limit = 25 + math.floor(((cur and cur.text and #cur.text) or 0) / 10)
+    if self._q_changed_at and time.to_s(UIManager:getTime() - self._q_changed_at) > limit then
+        self:_queueRecover("no progress for " .. limit .. " s", false)
+    end
+end
+
+--- Older tts_helper.dex without the event log: follow its «last started/done/error» fields.
+function SyncController:_queueTickLegacy()
     local st = self.tts_engine:queueStateAndroid()
     if not st then return end
     if st.lost then return self:_queueRecover("engine lost", true) end
@@ -4188,8 +4439,6 @@ function SyncController:_queueTick()
         self._q_changed_at = UIManager:getTime()
         logger.warn("SyncController: queue: engine refused", st.error)
         dlog("queue", "error", st.error)
-        -- A sentence of this run refused before any of the run was heard: the engine connection is dead (MyTTS was
-        -- updated or restarted). Bind again and go on from the current sentence.
         if self._q_ids and self._q_ids[st.error] and not self._q_started_in_run then
             return self:_queueRecover("engine refuses the queue", true)
         end
@@ -4200,12 +4449,25 @@ function SyncController:_queueTick()
         self._q_changed_at = UIManager:getTime()
         self:_queueOnDone(st.done)
     end
-    -- Nothing started or ended for far longer than the sentence could take: the engine is stuck or was restarted.
     local cur = self.current_sentence
     local limit = 25 + math.floor(((cur and cur.text and #cur.text) or 0) / 10)
     if self._q_changed_at and time.to_s(UIManager:getTime() - self._q_changed_at) > limit then
         self:_queueRecover("no progress for " .. limit .. " s", false)
     end
+end
+
+--- The voice is inside a sentence (engine onRangeStart: characters of its text). A sentence that started on this view
+--- and runs onto the next one turns the page when the voice reaches its part there, not at the next sentence.
+function SyncController:_queueOnRange(id, extra)
+    local m = self._q_ids and self._q_ids[id]
+    if not m or m.page ~= self._q_page or self._q_advancing or not self.parsed_data then return end
+    if m.idx ~= (self.total_sentences or 0) then return end
+    local sentence = self.parsed_data.sentences[m.idx]
+    if not (sentence and sentence.xp_turn_at) then return end
+    local start = tonumber((extra or ""):match("^(%d+)"))
+    if not start or start < sentence.xp_turn_at then return end
+    self._q_range_turn = sentence
+    self:_xpTurnInsideSentence(sentence)
 end
 
 function SyncController:_queueOnStart(id)
@@ -4274,6 +4536,7 @@ function SyncController:_queueRecover(reason, lost)
     dlog("queue", "recover", self._q_recoveries, reason)
     local e = self.tts_engine
     e:queueStopAndroid()
+    self._q_backlog = nil
     if lost or not self._q_started_in_run then pcall(function() e:reconnectAndroidTts() end) end
     if self._q_recoveries > self.QUEUE_MAX_RECOVERIES then
         logger.warn("SyncController: queue mode off for this session after", self._q_recoveries, "recoveries")

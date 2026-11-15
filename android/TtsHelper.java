@@ -98,6 +98,23 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
     private volatile String qError = "";
     /** onRangeStart of the playing queued utterance: "id\tstart\tend" (characters of its text). */
     private volatile String qRange = "";
+    /**
+     * Every queue event in order: "seq\tkind\tid\textra" (kind S start, D done, E error, X stop, R range).
+     * The single «last value» fields above lose events between two polls (two errors in a row showed only the
+     * last one, without a reason); the plugin drains this list instead. Bounded: a plugin that stopped polling
+     * cannot grow it without limit.
+     */
+    private final ArrayDeque<String> qEvents = new ArrayDeque<>();
+    private long qSeq = 0;
+    private static final int Q_EVENTS_MAX = 512;
+
+    private void qEvent(String kind, String id, String extra) {
+        synchronized (qEvents) {
+            qSeq++;
+            qEvents.add(qSeq + "\t" + kind + "\t" + id + "\t" + (extra == null ? "" : extra));
+            while (qEvents.size() > Q_EVENTS_MAX) qEvents.poll();
+        }
+    }
 
     /** Utterance id of the last dispatched synthesis. Stale onDone/onError
      *  from a cancelled request (page turn, stop) must not mark the next
@@ -142,6 +159,7 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                     if (utteranceId != null && utteranceId.startsWith("q:")) {
                         qStarted = utteranceId;
                         qRange = "";
+                        qEvent("S", utteranceId, null);
                     }
                 }
 
@@ -149,16 +167,22 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                 public void onRangeStart(String utteranceId, int start, int end, int frame) {
                     if (utteranceId != null && utteranceId.startsWith("q:")) {
                         qRange = utteranceId + "\t" + start + "\t" + end;
+                        qEvent("R", utteranceId, start + "\t" + end);
                     }
                 }
 
                 @Override
-                public void onStop(String utteranceId, boolean interrupted) {}
+                public void onStop(String utteranceId, boolean interrupted) {
+                    if (utteranceId != null && utteranceId.startsWith("q:")) {
+                        qEvent("X", utteranceId, interrupted ? "1" : "0");
+                    }
+                }
 
                 @Override
                 public void onDone(String utteranceId) {
                     if (utteranceId != null && utteranceId.startsWith("q:")) {
                         qDone = utteranceId;
+                        qEvent("D", utteranceId, null);
                         return;
                     }
                     // Only the utterance this helper last dispatched may mark
@@ -202,6 +226,7 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                 public void onError(String utteranceId, int errorCode) {
                     if (utteranceId != null && utteranceId.startsWith("q:")) {
                         qError = utteranceId;
+                        qEvent("E", utteranceId, "code=" + errorCode);
                     }
                     if (errorCode == TextToSpeech.ERROR_SERVICE) {
                         // Engine process died (task killer / force-stop).
@@ -216,6 +241,7 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                 public void onError(String utteranceId) {
                     if (utteranceId != null && utteranceId.startsWith("q:")) {
                         qError = utteranceId;
+                        qEvent("E", utteranceId, "code=?");
                     }
                     applyUtteranceError(utteranceId);
                 }
@@ -280,9 +306,13 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                     Bundle params = new Bundle();
                     params.putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, id);
                     int r = tts.speak(text, flush ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, params, id);
-                    if (r != TextToSpeech.SUCCESS) qError = id;
+                    if (r != TextToSpeech.SUCCESS) {
+                        qError = id;
+                        qEvent("E", id, "speak=" + r);
+                    }
                 } catch (Exception e) {
                     qError = id;
+                    qEvent("E", id, "exception=" + e.getClass().getSimpleName());
                 }
             }
         });
@@ -298,6 +328,20 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                 qRange = "";
             }
         });
+    }
+
+    /**
+     * Queue mode: all events since the last call, oldest first, one per line ("seq\tkind\tid\textra"), then a last
+     * line "lost\t0|1" (the engine process died). Draining: each event is returned once.
+     */
+    public String queueEvents() {
+        StringBuilder sb = new StringBuilder();
+        synchronized (qEvents) {
+            String e;
+            while ((e = qEvents.poll()) != null) sb.append(e).append('\n');
+        }
+        sb.append("lost\t").append(engineUnavailable ? '1' : '0');
+        return sb.toString();
     }
 
     /** Queue mode state for the plugin's poll: "started\ndone\nerror\nrange" (range = "id\tstart\tend" or ""). */
