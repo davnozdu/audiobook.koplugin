@@ -4151,7 +4151,6 @@ function SyncController:_xpView(anchor)
     local doc = self.plugin.ui.document
     local turned = self._xp_turned
     self._xp_turned = nil
-    local cache = self._xp_cache
     self._xp_cache = nil
     local parser = self.text_parser
     local ok, v, why = pcall(XpText.build, doc, function(t) return parser:parse(t) end, { anchor = anchor, ahead_pages = 6 })
@@ -4164,26 +4163,24 @@ function SyncController:_xpView(anchor)
     local list = v.current
     local source = "built"
     if not anchor then
-        -- Only the automatic turn uses the view queued ahead; a fresh start (play, jump, after a stop) builds anew.
-        local same = turned and cache and cache.at and v.view_start and XpText.within(doc, v.view_start, cache.at, nil)
-            and XpText.within(doc, cache.at, v.view_start, nil)
-        if same and #cache.list > 0 then
-            -- This view was queued at the end of the previous one: the very same sentences, so the queue binds. The
-            -- cached list may lack a last sentence the earlier walk could not finish: take it from the fresh build.
+        if turned and self._q_dispatched_end then
+            -- Queued ranges are canonical. Re-parsing from 80 words back can split a long sentence at
+            -- different places; never append those overlapping chunks behind later queued speech.
             list = {}
-            for _, c in ipairs(cache.list) do
-                if XpText.within(doc, c.xp0, v.view_start, v.next_start) then list[#list + 1] = c end
-            end
-            local tail = list[#list]
-            for _, s in ipairs(v.current) do
-                if not tail or (tail.xp0 and s.xp0 and XpText.within(doc, s.xp0, tail.xp0, nil) and s.xp0 ~= tail.xp0
-                        and not XpText.within(doc, tail.xp0, s.xp0, nil)) then
-                    list[#list + 1] = s
+            for _, m in pairs(self._q_ids or {}) do
+                if m.xp0 and XpText.within(doc, m.xp0, v.view_start, v.next_start) then
+                    list[#list + 1] = {text=m.text, xp0=m.xp0, xp1=m.xp1, words={}}
                 end
             end
-            source = "cached"
+            for _, s in ipairs(v.current) do
+                local suffix = XpText.after(doc, s, self._q_dispatched_end)
+                if suffix then list[#list + 1] = suffix end
+            end
+            table.sort(list, function(a,b)
+                return a.xp0 ~= b.xp0 and XpText.within(doc, b.xp0, a.xp0, nil)
+            end)
+            source = "queued"
         elseif not turned and v.prev_tail then
-            -- A fresh start on a view that opens inside a sentence: read that sentence from its beginning.
             table.insert(list, 1, v.prev_tail)
             source = "with-prev"
         end
@@ -4207,6 +4204,16 @@ function SyncController:_xpView(anchor)
                 carry.turn_at = XpText.utf16AtKey(carry.text, #XpText.key(prefix))
             end
             table.insert(list, 1, carry)
+        end
+    end
+    -- Recompute the screen crossing for canonical queued chunks as well as freshly parsed ones.
+    if v.next_start then
+        for _, s in ipairs(list) do
+            if s.xp0 and s.xp1 and XpText.within(doc, s.xp1, v.next_start, nil)
+                    and not XpText.within(doc, s.xp0, v.next_start, nil) then
+                local prefix = doc:getTextFromXPointers(s.xp0, v.next_start) or ""
+                s.turn_at = XpText.utf16AtKey(s.text, #XpText.key(prefix))
+            end
         end
     end
     self._xp_next_parsed = (#v.next > 0) and _xpParsed(v.next) or nil
@@ -4261,6 +4268,7 @@ function SyncController:_queueReset()
     self._q_backlog = nil
     self._q_spoken_end = nil
     self._q_current_id = nil
+    self._q_dispatched_end = nil
 end
 
 local function qnorm(t) return Utils.ws(t or "") end
@@ -4273,6 +4281,7 @@ function SyncController:_queueRemember(id, sentence, page, idx)
     self._q_ids[id] = { page = page, idx = idx, text = sentence.text,
         xp0 = sentence.xp0, xp1 = sentence.xp1, position = pos }
     if pos then self._q_positions[pos] = id end
+    if sentence.xp1 then self._q_dispatched_end = sentence.xp1 end
 end
 
 function SyncController:_queuePrune()
@@ -4331,12 +4340,23 @@ function SyncController:_queuePlay(sentence, retry)
     self.state = self.STATE.PLAYING
     self.current_sentence = self.current_sentence or sentence
     local queued = e._queue_active and self._q_queued[sentence.index]
+    local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
+    if not queued and e._queue_active and sentence.xp0 and self._q_dispatched_end and doc
+            and XpText.within(doc, sentence.xp0, self._q_dispatched_end, nil) then
+        -- The buffer drained at a page boundary. Append the new range, don't flush an audible tail.
+        local id = self:_queueId(sentence.index)
+        if not e:queueSpeakAndroid(id, sentence.text, false) then return self:_queueRecover("refill refused", true) end
+        self:_queueRemember(id, sentence, page, sentence.index)
+        self._q_queued[sentence.index], queued = id, id
+        self._q_changed_at = UIManager:getTime()
+    end
     if not queued then
         -- A new run: start, jump, resume, recovery. Whatever the engine still had is dropped.
         self._q_run = (self._q_run or 0) + 1
         self._q_ids, self._q_positions, self._q_queued, self._q_next = {}, {}, {}, nil
         self._q_backlog = nil
         self._q_started_in_run = false
+        self._q_dispatched_end = nil
         local id = self:_queueId(sentence.index)
         local ok, why = e:queueSpeakAndroid(id, sentence.text, true)
         if not ok then
@@ -4403,9 +4423,18 @@ function SyncController:_queueFill(from)
         if not (sentence and SyncController.speakable(sentence.text)) then return true, "skip" end
         local pos = qposition(sentence)
         local id = pos and self._q_positions[pos]
+        local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
+        if pos and not id and self._q_dispatched_end and doc then
+            local suffix = XpText.after(doc, sentence, self._q_dispatched_end)
+            if not suffix then return true, "skip" end
+            if suffix ~= sentence then
+                sentence.text, sentence.xp0, sentence.xp1, sentence.words = suffix.text, suffix.xp0, suffix.xp1, {}
+                sentence.xp_turn_at = nil
+                pos = qposition(sentence)
+            end
+        end
         if not id and page ~= "next" then id = self._q_queued[idx] end
         local m = id and self._q_ids[id]
-        local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
         if pos and not m and self._q_spoken_end and doc
                 and not XpText.within(doc, sentence.xp0, self._q_spoken_end, nil) then return true, "skip" end
         if m and m.terminal then return true, id end

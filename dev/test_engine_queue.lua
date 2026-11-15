@@ -76,10 +76,18 @@ local function docFor(text, perpage)
     function d:getPageCount() return math.ceil(#starts/perpage) end
     return d
 end
+for _,shape in ipairs({'short','mixed'}) do
 for _,range_turn in ipairs({false,true}) do
     local c=new({}); local items={}
     -- Include literal identical adjacent sentences: they belong to different ranges and must both sound.
     for i=1,150 do items[#items+1]= i%7==0 and 'Да, да.' or ('Фраза номер '..i..' заканчивается здесь.') end
+    if shape=='mixed' then
+        for i=17,#items,17 do
+            local words={}
+            for k=1,110 do words[k]='длинноеописание'..k end
+            items[i]=table.concat(words,' ')..'.'
+        end
+    end
     local text=table.concat(items,' ')
     local doc=docFor(text,11)
     c.plugin={ui={document=doc},getSetting=function(_,key,default) if key=='highlight_sentences' then return false end return default end}
@@ -131,9 +139,14 @@ for _,range_turn in ipairs({false,true}) do
         maxids=math.max(maxids,count(c._q_ids))
     end
     local expected=Parser:new{}:parse(text).sentences
+    if #heard~=#expected then
+        print('MISMATCH',shape,tostring(range_turn),#heard,#expected,'flush',c.flushes,'page',doc.page)
+        for i,s in ipairs(expected) do if heard[i]~=s.text then for j=math.max(1,i-3),i+3 do print('AT',j,'got',heard[j],'wanted',expected[j] and expected[j].text) end; break end end
+    end
     check(#heard==#expected, 'all sentences heard across many page turns')
     for i,s in ipairs(expected) do check(heard[i]==s.text, 'text order preserved '..i) end
     check(c.flushes==1, 'only initial flush, no page-boundary replay')
     check(maxids<=c.QUEUE_MAX_ITEMS+20, 'metadata bounded across book')
+end
 end
 print(passed..' queue/XPointer assertions passed')

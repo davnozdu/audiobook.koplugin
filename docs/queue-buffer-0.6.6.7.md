@@ -1,4 +1,4 @@
-# Android queue buffer · 0.6.6.6
+# Android queue buffer · 0.6.6.7
 
 Automatic page turns preserve queued utterances by their exact document range. Already started
 page tails are not sent again; identical sentences at different positions remain distinct.
@@ -18,7 +18,12 @@ Before the first queued speak, the plugin primes MyTTS's paragraph preparation w
 for the cloud. In MyTTS beta359+, paragraph and queued preparation share that result. Older
 engines keep working; their pre-synthesis is unchanged.
 
-Validation: `luajit dev/test_engine_queue.lua` (915 assertions), wrap-carry (31 checks), semantic
+Validation: `luajit dev/test_engine_queue.lua` (2351 assertions), wrap-carry (31 checks), semantic
 module check. Queue tests use the real controller/parser/XPointer code with a mock document;
 they cover many turns, turns within speech, genuine repeated sentences, errors, stale events
 and bounded metadata. On-device listening remains a separate check.
+
+Already submitted ranges, including long-sentence chunks, stay canonical when the document window moves.
+A monotonic submission cursor excludes overlapping re-parsed chunks; any genuinely new suffix starts at
+its first unsubmitted word. Empty buffers are refilled with QUEUE_ADD at automatic page boundaries.
+The mixed-text regression includes 110-word sentences and compares the complete spoken sequence.

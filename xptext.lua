@@ -95,6 +95,16 @@ local function within(doc, xp, from, to)
 end
 XpText.within = within
 
+--- Only the unsubmitted suffix of a newly parsed chunk. Long-sentence chunk boundaries may shift when
+--- the context window moves; a monotonic document cursor prevents overlapping synthesis regardless.
+function XpText.after(doc, sentence, boundary)
+    if not boundary or within(doc, sentence.xp0, boundary, nil) then return sentence end
+    if not within(doc, sentence.xp1, boundary, nil) or cmp(doc, boundary, sentence.xp1) == 0 then return nil end
+    local first = XpText.firstWordAt(doc, boundary)
+    if not first or not within(doc, first, nil, sentence.xp1) then return nil end
+    return { text = doc:getTextFromXPointers(first, sentence.xp1), xp0 = first, xp1 = sentence.xp1, words = {} }
+end
+
 --- Start of the first word at or after [xp] (nil at the end of the document).
 function XpText.firstWordAt(doc, xp)
     local nxt = doc:getNextVisibleWordStart(xp)
