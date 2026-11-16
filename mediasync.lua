@@ -1734,23 +1734,8 @@ function MediaSync:prevChapter()
     end
 end
 
---- Keepalive (+ optional BT Disconnect/Connect) before switching audio files.
---- @param then_fn function  called after the bridge (or immediately off-Kindle)
+--- Before switching audio files (a hook of the old Kindle Bluetooth bridge): on Android nothing to do.
 function MediaSync:_bridgeKindleA2dpForTrackChange(then_fn)
-    local me = self.media_engine
-    local cycle_bt = false
-    if self.plugin and self.plugin.getSetting then
-        cycle_bt = self.plugin:getSetting("kindle_bt_reconnect_on_track", false) and true or false
-    end
-    if me and me.prepareKindleTrackAdvance then
-        me:prepareKindleTrackAdvance(function(_ok)
-            if then_fn then then_fn() end
-        end, { cycle_bt = cycle_bt })
-        return
-    end
-    if me and me._startKindleA2dpKeepalive then
-        pcall(function() me:_startKindleA2dpKeepalive("track-advance") end)
-    end
     if then_fn then then_fn() end
 end
 
