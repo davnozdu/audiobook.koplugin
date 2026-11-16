@@ -150,7 +150,7 @@ function TextParser._abbreviationStop(line, s, e)
     local ellipsis = mark == "..." or mark == "\226\128\166"
     if mark ~= "." and not ellipsis then return false end
     e = s + #mark - 1
-    local after = line:match("^%s+(.)", e + 1) and line:sub(e + 1):match("^%s+([%z\1-\127\194-\244][\128-\191]*)")
+    local after = line:match("^%s+([%z\1-\127\194-\244][\128-\191]*)", e + 1)
     if not after then return false end -- end of line: a real end
     -- lowercase next word (Latin or Cyrillic а-я, ё): the sentence goes on
     local b1, b2 = after:byte(1), after:byte(2)
@@ -160,8 +160,11 @@ function TextParser._abbreviationStop(line, s, e)
     if lower then return true end
     if ellipsis then return false end
     -- an initial: one capital letter right before the period, after a space or the line start
-    local before = line:sub(1, s - 1)
-    local letter = before:match("[%s%(«\"]([%z\1-\127\194-\244][\128-\191]*)$") or before:match("^([%z\1-\127\194-\244][\128-\191]*)$")
+    -- Only the few bytes before the period: copying the whole line before it made a long line quadratic.
+    local from = math.max(1, s - 12)
+    local before = line:sub(from, s - 1)
+    local letter = before:match("[%s%(«\"]([%z\1-\127\194-\244][\128-\191]*)$")
+        or (from == 1 and before:match("^([%z\1-\127\194-\244][\128-\191]*)$"))
     if letter then
         local c1, c2 = letter:byte(1), letter:byte(2)
         local upper = (c1 >= 65 and c1 <= 90 and #letter == 1)
@@ -224,20 +227,47 @@ function TextParser:parseSentences(text, max_chunk)
                 "[\226\128\157\227\128\139\227\128\141\227\128\143\239\188\137\227\128\145\"]*"
             local pos = 1
             local segments_in_line = {}
-            while pos <= #line do
-                -- Find the earliest .?!/… that is followed by a space (or is
-                -- at end of line), or a CJK terminator anywhere.
+            -- Each search remembers where it found its pattern and searches again only once [pos] went past it: a
+            -- terminator absent from the line (CJK in a Russian book) or the line's end was looked for over the whole
+            -- rest of the line for every sentence — a page without paragraph breaks took seconds.
+            local found = {}
+            local function nextFind(key, pat, from)
+                local f = found[key]
+                if f == false then return nil end
+                if f and f[1] >= from then return f[1], f[2] end
+                local s, e = line:find(pat, from)
+                found[key] = s and { s, e } or false
+                return s, e
+            end
+            local tail_s, tail_e = line:find("[%.%?!]+$")
+            local function lineEnd(from)
+                if not tail_s then return nil end
+                -- The run of marks at the end, from [from] on (the pattern's leftmost match at or after from).
+                if tail_s >= from then return tail_s, tail_e end
+                if from <= tail_e then return from, tail_e end
+                return nil
+            end
+            local function findStop(from)
                 local best_s, best_e
                 local function consider(s, e)
                     if s and (not best_s or s < best_s) then
                         best_s, best_e = s, e
                     end
                 end
-                consider(line:find("[%.%?!]+%s", pos))
-                consider(line:find("[%.%?!]+$", pos))
-                for _, term in ipairs(cjk_endings) do
-                    consider(line:find(term .. cjk_closers, pos))
+                -- A run of marks followed by a space: the run found from [from] may start inside an earlier run.
+                local s, e = nextFind(0, "[%.%?!]+%s", from)
+                if s and s < from then s = from end
+                consider(s, e)
+                consider(lineEnd(from))
+                for k, term in ipairs(cjk_endings) do
+                    consider(nextFind(k, term .. cjk_closers, from))
                 end
+                return best_s, best_e
+            end
+            while pos <= #line do
+                -- Find the earliest .?!/… that is followed by a space (or is
+                -- at end of line), or a CJK terminator anywhere.
+                local best_s, best_e = findStop(pos)
                 local pstart, pend = best_s, best_e
                 -- A period is not a sentence end inside an abbreviation or before initials: «и т. д.», «т. е.»,
                 -- «см. выше», «А. И. Куприн». A new sentence starts with a capital, a digit, a dash or a quote;
@@ -246,13 +276,7 @@ function TextParser:parseSentences(text, max_chunk)
                 local scan = pos
                 while pstart and TextParser._abbreviationStop(line, pstart, pend) do
                     scan = pend + 1
-                    best_s, best_e = nil, nil
-                    consider(line:find("[%.%?!]+%s", scan))
-                    consider(line:find("[%.%?!]+$", scan))
-                    for _, term in ipairs(cjk_endings) do
-                        consider(line:find(term .. cjk_closers, scan))
-                    end
-                    pstart, pend = best_s, best_e
+                    pstart, pend = findStop(scan)
                 end
                 if pstart then
                     -- Include the punctuation but not the trailing space

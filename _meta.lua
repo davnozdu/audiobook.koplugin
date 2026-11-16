@@ -14,7 +14,7 @@ local _ = require("audiobook_gettext")
 
 return {
     name = "audiobook",
-    version = "0.7.0.1",
+    version = "0.7.0.2",
     fullname = _("Audiobook Read-Along"),
     description = _([[Read-aloud for Android with synchronized sentence highlighting through the system TTS engine (MyTTS or any other). Also plays pre-recorded audiobooks (mp3, m4b, m4a) and EPUB 3 Media Overlays (Storyteller format), and syncs with Audiobookshelf.
 

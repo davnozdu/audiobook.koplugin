@@ -359,7 +359,8 @@ function AndroidMediaSession:startPolling(plugin)
         local playing = p and isPlaying(p)
         local bg = p and p._app_in_background
         self._route_ticks = (self._route_ticks or 0) + 1
-        if p and self._route_ticks >= (bg and 2 or 5) then
+        -- The route matters only while something plays (pause on unplug); idle, it is not asked at all.
+        if p and playing and self._route_ticks >= (bg and 2 or 5) then
             self._route_ticks = 0
             local on = self:headphonesOn()
             if playing and on == false and self._headphones == true then
@@ -373,7 +374,12 @@ function AndroidMediaSession:startPolling(plugin)
         -- Пауза: 0.3 с вместо 1 с — кнопка с гарнитуры («продолжить») должна срабатывать сразу.
         -- In the background (screen off) 0.5 s: a headset press still acts at once, and the app stays far below the
         -- CPU share for which Android kills background apps.
-        UIManager:scheduleIn(bg and 0.5 or 0.2, tick)
+        -- Nothing playing and nothing paused: a press starts reading within a second (two with the screen off); the
+        -- book open in KOReader for hours is not woken five times a second for it.
+        local sc, ms = p and p.sync_controller, p and p.media_sync
+        local paused = (sc and sc.isPaused and sc:isPaused()) or (ms and ms.state == "paused")
+        local delay = playing and (bg and 0.5 or 0.2) or paused and 0.5 or (bg and 2 or 1)
+        UIManager:scheduleIn(delay, tick)
     end
     UIManager:scheduleIn(0.2, tick)
 end
