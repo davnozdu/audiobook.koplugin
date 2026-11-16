@@ -31,12 +31,10 @@ local CRITICAL_FILES = {
     "abssync.lua",
     "abscache.lua",
     "audiobookplayer.lua",
-    "downloader.lua",
-    "mediaaligner.lua",
     "ttsengine.lua",
     "synccontroller.lua",
+    "docstream.lua",
     "menubuilder.lua",
-    "bugreport.lua",
 }
 
 --- Verify that all critical plugin files are present.
@@ -140,8 +138,7 @@ local function freeSpaceKb(path)
 end
 
 --- Download a URL to a local file path, with resume support.
--- Downloads can be large (the release zip includes ffmpeg/Piper binaries),
--- so we use HTTP Range requests to resume after a network drop or timeout.
+-- Downloads may be interrupted on mobile networks, so we use HTTP Range requests to resume after a network drop or timeout.
 -- A partial file is kept on failure so the next attempt resumes where this
 -- one stopped; a sidecar marker guards against resuming into a DIFFERENT
 -- release's bytes (same fixed dest path, new zip on the server).

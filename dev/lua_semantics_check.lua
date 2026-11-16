@@ -21,7 +21,8 @@ stub("device", {})
 stub("ui/widget/infomessage", {})
 stub("ui/uimanager", { scheduleIn = function() end, getTime = function() return 0 end })
 stub("logger", logger)
-stub("ui/time", { to_ms = function() return 0 end })
+stub("ui/time", { to_ms = function() return 0 end, to_s = function() return 0 end })
+stub("ui/event", {})
 stub("audiobook_gettext", function(s) return s end)
 stub("ffi/util", { template = function(s) return s end })
 
@@ -42,16 +43,19 @@ local function need(mod, field, kind)
     end
 end
 
-need("ttsengine.lua", "play", "function")
-need("ttsengine.lua", "_gstVolumeFragment", "function")
-need("ttsengine.lua", "_isAudioProcessRunning", "function")
-need("ttsengine.lua", "listSanottsVoices", "function")
-need("ttsengine.lua", "_releaseAudioout", "function")
-need("menubuilder.lua", "buildSanottsVoiceMenu", "function")
-need("piperqueue.lua", "startServers", "function")
-need("audioout.lua", "externalStart", "function")
-need("audioout.lua", "seek", "function")
-need("audioout.lua", "resume", "function")
+for _, f in ipairs({ "queueSpeakAndroid", "queueEventsAndroid", "queueStopAndroid", "reconnectAndroidTts",
+        "_ensureAndroidTts", "pause", "stop", "shutdown", "listAndroidVoices", "androidEngineDisplayName" }) do
+    need("ttsengine.lua", f, "function")
+end
+for _, f in ipairs({ "start", "pause", "resume", "stop", "nextSentence", "prevSentence", "rewind", "setSpeechRate",
+        "jumpTocRelative", "showTocPicker", "seekToProgress", "refocusToReading", "showPlaybackBar", "hidePlaybackBar",
+        "_applyBarVisibility", "restartFromStopped", "charsPerSecond", "isPlaying", "isPaused", "_remapAfterRotation" }) do
+    need("synccontroller.lua", f, "function")
+end
+for _, f in ipairs({ "buildVoiceSettingsMenu", "buildHighlightStyleMenu", "showPagedPicker", "showTtsSettingsPicker" }) do
+    need("menubuilder.lua", f, "function")
+end
+need("docstream.lua", "new", "function")
 
 if fails > 0 then
     print("SEMANTIC CHECK FAILED: " .. fails .. " missing")

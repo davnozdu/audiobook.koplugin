@@ -182,8 +182,10 @@ local function aheadText(plugin)
     if not doc then return nil end
     if plugin.ui.rolling and doc.getTextFromXPointers and doc.getXPointer and doc.getPageXPointer then
         local ok, text = pcall(function()
-            local from = doc:getXPointer()
-            local page = doc:getCurrentPage()
+            -- From the sentence being read (the screen may show another place), else the top of the screen.
+            local sc = plugin.sync_controller
+            local from = (sc and sc.aheadFrom and sc:aheadFrom()) or doc:getXPointer()
+            local page = doc:getPageFromXPointer(from) or doc:getCurrentPage()
             local last = math.min(page + MyTTS.AHEAD_PAGES, doc:getPageCount())
             local to = last > page and doc:getPageXPointer(last) or nil
             if not to then return nil end
@@ -230,9 +232,10 @@ function MyTTS.ahead(plugin, tries)
         local sc = plugin.sync_controller
         -- Still well inside what MyTTS was given: no new extraction (12 pages of text and their parse on every page
         -- turn cost more than the turn itself). Sent again past the middle, or after a jump.
-        local now_text = sc and sc.parsed_data and sc.parsed_data.sentences and sc.reading_sentence_idx
-            and sc.parsed_data.sentences[sc.reading_sentence_idx]
-        now_text = now_text and now_text.text
+        -- At most once a minute while reading goes on (a new start clears _last_ahead): the extraction and its parse
+        -- cost more than a page turn.
+        if MyTTS._last_ahead and MyTTS._ahead_t and os.time() - MyTTS._ahead_t < 60 then return end
+        local now_text = sc and sc.current_sentence and sc.current_sentence.text
         if now_text and MyTTS._sent_index and MyTTS._sent_index[now_text]
                 and MyTTS._sent_index[now_text] < (MyTTS._sent_count or 0) / 2 then
             return
@@ -250,10 +253,11 @@ function MyTTS.ahead(plugin, tries)
         -- The sentences as this plugin parses them, from the one being read on (the ones before are already heard).
         local sentences = {}
         local parser = plugin.text_parser
-        local ok_p, parsed = pcall(function() return parser and parser:parse(text) end)
+        local ok_p, parsed = pcall(function()
+            return parser and { sentences = parser:parseSentences(parser:normalizeText(text), 10000) }
+        end)
         if ok_p and parsed and parsed.sentences then
-            local current = sc.parsed_data and sc.parsed_data.sentences and sc.reading_sentence_idx
-                and sc.parsed_data.sentences[sc.reading_sentence_idx]
+            local current = sc.current_sentence
             local from = 1
             if current and current.text then
                 for i, sentence in ipairs(parsed.sentences) do
@@ -272,6 +276,7 @@ function MyTTS.ahead(plugin, tries)
         end
         local sent = MyTTS.call("prepare", json.encode({ text = text, sentences = sentences }))
         -- Not reached (MyTTS restarting after an update): the same page is sent again on the next call.
+        MyTTS._ahead_t = os.time()
         if sent then
             MyTTS._last_ahead = text
             MyTTS._sent_index, MyTTS._sent_count = {}, #sentences

@@ -31,9 +31,8 @@ end
 -- Every function in this file can reference them as upvalues; they start
 -- as nil and become usable after init() succeeds.
 local Device, UIManager, InfoMessage, T, Time
-local BtUI, BtMediaControl, BugReport, BenchmarkRunner, MenuBuilder, Utils, Updater
+local BtMediaControl, MenuBuilder, Utils, Updater
 local MyTTSBridge -- MyTTS «Умная книга» (mytts.lua)
-local SessionRecorder
 local PLUGIN_PATH
 
 --- Plugin debug.log (included in bug reports). No book text. Never throws.
@@ -87,18 +86,6 @@ function Audiobook:init()
         T = require("ffi/util").template
         Time = require("ui/time")
 
-        -- Kill audio pipelines orphaned by a previous KOReader instance.
-        -- Playback (and the A2DP keepalive, which is infinite) runs as
-        -- detached background processes: if KOReader is killed or crashes
-        -- they keep playing, and the next session's audio mixes on top.
-        -- The patterns are specific to this plugin's pipelines.
-        if Device:isKindle() then
-            -- [c]/[f] character classes keep the pattern from matching the
-            -- pkill wrapper shell's own cmdline.
-            os.execute("pkill -f 'mixersink stream-type=Musi[c]' 2>/dev/null")
-            os.execute("pkill -f 'audiobook.koplugin/bin/[f]fmpeg' 2>/dev/null")
-        end
-
         -- Resolve plugin directory from self.path (set by KOReader's plugin
         -- loader) with a debug.getinfo fallback for dev/testing.
         local _utils_dir = self.path and (self.path .. "/")
@@ -116,35 +103,22 @@ function Audiobook:init()
             logger.warn("Audiobook: failed to load", path, ":", mod)
             return nil
         end
-        -- Prefer *.fix25.lua / *.v25.lua when present (Boox MTP often fails to
-        -- overwrite large same-name files; unique names always land).
-        local function try_dofile_v25(name)
-            return try_dofile(_utils_dir .. name .. ".fix31.lua")
-                or try_dofile(_utils_dir .. name .. ".fix30.lua")
-                or try_dofile(_utils_dir .. name .. ".fix29.lua")
-                or try_dofile(_utils_dir .. name .. ".fix28.lua")
-                or try_dofile(_utils_dir .. name .. ".fix27.lua")
-                or try_dofile(_utils_dir .. name .. ".fix26.lua")
-                or try_dofile(_utils_dir .. name .. ".fix25.lua")
-                or try_dofile(_utils_dir .. name .. ".v25.lua")
-                or try_dofile(_utils_dir .. name .. ".lua")
-        end
-        BtUI = try_dofile(_utils_dir .. "btui.lua")
-        BtMediaControl = try_dofile_v25("btmediacontrol")
-        BugReport = try_dofile(_utils_dir .. "bugreport.lua")
-        BenchmarkRunner = try_dofile(_utils_dir .. "benchmarkrunner.lua")
+        BtMediaControl = try_dofile(_utils_dir .. "btmediacontrol.lua")
         MenuBuilder = try_dofile(_utils_dir .. "menubuilder.lua")
         Utils = try_dofile(_utils_dir .. "utils.lua")
-        SessionRecorder = try_dofile(_utils_dir .. "sessionrecorder.lua")
         MyTTSBridge = try_dofile(_utils_dir .. "mytts.lua")
+        self._mytts = MyTTSBridge
         -- Persistent debug ring for Android/Boox (included in bug reports).
         local DebugLog = try_dofile(_utils_dir .. "debuglog.lua")
         if DebugLog and DebugLog.init then
             pcall(function()
-                -- On flash only while the file «debug.on» sits in the plugin folder (diagnostics; off by default).
+                -- On flash only with the setting «Подробный журнал» or the file «debug.on» in the plugin folder
+                -- (diagnostics: reading timings, engine errors; off by default).
                 local marker = io.open(_utils_dir .. "debug.on", "r")
                 if marker then marker:close() end
-                if DebugLog.setOnDisk then DebugLog.setOnDisk(marker ~= nil) end
+                if DebugLog.setOnDisk then
+                    DebugLog.setOnDisk(marker ~= nil or self:getSetting("debug_log", false) == true)
+                end
                 DebugLog.init(_utils_dir)
             end)
             self._debug_log = DebugLog
@@ -176,26 +150,6 @@ function Audiobook:init()
     end
     self._init_ok = true
 
-    -- ── Bluetooth stack restore (Kobo BlueZ; issue #93) ─────────────
-    -- koreader.sh kills bluetoothd and bluealsa when KOReader starts
-    -- from Nickel, and nothing restarts them -- not inside KOReader,
-    -- and not after returning to Nickel either.  When the user has a
-    -- saved BT device, bring the stack back up and reconnect it.
-    -- Deferred so init stays responsive; the call itself returns
-    -- immediately when there is nothing to do.
-    pcall(function()
-        if Device:isKobo() and self.bt_manager then
-            UIManager:scheduleIn(2, function()
-                pcall(function()
-                    self.bt_manager:restoreSavedDevice(self)
-                end)
-            end)
-        end
-    end)
-
-    -- Install SleepCover event override so we can prevent device suspend
-    -- while audio is playing (when the user enables the setting).
-    self:_installSleepCoverOverride()
 
     -- Забрать медиакнопки сразу при открытии книги: иначе нажатие «играть» на наушниках уходит в чужую
     -- сессию (например, в подкаст-плеер), которая последней была активной.
@@ -368,9 +322,6 @@ function Audiobook:_registerDictButtons()
 end
 
 function Audiobook:_initSubmodules()
-    -- ── Orphan cleanup from previous crash/SIGKILL ──
-    self:_killOrphanProcessesFromPreviousSession()
-
     local pp = PLUGIN_PATH
     local has_document = self.ui and self.ui.document
 
@@ -381,68 +332,16 @@ function Audiobook:_initSubmodules()
             local TTSEngine = dofile(pp .. "ttsengine.lua")
             local HighlightManager = dofile(pp .. "highlightmanager.lua")
             local SyncController = dofile(pp .. "synccontroller.lua")
-            self.bt_manager = dofile(pp .. "btmanager.lua")
-            -- Exposed so the media path can raise the same Bluetooth-vs-silence
-            -- advisory without loading a second copy of the module.
-            self.bt_ui = BtUI
-
             self.text_parser = TextParser:new()
             self.tts_engine = TTSEngine:new{
                 plugin = self,
                 plugin_dir = Utils.normalizeDirPath(pp),
             }
-            local saved_backend = self:getSetting("tts_backend", nil)
-            if saved_backend then
-                self.tts_engine:setBackend(saved_backend)
-            end
-            -- Ensure the native backend has the latest helper path after restore.
-            if saved_backend == self.tts_engine.BACKENDS.NATIVE
-               and self.tts_engine:_nativeHelperConfigured() then
-                self.tts_engine.backend_cmd = self:getSetting("native_helper_path", "")
-            end
             self.tts_engine:setRate(self:getSetting("speech_rate", 1.0))
             self.tts_engine:setPitch(self:getSetting("speech_pitch", 50))
             self.tts_engine:setVolume(self:getSetting("speech_volume", 1.0))
-            local mbrola_voice = self:getSetting("tts_mbrola_voice", "")
-            if mbrola_voice ~= "" then
-                self.tts_engine:setVoice("mb-" .. mbrola_voice)
-            else
-                local voice_base = self:getSetting("tts_voice", "en")
-                local voice_variant = self:getSetting("tts_voice_variant", "")
-                local full_voice = voice_base
-                if voice_variant ~= "" then
-                    full_voice = voice_base .. "+" .. voice_variant
-                end
-                self.tts_engine:setVoice(full_voice)
-            end
-            self.tts_engine:setWordGap(self:getSetting("word_gap", 2))
-            self.tts_engine:setClausePause(self:getSetting("clause_pause", 0))
-            local piper_model = self:getSetting("piper_model", nil)
-            if piper_model then
-                self.tts_engine:setPiperModel(piper_model)
-            end
-            self.tts_engine:setPiperSpeaker(self:getSetting("piper_speaker", 0))
-            -- sanoTTS voice (amy default); applied only when the blobs exist
-            local sano_voice = self:getSetting("sanotts_voice", "amy")
-            if sano_voice then
-                self.tts_engine:setSanottsVoice(sano_voice)
-            end
-            self.tts_engine._gap_test_mode = self:getSetting("gap_test_mode", false)
-            -- Aggressive long-sentence splitting for Piper (setting + session
-            -- auto-degrade).  Evaluated lazily at every parse() call.
-            self.text_parser.max_chunk_fn = function()
-                if self.tts_engine and self.tts_engine:_piperAggressiveSplit() then
-                    return TextParser.AGGRESSIVE_CHUNK_CHARS
-                end
-                -- Android system TTS: do not split on ; : — that sent
-                -- mid-clause fragments to the engine and broke highlighting.
-                local b = self.tts_engine and self.tts_engine.backend
-                local B = self.tts_engine and self.tts_engine.BACKENDS
-                if B and b == B.ANDROID then
-                    return 10000
-                end
-                return nil  -- default cap
-            end
+            -- Long sentences go whole to the engine (MyTTS splits them itself); the stream bounds its windows.
+            self.text_parser.max_chunk_fn = function() return 10000 end
             self.highlight_manager = HighlightManager:new{
                 plugin = self,
                 ui = self.ui,
@@ -460,16 +359,6 @@ function Audiobook:_initSubmodules()
         end
     end
 
-    -- ── Bluetooth manager (needed for BT settings even without a document) ──
-    if not self.bt_manager then
-        pcall(function()
-            self.bt_manager = dofile(pp .. "btmanager.lua")
-            -- Exposed so the media path can raise the same Bluetooth-vs-silence
-            -- advisory without loading a second copy of the module.
-            self.bt_ui = BtUI
-        end)
-    end
-
     -- ── Clean old cached cover art ──
     pcall(function()
         local MetadataParser = dofile(pp .. "m4bparser.lua")
@@ -480,19 +369,8 @@ function Audiobook:_initSubmodules()
 
     -- ── Media playback modules (always load; works without a document) ──
     local ok_media, err_media = pcall(function()
-        local function dofile_v25(name)
-            for _, suffix in ipairs({ ".fix31.lua", ".fix30.lua", ".fix29.lua", ".fix28.lua", ".fix27.lua", ".fix26.lua", ".fix25.lua", ".v25.lua", ".lua" }) do
-                local path = pp .. name .. suffix
-                local f = io.open(path, "r")
-                if f then
-                    f:close()
-                    return dofile(path)
-                end
-            end
-            return dofile(pp .. name .. ".lua")
-        end
-        local MediaEngine = dofile_v25("mediaengine")
-        local MediaSync = dofile_v25("mediasync")
+        local MediaEngine = dofile(pp .. "mediaengine.lua")
+        local MediaSync = dofile(pp .. "mediasync.lua")
         self.media_engine = MediaEngine:new{plugin = self, plugin_dir = pp:sub(1, -2)}
         self.media_sync = MediaSync:new{
             plugin = self,
@@ -523,20 +401,6 @@ function Audiobook:_initSubmodules()
         self._abs_sync = nil
     end
 
-    -- ── Session recorder (always load; works without a document) ──
-    if SessionRecorder then
-        local ok_rec, err_rec = pcall(function()
-            self.session_recorder = SessionRecorder:new{
-                plugin = self,
-                plugin_dir = pp:sub(1, -2),
-            }
-            self.session_recorder:init()
-        end)
-        if not ok_rec then
-            logger.warn("Audiobook: session recorder failed to load:", err_rec)
-            self.session_recorder = nil
-        end
-    end
 end
 
 function Audiobook:onDispatcherRegisterActions()
@@ -667,19 +531,6 @@ function Audiobook:addToMainMenu(menu_items)
                     end,
                     help_text = self._init_error,
                 },
-                {
-                    text = _("Generate bug report"),
-                    callback = function()
-                        if BugReport then
-                            BugReport.menuCallback(self)
-                        elseif UIManager and InfoMessage then
-                            UIManager:show(InfoMessage:new{
-                                text = _("Bug report module failed to load.\n\nRun generate-report.sh via SSH or the terminal emulator instead."),
-                                timeout = 10,
-                            })
-                        end
-                    end,
-                },
             },
         }
         return
@@ -746,18 +597,24 @@ function Audiobook:addToMainMenu(menu_items)
                     return self:_buildAudiobookshelfMenu()
                 end,
             },
-            -- ── Bluetooth settings ──
+            -- ── Voice settings (document required) ──
             {
-                text = _("Bluetooth settings"),
+                text_func = function()
+                    if not self._init_ok then return _("Voice settings") end
+                    if not self.tts_engine then return _("Voice settings (N/A)") end
+                    local name = self.tts_engine:androidEngineDisplayName()
+                    if name then return T(_("Voice settings (%1)"), name) end
+                    return _("Voice settings")
+                end,
+                enabled_func = function() return (self.ui and self.ui.document and self._init_ok and self.tts_engine ~= nil) or false end,
+                sub_item_table_func = function()
+                    return MenuBuilder.buildVoiceSettingsMenu(self)
+                end,
+            },
+            -- ── General settings ──
+            {
+                text = _("General settings"),
                 sub_item_table = {
-                    {
-                        text_func = function()
-                            return BtUI.btMenuLabel(self)
-                        end,
-                        sub_item_table_func = function()
-                            return BtUI.buildBluetoothMenu(self)
-                        end,
-                    },
                     {
                         text = _("Headset media buttons"),
                         checked_func = function()
@@ -771,202 +628,7 @@ function Audiobook:addToMainMenu(menu_items)
                                 BtMediaControl.stop()
                             end
                         end,
-                        help_text = _("When enabled, play/pause/next/prev buttons on a Bluetooth headset or speaker will control playback. The connected device will also show playback status.\n\nOn Kindle, stem clicks are read from Lab126 LIPC (playermgr / audiomgrd) because this firmware has no AVRCP evdev node."),
-                    },
-                    {
-                        text = _("Reconnect BT on track change"),
-                        enabled_func = function()
-                            return Device.isKindle and Device:isKindle()
-                        end,
-                        checked_func = function()
-                            return self:getSetting("kindle_bt_reconnect_on_track", false)
-                        end,
-                        callback = function()
-                            self:toggleSetting("kindle_bt_reconnect_on_track", false)
-                        end,
-                        help_text = _("Kindle + AirPods: when enabled, each playlist/Storyteller audio-file boundary runs a Bluetooth Disconnect→Connect cycle before the next file starts (~5–10 s gap). Off by default; the plugin still keeps a silent A2DP keepalive across the gap. Turn this on only if audio goes silent at chapter/chunk transitions."),
-                    },
-                    {
-                        text_func = function()
-                            local val = self:getSetting("bt_disconnect_check", 30)
-                            if val == 0 then
-                                return _("Disconnect alert: off")
-                            end
-                            return T(_("Disconnect alert: %1s"), val)
-                        end,
-                        sub_item_table_func = function()
-                            return BtUI.buildBTDisconnectMenu(self)
-                        end,
-                    },
-                },
-            },
-            -- ── Voice settings (document required) ──
-            {
-                text_func = function()
-                    if not self._init_ok then return _("Voice settings") end
-                    if not self.tts_engine then return _("Voice settings (N/A)") end
-                    if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
-                        local model_label = self:getSetting("piper_model_label", "default")
-                        return T(_("Voice settings (Piper - %1)"), model_label)
-                    end
-                    local voice_label = self:getSetting("tts_voice_label", "English (GB)")
-                    local variant_label = self:getSetting("tts_variant_label", "")
-                    if variant_label ~= "" and variant_label ~= "Default (male)" then
-                        voice_label = voice_label .. " - " .. variant_label
-                    end
-                    return T(_("Voice settings (%1)"), voice_label)
-                end,
-                enabled_func = function() return (self.ui and self.ui.document and self._init_ok and self.tts_engine ~= nil) or false end,
-                sub_item_table_func = function()
-                    return MenuBuilder.buildVoiceSettingsMenu(self)
-                end,
-            },
-            -- ── General settings ──
-            {
-                text = _("General settings"),
-                sub_item_table = {
-                    {
-                        text = _("Session recorder settings"),
-                        sub_item_table = {
-                            {
-                                text_func = function()
-                                    local fps = self:getSetting("session_recorder_video_fps", 1)
-                                    return T(_("Video FPS: %1"), fps)
-                                end,
-                                sub_item_table = {
-                                    { text = "1", checked_func = function() return self:getSetting("session_recorder_video_fps", 1) == 1 end, callback = function() self:setSetting("session_recorder_video_fps", 1) end },
-                                    { text = "2", checked_func = function() return self:getSetting("session_recorder_video_fps", 1) == 2 end, callback = function() self:setSetting("session_recorder_video_fps", 2) end },
-                                    { text = "5", checked_func = function() return self:getSetting("session_recorder_video_fps", 1) == 5 end, callback = function() self:setSetting("session_recorder_video_fps", 5) end },
-                                },
-                                help_text = _("Frames per second for the video capture. Higher values use more CPU and storage."),
-                            },
-                            {
-                                text_func = function()
-                                    local scale = self:getSetting("session_recorder_video_scale", 0.5)
-                                    return T(_("Video scale: %1"), scale)
-                                end,
-                                sub_item_table = {
-                                    { text = "25%", checked_func = function() return self:getSetting("session_recorder_video_scale", 0.5) == 0.25 end, callback = function() self:setSetting("session_recorder_video_scale", 0.25) end },
-                                    { text = "50%", checked_func = function() return self:getSetting("session_recorder_video_scale", 0.5) == 0.5 end, callback = function() self:setSetting("session_recorder_video_scale", 0.5) end },
-                                    { text = "75%", checked_func = function() return self:getSetting("session_recorder_video_scale", 0.5) == 0.75 end, callback = function() self:setSetting("session_recorder_video_scale", 0.75) end },
-                                    { text = "100%", checked_func = function() return self:getSetting("session_recorder_video_scale", 0.5) == 1.0 end, callback = function() self:setSetting("session_recorder_video_scale", 1.0) end },
-                                },
-                                help_text = _("Resolution scaling for the video. Lower values reduce file size and CPU load."),
-                            },
-                            {
-                                text_func = function()
-                                    local q = self:getSetting("session_recorder_video_quality", 8)
-                                    return T(_("Video quality: %1"), q)
-                                end,
-                                sub_item_table = {
-                                    { text = "4", checked_func = function() return self:getSetting("session_recorder_video_quality", 8) == 4 end, callback = function() self:setSetting("session_recorder_video_quality", 4) end },
-                                    { text = "8", checked_func = function() return self:getSetting("session_recorder_video_quality", 8) == 8 end, callback = function() self:setSetting("session_recorder_video_quality", 8) end },
-                                    { text = "12", checked_func = function() return self:getSetting("session_recorder_video_quality", 8) == 12 end, callback = function() self:setSetting("session_recorder_video_quality", 12) end },
-                                    { text = "16", checked_func = function() return self:getSetting("session_recorder_video_quality", 8) == 16 end, callback = function() self:setSetting("session_recorder_video_quality", 16) end },
-                                    { text = "24", checked_func = function() return self:getSetting("session_recorder_video_quality", 8) == 24 end, callback = function() self:setSetting("session_recorder_video_quality", 24) end },
-                                },
-                                help_text = _("MJPEG quality (2 = best, 31 = worst). Lower values produce larger files."),
-                            },
-                            {
-                                text = _("Include audio in video file"),
-                                enabled_func = function()
-                                    return false
-                                end,
-                                checked_func = function()
-                                    return self:getSetting("session_recorder_video_include_audio", false)
-                                end,
-                                callback = function()
-                                    self:toggleSetting("session_recorder_video_include_audio", false)
-                                end,
-                                help_text = _("When enabled, the recorder tries to mux ALSA audio into the video file in real time. This requires a working ALSA capture device and fails on most e-ink devices, so it is disabled."),
-                            },
-                            {
-                                text = _("Save separate audio files"),
-                                checked_func = function()
-                                    return self:getSetting("session_recorder_save_separate_audio", true)
-                                end,
-                                callback = function()
-                                    self:toggleSetting("session_recorder_save_separate_audio", true)
-                                end,
-                                help_text = _("When enabled, TTS and playback audio are saved as WAV files in the audio/ folder. When disabled, only the video file is kept."),
-                            },
-                            {
-                                text_func = function()
-                                    local max_s = self:getSetting("session_recorder_max_interval_s", 5)
-                                    return T(_("Screenshot max interval: %1s"), max_s)
-                                end,
-                                sub_item_table = {
-                                    { text = "5s", checked_func = function() return self:getSetting("session_recorder_max_interval_s", 5) == 5 end, callback = function() self:setSetting("session_recorder_max_interval_s", 5) end },
-                                    { text = "10s", checked_func = function() return self:getSetting("session_recorder_max_interval_s", 5) == 10 end, callback = function() self:setSetting("session_recorder_max_interval_s", 10) end },
-                                    { text = "30s", checked_func = function() return self:getSetting("session_recorder_max_interval_s", 5) == 30 end, callback = function() self:setSetting("session_recorder_max_interval_s", 30) end },
-                                    { text = "60s", checked_func = function() return self:getSetting("session_recorder_max_interval_s", 5) == 60 end, callback = function() self:setSetting("session_recorder_max_interval_s", 60) end },
-                                },
-                                help_text = _("Maximum time between forced screenshot frames when the screen is static."),
-                            },
-                        },
-                    },
-                    {
-                        text_func = function()
-                            if not self._init_ok or not self.tts_engine or not self.tts_engine._wav_play_bin then
-                                return _("Audio output (PocketBook): N/A")
-                            end
-                            local pb_default = self.tts_engine._pb_has_tts_sm and "tts_sm" or ""
-                            local dev = self:getSetting("pb_alsa_device", pb_default)
-                            local labels = {
-                                ["tts_sm"] = _("PocketBook pipeline"),
-                                [""] = _("Auto"),
-                            }
-                            return T(_("Audio output (PocketBook): %1"), labels[dev] or dev)
-                        end,
-                        sub_item_table_func = function()
-                            return MenuBuilder.buildAlsaDeviceMenu(self)
-                        end,
-                        enabled_func = function()
-                            return (self._init_ok and self.tts_engine and self.tts_engine._wav_play_bin ~= nil) or false
-                        end,
-                        help_text = _("PocketBook devices route audio through different paths depending on firmware. The default works on most devices. Change this only if you hear no sound, distorted sound, or playback at 2-3x speed (known issue on PB631). Each option in the submenu has its own help text describing what to try."),
-                    },
-                    {
-                        text = _("Allow speaker playback without Bluetooth"),
-                        checked_func = function()
-                            return self:getSetting("pb_speaker_without_bt", false)
-                        end,
-                        callback = function()
-                            self:toggleSetting("pb_speaker_without_bt", false)
-                        end,
-                        enabled_func = function()
-                            return (self._init_ok and self.tts_engine and self.tts_engine._wav_play_bin ~= nil) or false
-                        end,
-                        help_text = _("By default, PocketBooks with a Bluetooth adapter only play through Bluetooth audio, because direct hardware access can damage the amplifier. This toggle lifts the Bluetooth requirement ONLY for daemon-routed devices (tts_sm, hwout_mix), which go through the PocketBook audio daemon like the system's own TTS and never touch the hardware directly. Direct-hardware choices (plughw:0) remain blocked without Bluetooth. Use at your own risk."),
-                    },
-                    {
-                        text_func = function()
-                            if self.tts_engine and self.tts_engine._android_pcm_auto then
-                                return _("Android: persistent audio stream (auto-enabled)")
-                            end
-                            return _("Android: persistent audio stream")
-                        end,
-                        checked_func = function()
-                            return self:getSetting("android_pcm_stream", false)
-                                or (self.tts_engine and self.tts_engine._android_pcm_auto) or false
-                        end,
-                        callback = function()
-                            self:toggleSetting("android_pcm_stream", false)
-                        end,
-                        enabled_func = function()
-                            return (Device.isAndroid and Device:isAndroid()) or false
-                        end,
-                        help_text = _("Workaround for Android devices where read-aloud audio cuts off mid-sentence and stalls (seen on some MTK e-readers). Plays synthesized audio through one persistent, continuously-fed audio track instead of a fresh media player per sentence. Leave this off for neural engines such as SherpaTTS: the persistent stream adds hiss and pitch artifacts. Off by default; the plugin also switches to it automatically for the rest of the session when it detects a stalled clip, except on neural engines. Takes effect from the next sentence."),
-                    },
-                    {
-                        text = _("Keep playing when lid is closed"),
-                        checked_func = function()
-                            return self:getSetting("keep_playing_on_lid_close", false)
-                        end,
-                        callback = function()
-                            self:toggleSetting("keep_playing_on_lid_close", false)
-                        end,
-                        help_text = _("When enabled, closing the case/cover keeps audio playing: the device stays awake while something is playing and suspends on its own within 30 seconds once playback stops or pauses. When disabled (default), playback pauses on lid close and resumes when reopened. Disabling prevents device crashes caused by audio processes running during hardware suspend."),
+                        help_text = _("When enabled, play/pause/next/prev buttons on a headset control playback."),
                     },
                     {
                         text = _("Pause reading when a menu opens"),
@@ -977,16 +639,6 @@ function Audiobook:addToMainMenu(menu_items)
                             self:toggleSetting("pause_on_menu", true)
                         end,
                         help_text = _("When enabled (default), read-aloud pauses while a KOReader menu or dialog is open and resumes when it closes. When disabled, narration keeps playing while you browse menus; only the sentence highlighting pauses."),
-                    },
-                    {
-                        text = _("Resume from the start of the sentence"),
-                        checked_func = function()
-                            return self:getSetting("resume_sentence_start", true)
-                        end,
-                        callback = function()
-                            self:toggleSetting("resume_sentence_start", true)
-                        end,
-                        help_text = _("When enabled (default), read-aloud resumed after a pause starts the interrupted sentence again from its beginning, so you hear it whole. Applies to Android system TTS. When disabled, playback continues from the exact point where it was paused."),
                     },
                     {
                         text = _("Hide control bar while playing (experimental)"),
@@ -1280,47 +932,15 @@ function Audiobook:addToMainMenu(menu_items)
             },
             -- ── Diagnostics ──
             {
-                text_func = function()
-                    if self.session_recorder and self.session_recorder:isRecording() then
-                        return _("Stop session recorder")
-                    end
-                    return _("Start session recorder")
-                end,
-                enabled_func = function()
-                    return self.session_recorder ~= nil
-                end,
-                callback = function(touchmenu_instance)
-                    if not self.session_recorder then return end
-                    if self.session_recorder:isRecording() then
-                        self.session_recorder:stop()
-                    else
-                        self.session_recorder:start()
-                    end
-                    if touchmenu_instance then
-                        touchmenu_instance:updateItems()
-                    end
-                end,
-                help_text = _("Records the current audiobook or TTS session. Audio, video/screenshots, and optional touch events are saved to a folder on device storage."),
-            },
-            {
-                text = _("Generate bug report"),
+                text = _("Detailed log"),
+                checked_func = function() return self:getSetting("debug_log", false) end,
                 callback = function()
-                    BugReport.menuCallback(self)
+                    self:toggleSetting("debug_log", false)
+                    local on = self:getSetting("debug_log", false)
+                    local DL = package.loaded["audiobook_debuglog"]
+                    if DL and DL.setOnDisk then DL.setOnDisk(on) end
                 end,
-                help_text = _("Saves a diagnostic report to your device storage. The report contains device model, TTS engine status, and audio configuration — no personal data or book content. Share it when reporting issues on GitHub."),
-            },
-            {
-                text = _("Run device benchmark"),
-                callback = function()
-                    if not self._init_ok then self:_showInitError(); return end
-                    if BenchmarkRunner then
-                        BenchmarkRunner.menuCallback(self)
-                    end
-                end,
-                enabled_func = function()
-                    return (self.ui and self.ui.document and self._init_ok and BenchmarkRunner ~= nil) or false
-                end,
-                help_text = _("Runs a standardized TTS benchmark on test sentences using each available engine (espeak-ng, Piper). Saves a report you can share on GitHub to help document device performance. Piper tests may take several minutes on slow devices."),
+                help_text = _("Writes debug.log in the plugin folder: read-aloud timings (time to first sound, gaps between sentences, queue fill), engine errors and recoveries. No book text. Off by default; it writes to storage on every sentence."),
             },
             {
                 text = _("Check for updates"),
@@ -1372,26 +992,10 @@ function Audiobook:addToMainMenu(menu_items)
                     local platform = (Device.getPlatform and Device:getPlatform())
                         or (Device.platform or "unknown")
                     table.insert(lines, T(_("Device: %1 (%2)"), model, platform))
-                    -- TTS backend
+                    -- TTS engine
                     local engine = self.tts_engine
                     if engine then
-                        local backend_name = engine.backend or "none"
-                        local backend_labels = {
-                            espeak = "espeak-ng",
-                            piper = "Piper",
-                            pico = "Pico",
-                            flite = "Flite",
-                            festival = "Festival",
-                            android = "Android",
-                        }
-                        table.insert(lines, T(_("TTS backend: %1"), backend_labels[backend_name] or backend_name))
-                        -- Audio player
-                        -- findAudioPlayer() only runs at first playback, so
-                        -- before that the type is unset; on Android the JNI
-                        -- bridge alone tells us the player is MediaPlayer.
-                        local player = engine.audio_player_type
-                            or (engine._android_tts and "android" or "none")
-                        table.insert(lines, T(_("Audio player: %1"), player))
+                        table.insert(lines, T(_("TTS engine: %1"), engine:androidEngineDisplayName() or "—"))
                     end
                     -- Plugin directory
                     table.insert(lines, T(_("Plugin path: %1"), PLUGIN_PATH or "unknown"))
@@ -1480,172 +1084,43 @@ end
 
 function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     if not self._init_ok then self:_showInitError(); return end
-    if not self:_audioOutputReady() then return end
     -- After a break (MyTTS fork, «recap_after_break», off by default; «recap_break_days», 5): «Ранее в книге» first, then
     -- this start goes on by itself.  A book MyTTS does not know just starts.
     if self:_recapAfterBreak(function() self:startReadAlong(text, start_pos, anchor_xp) end) then return end
+    if not self.sync_controller then
+        UIManager:show(InfoMessage:new{ text = _("TTS engine is not available."), timeout = 4 })
+        return
+    end
     self:_noteListened()
     self:_volumeKeysToSystem(true)
-    -- MyTTS: this page and the next go to its LLM as soon as reading has started.
-    if MyTTSBridge and UIManager then
-        -- A new start: MyTTS may have restarted meanwhile, the pages go again.
+    -- MyTTS: the text ahead goes to its LLM as soon as reading has started.
+    if MyTTSBridge then
         MyTTSBridge._sent_index, MyTTSBridge._last_ahead = nil, nil
         pcall(MyTTSBridge.prime, self)
-        UIManager:scheduleIn(0.1, function() MyTTSBridge.ahead(self) end)
     end
-    local page_text = text or self:getCurrentPageText()
-    if not page_text or page_text == "" then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not extract text from this page.\n\nThe document format may not be fully supported."),
-            timeout = 3,
-        })
-        return
-    end
-    
-    logger.dbg("Audiobook: Starting read-along with text length:", #page_text)
-    
-    -- If start position provided, start at that sentence (not the page top).
-    local keep_text = false
-    if start_pos and start_pos > 1 then
-        -- Prefer the parser's sentence boundaries over a raw punctuation
-        -- scan: abbreviations ("M.", "Fig. 3") fooled the scan.
-        local sentence_start = start_pos
-        local parser = self.text_parser
-        if parser and parser.parseSentences then
-            local sents = parser:parseSentences(page_text)
-            for _, sent in ipairs(sents or {}) do
-                local a, b = sent.start_pos or 0, sent.end_pos or 0
-                if a > 0 and start_pos >= a and start_pos <= b then
-                    sentence_start = a
-                    break
-                end
-            end
-        else
-            for i = start_pos, 1, -1 do
-                local char = page_text:sub(i, i)
-                if char:match("[%.%?!]") then
-                    sentence_start = i + 1
-                    break
-                end
-                if i == 1 then
-                    sentence_start = 1
-                end
-            end
-        end
-
-        -- Trim leading whitespace
-        while sentence_start <= #page_text
-                and page_text:sub(sentence_start, sentence_start):match("%s") do
-            sentence_start = sentence_start + 1
-        end
-
-        page_text = page_text:sub(sentence_start)
-        keep_text = true
-        logger.dbg("Audiobook: Starting from position", sentence_start)
-    end
-    
-    -- Check if TTS engine has a backend
-    if not self.tts_engine.backend then
-        UIManager:show(InfoMessage:new{
-            text = self.tts_engine.backend_error
-                or _("No TTS engine found.\n\nPlease install espeak-ng."),
-            timeout = 8,
-        })
-        return
-    end
-
-    -- If we're using Bluetooth audio, start a lightweight watcher that
-    -- will notify the user if all audio BT devices disconnect while
-    -- read-along is active.  This runs infrequently and only while the
-    -- plugin is in use to avoid extra battery drain.
-    --
-    -- Also probe for an audio player now, before synthesis starts, so we
-    -- can warn the user immediately if no audio output is available instead
-    -- of making them wait through TTS synthesis only to get an error.
-    pcall(function()
-        if not self.tts_engine.audio_player_type then
-            self.tts_engine:findAudioPlayer()
-        end
-        if self.tts_engine.audio_player_type == "gst-bt" then
-            BtUI.startWatcher(self)
-            -- Start listening for BT headset media buttons (play/pause/next/prev)
-            if self:getSetting("bt_media_control", true) then
-                BtMediaControl.start(self)
-            end
-        end
-        -- Kept separate from the watcher above so its start condition does not
-        -- change, and widened to bluealsa.  A device that is paired but not
-        -- connected is silent with no other symptom, so say so before
-        -- synthesis rather than letting the user wait it out.
-        BtUI.warnIfBtRouteSilent(self,
-            self.tts_engine.audio_player_type == "gst-bt"
-                or self.tts_engine.audio_player_type == "bluealsa")
-    end)
-
-    -- v0.1.9.6: Pre-synthesis warning when Piper (or another WAV-producing
-    -- backend) is selected on a stripped-GStreamer Kindle.  The fallback to
-    -- native Ivona TTS happens automatically, but users should know *before*
-    -- synthesis starts so they aren't surprised by the voice change.
-    if self.tts_engine._kindle_wav_playback_limited
-        and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
-        UIManager:show(InfoMessage:new{
-            text = _(
-                "Piper TTS is selected, but this Kindle model cannot play WAV files.\n\n"
-                .. "Audio will use the built-in Kindle voice instead. "
-                .. "Word highlighting may be slightly less precise."
-            ),
-            timeout = 6,
-        })
-    end
-
-    -- Early no-audio warning: if the probe found no usable audio player
-    -- and there is no BT device connected, warn before synthesis runs.
-    if self.tts_engine._no_real_audio_output and not self.tts_engine._cached_player then
-        if Device.isKindle and Device:isKindle() and not Utils.isLegacyKindleModel() then
-            -- A speakerless Kindle can only play over Bluetooth, routed through
-            -- the Amazon audio framework (audiomgrd) or the native Ivona voice.
-            -- When no path is found, "Start anyway" would synthesize into a dead
-            -- aplay device (pure silence), so show actionable guidance instead of
-            -- a misleading Start button.  This matches the runtime refusal in
-            -- ttsengine.lua and avoids suggesting the non-existent "native voice"
-            -- menu entry (the Ivona path is selected automatically when usable).
-            UIManager:show(InfoMessage:new{
-                text = _("No audio output available.\n\nThis Kindle has no built-in speaker, so audio must play over Bluetooth, and the plugin could not find a working audio route.\n\nTry this:\n1. Pair and connect Bluetooth headphones from the Kindle top-swipe menu (Settings), then start read-along again.\n2. If they are already connected, restart KOReader so the plugin re-detects the audio output.\n\nIf it still fails, generate a bug report (Audiobook > Generate bug report) and share it on the GitHub issue."),
-                timeout = 12,
-            })
-            return
-        end
-        local ConfirmBox = require("ui/widget/confirmbox")
-        UIManager:show(ConfirmBox:new{
-            text = _("No audio output device found.\n\nTTS synthesis will run but audio may not play. Start anyway?"),
-            ok_text = _("Start"),
-            cancel_text = _("Cancel"),
-            ok_callback = function()
-                pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
-                if self.media_sync then
-                    pcall(function()
-                        self.media_sync:stop(nil, { drop_chrome = true })
-                    end)
-                end
-                self.sync_controller:start(page_text, { keep_text = keep_text, anchor_xp = anchor_xp })
-            end,
-        })
-        return
-    end
-
-    -- Notify BT device that playback is starting
     pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
-
-    -- Built-in audiobook chrome (mini bar) must not stay on screen: the TTS
-    -- sync loop treats extra window-stack widgets as a menu and auto-pauses
-    -- forever (UI appears frozen).
+    -- The built-in audiobook's chrome must not stay on screen with read-aloud.
     if self.media_sync then
-        pcall(function()
-            self.media_sync:stop(nil, { drop_chrome = true })
-        end)
+        pcall(function() self.media_sync:stop(nil, { drop_chrome = true }) end)
     end
+    self.sync_controller:start(nil, { anchor_xp = anchor_xp })
+end
 
-    self.sync_controller:start(page_text, { keep_text = keep_text, anchor_xp = anchor_xp })
+--- Text of page [page] of a fixed-layout document (PDF, DjVu), for read-aloud page by page.
+function Audiobook:getPageText(page)
+    local document = self.ui and self.ui.document
+    if not document then return nil end
+    local ok, page_boxes = pcall(document.getTextBoxes, document, page)
+    if not ok or not page_boxes then return nil end
+    local lines = {}
+    for _, line in ipairs(page_boxes) do
+        local words = {}
+        for _, wb in ipairs(line) do
+            if wb.word and wb.word ~= "" then words[#words + 1] = wb.word end
+        end
+        if #words > 0 then lines[#lines + 1] = table.concat(words, " ") end
+    end
+    return table.concat(lines, "\n")
 end
 
 -- ---------------------------------------------------------------------------
@@ -1700,47 +1175,11 @@ function Audiobook:_strippedReadalongNotice()
     return _("This book is a read-along copy without narration: its audio was stripped at delivery, most likely by BookOrbit.\n\nIn BookOrbit, set this device's read-along delivery to “Original” and download the book again to get the recorded narration.")
 end
 
---- On Kindle there is no speaker/ALSA: audio only plays over Bluetooth A2DP.
---- Returns true if playback can proceed; otherwise prompts and returns false.
---- Non-Kindle devices always pass (their audio paths differ).  The 2007-2011
---- speaker Kindles are the exception: they have a real ALSA codec and no
---- Bluetooth at all, so they pass as soon as an ALSA card is visible.
-function Audiobook:_audioOutputReady()
-    if not (Device.isKindle and Device:isKindle()) then return true end
-    if Utils.isLegacyKindleModel() then
-        if Utils.probeKindleAlsaCard() then
-            return true
-        end
-        -- No ALSA card: fall through so the BT probe produces its usual
-        -- message rather than silently blocking with no explanation.
-    end
-    local connected = false
-    local h = io.popen("lipc-get-prop com.lab126.audiomgrd audioOutputConnected 2>/dev/null")
-    if h then
-        local out = h:read("*a") or ""
-        h:close()
-        connected = tonumber(out:match("(%d+)")) == 1
-    end
-    if not connected then
-        -- Nudge the Kindle BT stack to (re)connect the last-used device
-        -- (KinAMP trick), then ask the user to retry once it is up.
-        os.execute("lipc-set-prop com.lab126.btfd ensureBTconnection 1 2>/dev/null")
-        os.execute("lipc-set-prop com.lab126.btfd BTenable '1:1' 2>/dev/null")
-        UIManager:show(InfoMessage:new{
-            text = _("No Bluetooth audio device connected.\n\nReconnecting your headphones\226\128\166 once connected, try again."),
-            timeout = 5,
-        })
-        return false
-    end
-    return true
-end
-
 function Audiobook:startMediaPlayback()
     if not self._init_ok or not self.media_sync then
         self:_showInitError()
         return
     end
-    if not self:_audioOutputReady() then return end
     self:_volumeKeysToSystem(true)
 
     local doc_path = self.ui and self.ui.document and (self.ui.document.file_path or self.ui.document.file)
@@ -2357,7 +1796,6 @@ function Audiobook:openAudioFile()
         self:_showInitError()
         return
     end
-    if not self:_audioOutputReady() then return end
     local PathChooser = require("ui/widget/pathchooser")
     local home_dir = require("datastorage").getDataDir() or "/mnt"
     UIManager:show(PathChooser:new{
@@ -2378,7 +1816,6 @@ function Audiobook:openMusicPlaylist()
         self:_showInitError()
         return
     end
-    if not self:_audioOutputReady() then return end
     local PathChooser = require("ui/widget/pathchooser")
     local home_dir = require("datastorage").getDataDir() or "/mnt"
     UIManager:show(PathChooser:new{
@@ -3308,7 +2745,6 @@ function Audiobook:startAlignedAudioFromSelection(selected_text)
         self:_showInitError()
         return
     end
-    if not self:_audioOutputReady() then return end
 
     local doc_path = self.ui and self.ui.document and (self.ui.document.file_path or self.ui.document.file)
     if not doc_path then
@@ -3444,259 +2880,15 @@ function Audiobook:startReadAlongFromWord(word, context)
         if self:_hasMediaOverlays() then
             hint = _("\n\nThis book has embedded narration — use \"Play aligned audiobook from here\" instead.")
         end
-        UIManager:show(InfoMessage:new{
-            text = _("TTS engine is not available.") .. hint,
-            timeout = 6,
-        })
+        UIManager:show(InfoMessage:new{ text = _("TTS engine is not available.") .. hint, timeout = 6 })
         return
     end
-    if not self:_audioOutputReady() then return end
-
-    local ok_page, page_text = pcall(function() return self:getCurrentPageText() end)
-    if not ok_page then
-        logger.warn("Audiobook: getCurrentPageText error:", page_text)
-        page_text = nil
+    -- Books read by position start at the sentence holding the selection; fixed layout at the top of the page.
+    local xp = context and context.pos0
+    if self.ui.rolling and type(xp) == "string" then
+        return self:startReadAlong(nil, nil, xp)
     end
-    if not page_text or page_text == "" then
-        -- Try to get text from the dictionary lookup context instead
-        if self.ui.highlight and self.ui.highlight.selected_text then
-            local selected = self.ui.highlight.selected_text
-            if selected.text then
-                page_text = selected.text
-            end
-        end
-    end
-
-    if not page_text or page_text == "" then
-        local hint = ""
-        if self:_hasMediaOverlays() then
-            hint = _("\n\nFor this read-aloud EPUB, use \"Play aligned audiobook from here\".")
-        end
-        UIManager:show(InfoMessage:new{
-            text = _("Could not retrieve page text for TTS.") .. hint,
-            timeout = 5,
-        })
-        return
-    end
-    
-    -- Find the word position in the page text
-    local start_pos = nil
-    if word then
-        -- Escape special pattern chars
-        local pattern = word:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
-
-        -- Helper: find the occurrence of `pattern` in page_text closest to
-        -- `target_offset` (a character index into page_text).
-        local function find_closest_occurrence(target_offset)
-            local best_pos = nil
-            local best_dist = math.huge
-            local search_start = 1
-            while true do
-                local found = page_text:find(pattern, search_start)
-                if not found then break end
-                local dist = math.abs(found - target_offset)
-                if dist < best_dist then
-                    best_dist = dist
-                    best_pos = found
-                end
-                search_start = found + 1
-            end
-            return best_pos, best_dist
-        end
-
-        -- Primary approach: convert the xpointer to a screen position,
-        -- then ask CRe for all text from the top of the page down to that
-        -- screen position.  The length of that text is the char offset
-        -- into page_text.
-        if context and context.pos0 and self.ui.document
-                and self.ui.rolling
-                and self.ui.document.getScreenPositionFromXPointer then
-            local ok, screen_y, screen_x = pcall(
-                self.ui.document.getScreenPositionFromXPointer,
-                self.ui.document, context.pos0)
-            if ok and screen_y then
-                local ScreenDev = Device.screen
-                -- Clamp screen_y to visible area
-                if screen_y < 0 then screen_y = 0 end
-                -- Get text from top-left of page to the word's position.
-                -- Use the word's screen_x so we stop in the middle of the
-                -- line rather than grabbing the whole line.
-                local use_x = (screen_x and screen_x > 0) and screen_x or ScreenDev:getWidth()
-                local ok2, res = pcall(
-                    self.ui.document.getTextFromPositions,
-                    self.ui.document,
-                    {x = 0, y = 0},
-                    {x = use_x, y = screen_y},
-                    true)
-                if ok2 and res and res.text then
-                    local approx_offset = #res.text
-                    local best, dist = find_closest_occurrence(approx_offset)
-                    if best then
-                        start_pos = best
-                        logger.warn("Audiobook: Found word '", word,
-                            "' via screen-pos at", start_pos,
-                            "(approx_offset=", approx_offset,
-                            "screen_y=", screen_y, "dist=", dist, ")")
-                    end
-                end
-            end
-        end
-
-        -- Final fallback: first occurrence
-        if not start_pos then
-            start_pos = page_text:find(pattern)
-            logger.warn("Audiobook: Found word '", word, "' via first-occurrence at", start_pos)
-        end
-    end
-    
-    -- If we couldn't find the word, just start from beginning
-    if not start_pos then
-        logger.warn("Audiobook: Word not found, starting from beginning")
-        start_pos = 1
-    end
-    
-    -- Start reading from the found position
-    self:startReadAlong(page_text, start_pos, context and context.pos0 or nil)
-end
-
---[[--
-Kill orphan processes from a previous KOReader session that was SIGKILL'd.
-Checks for PID files and known process names left behind when cleanup
-didn't run (OOM kill, watchdog, hard reboot).
-Called once at plugin init — idempotent and safe when no orphans exist.
---]]
-function Audiobook:_killOrphanProcessesFromPreviousSession()
-    -- These orphan cleanup commands (pgrep, killall, pkill) are Linux-specific
-    -- and don't exist on Android.  Skip entirely on Android.
-    if Device:isAndroid() then return end
-
-    local dominated = false
-
-    -- 0. Kill a stale audioout daemon.  It is normally reused across
-    --    sessions, but a daemon left over from an older plugin version
-    --    (updated binary, changed protocol) must not answer the new one.
-    local h_ao = io.popen("pgrep -c audioout 2>/dev/null")
-    if h_ao then
-        local count = tonumber(h_ao:read("*a"))
-        h_ao:close()
-        if count and count > 0 then
-            os.execute("killall -9 audioout 2>/dev/null")
-            os.execute("rm -f /tmp/audiobook_audioout.sock /tmp/audiobook_audioout.fifo")
-            dominated = true
-            logger.warn("Audiobook: Startup cleanup — killed stale audioout daemon")
-        end
-    end
-
-    -- 1. Kill orphan gst-launch-1.0 (frees the exclusive BT A2DP socket)
-    --    and gst-launch-0.10 (Kindle mixersink pipelines).
-    --    Check if any gst-launch is running before paying the killall cost.
-    local h = io.popen("pgrep -c gst-launch 2>/dev/null")
-    if h then
-        local count = tonumber(h:read("*a"))
-        h:close()
-        if count and count > 0 then
-            os.execute("killall -9 gst-launch-1.0 2>/dev/null")
-            os.execute("killall -9 gst-launch-0.10 2>/dev/null")
-            dominated = true
-            logger.warn("Audiobook: Startup cleanup — killed orphan gst-launch processes")
-        end
-    end
-
-    -- 2. Kill orphan piper processes
-    h = io.popen("pgrep -c piper 2>/dev/null")
-    if h then
-        local count = tonumber(h:read("*a"))
-        h:close()
-        if count and count > 0 then
-            os.execute("killall -9 piper 2>/dev/null")
-            dominated = true
-            logger.warn("Audiobook: Startup cleanup — killed orphan piper")
-        end
-    end
-
-    -- 3. Kill orphan espeak-ng processes.  espeak synthesis runs through a
-    --    blocking io.popen, so a KOReader exit mid-sentence reparents the
-    --    child to init and it keeps synthesizing forever (observed as
-    --    PPid=1 espeak-ng processes on Kindle, issue #77).
-    h = io.popen("pgrep -c espeak 2>/dev/null")
-    if h then
-        local count = tonumber(h:read("*a"))
-        h:close()
-        if count and count > 0 then
-            os.execute("killall -9 espeak-ng 2>/dev/null")
-            dominated = true
-            logger.warn("Audiobook: Startup cleanup — killed orphan espeak-ng")
-        end
-    end
-
-    -- 4. Kill orphan feeder/server shell scripts by PID file
-    local pid_files = {
-        "/tmp/audiobook_ctrl/gst_pid",    -- persistent pipeline gst PID
-        "/tmp/piper_server_1.pid",         -- piper server 1 reader PID
-        "/tmp/piper_server_1.piper_pid",   -- piper server 1 piper PID
-        "/tmp/piper_server_2.pid",         -- piper server 2 reader PID
-        "/tmp/piper_server_2.piper_pid",   -- piper server 2 piper PID
-    }
-    for _, pf_path in ipairs(pid_files) do
-        local pf = io.open(pf_path, "r")
-        if pf then
-            local pid = pf:read("*a"):gsub("%s+", "")
-            pf:close()
-            if pid ~= "" then
-                os.execute(string.format("kill -9 %s 2>/dev/null", pid))
-                dominated = true
-                logger.warn("Audiobook: Startup cleanup — killed PID", pid, "from", pf_path)
-            end
-            os.remove(pf_path)
-        end
-    end
-
-    -- 5. Kill the feeder wrapper shell by finding /bin/sh audiobook_pipeline
-    --    This catches the wrapper that io.popen("script & echo $!") spawned.
-    os.execute("pkill -9 -f 'audiobook_pipeline\\.sh' 2>/dev/null")
-
-    -- 6. Kill orphan server wrapper shells
-    os.execute("pkill -9 -f 'piper_server_.*\\.sh' 2>/dev/null")
-
-    -- 7. Kill orphan LIPC headset-button watchers (btmediacontrol pidfiles).
-    --    Verify the pid still names a lipc process before killing: pids
-    --    recycle, and a stale pidfile must never kill an unrelated process.
-    do
-        local h2 = io.popen("ls /tmp/abk_lipc_*.pid 2>/dev/null")
-        if h2 then
-            for pid_file in h2:lines() do
-                local pf = io.open(pid_file, "r")
-                if pf then
-                    local pid = tonumber(pf:read("*l"))
-                    pf:close()
-                    local is_lipc = false
-                    if pid and pid > 1 then
-                        local c = io.open("/proc/" .. pid .. "/cmdline", "r")
-                        if c then
-                            is_lipc = (c:read("*a"):find("lipc", 1, true) ~= nil)
-                            c:close()
-                        end
-                    end
-                    if is_lipc then
-                        os.execute(string.format("kill -9 %d 2>/dev/null", pid))
-                        dominated = true
-                        logger.warn("Audiobook: Startup cleanup — killed orphan lipc-wait-event", pid)
-                    end
-                    os.remove(pid_file)
-                end
-            end
-            h2:close()
-        end
-    end
-
-    -- 8. Clean up stale temp files
-    os.execute("rm -f /tmp/audiobook_fifo /tmp/audiobook_pipeline.sh /tmp/audiobook_ctrl/gst_pid /tmp/audiobook_ctrl/stop /tmp/audiobook_ctrl/play /tmp/audiobook_ctrl/done 2>/dev/null")
-    os.execute("rm -f /tmp/piper_server_*.pid /tmp/piper_server_*.piper_pid /tmp/piper_server_*.sh /tmp/piper_server_*.log /tmp/abk_lipc_*.pid 2>/dev/null")
-
-    if dominated then
-        -- Give kernel time to release sockets after SIGKILL
-        os.execute("usleep 300000")
-    end
+    self:startReadAlong()
 end
 
 function Audiobook:stopReadAlong(opts)
@@ -3747,7 +2939,6 @@ function Audiobook:stopReadAlong(opts)
     elseif self.media_sync and opts.drop_chrome then
         pcall(function() self.media_sync:stop(false, { drop_chrome = true }) end)
     end
-    pcall(function() BtUI.stopWatcher(self) end)
     pcall(function() BtMediaControl.stop() end)
     pcall(function() BtMediaControl.sendPlaybackStatus("stopped") end)
     pcall(function() self.sync_controller:stop() end)
@@ -4567,104 +3758,27 @@ end
 -- the kernel enters hardware sleep.  Merely freezing them with SIGSTOP
 -- leaves them holding audio hardware resources, which can crash the
 -- entire device on some Kobo models.
+--- Android sends Suspend when KOReader merely goes to the background (home, another app, screen off): playback goes
+--- on like any media app; only drawing stops (highlights are painted on return).
 function Audiobook:onSuspend()
-    if self.session_recorder then
-        pcall(function() self.session_recorder:stop() end)
-    end
     if not self._init_ok then return end
-    -- Android: Suspend fires when KOReader is merely sent to the background
-    -- (home button, app switch, screen off).  There is no hardware sleep to
-    -- protect against, and audiobook playback must keep going in the
-    -- background like any media app.  Calls are handled via audio focus in
-    -- MediaSessionHelper instead.
-    if Device:isAndroid() then
-        logger.warn("Audiobook: Suspend on Android — keeping playback running")
-        dlog("app suspend", self.media_sync and self.media_sync.state,
-            "sent", self.media_sync and self.media_sync._current_sentence_idx)
-        self._app_in_background = true
-        return
-    end
-    -- Handle media playback suspend
-    if self.media_sync and (self.media_sync:isPlaying() or self.media_sync:isPaused()) then
-        self._media_was_playing = self.media_sync:isPlaying()
-        pcall(function() self.media_sync:pause() end)
-        self._paused_by_suspend = true
-        logger.warn("Audiobook: Suspend — paused media playback")
-        return
-    end
-    -- Handle TTS read-along suspend
-    if self.sync_controller and (self.sync_controller:isPlaying() or self.sync_controller:isPaused()) then
-        self._suspend_sentence_idx = self.sync_controller.reading_sentence_idx
-        self._suspend_was_playing = self.sync_controller:isPlaying()
-        pcall(function() self.tts_engine:forceKillAll() end)
-        self.sync_controller.state = self.sync_controller.STATE.PAUSED
-        self.sync_controller._user_paused = false
-        if self.sync_controller.playback_bar then
-            self.sync_controller.playback_bar:updatePlayState(false)
-            if self.sync_controller._applyBarVisibility then
-                self.sync_controller:_applyBarVisibility()
-            end
-        end
-        self._paused_by_suspend = true
-        logger.warn("Audiobook: Suspend — killed audio processes, will resume from sentence",
-            self._suspend_sentence_idx)
-    end
+    dlog("app suspend", self.media_sync and self.media_sync.state)
+    self._app_in_background = true
 end
 
 function Audiobook:onResume()
     if not self._init_ok then return end
-    dlog("app resume", self.media_sync and self.media_sync.state,
-        "sent", self.media_sync and self.media_sync._current_sentence_idx,
-        "browsing_away", self._readaloud_browsing_away)
-    if Device:isAndroid() and self._app_in_background then
-        self._app_in_background = nil
-        -- Highlights are not painted in the background: paint the sentence being read now.
-        local sc = self.sync_controller
-        if sc and sc.current_sentence and (sc:isPlaying() or sc:isPaused()) then
-            UIManager:scheduleIn(0.5, function() pcall(sc.highlightCurrentSentence, sc, sc.current_sentence) end)
-        end
-        -- Coming back from the dialer/another app relays out and repaints
-        -- the page; those page events are not the user browsing away.
-        if Time then
-            self._page_follow_ignore_until = Time.now() + Time.s(3)
-        end
+    dlog("app resume", self.media_sync and self.media_sync.state, "browsing_away", self._readaloud_browsing_away)
+    if not self._app_in_background then return end
+    self._app_in_background = nil
+    -- Highlights are not painted in the background: paint the sentence being read now.
+    local sc = self.sync_controller
+    if sc and sc.current_sentence and (sc:isPlaying() or sc:isPaused()) then
+        UIManager:scheduleIn(0.5, function() pcall(sc.highlightCurrentSentence, sc, sc.current_sentence) end)
     end
-    if not self._paused_by_suspend then return end
-    self._paused_by_suspend = false
-
-    -- Resume media playback
-    if self.media_sync and self._media_was_playing then
-        self._media_was_playing = nil
-        pcall(function() self.media_sync:resume() end)
-        logger.warn("Audiobook: Resume — resumed media playback")
-        return
-    end
-
-    -- Resume TTS read-along
-    local sentence_idx = self._suspend_sentence_idx
-    local was_playing = self._suspend_was_playing
-    self._suspend_sentence_idx = nil
-    self._suspend_was_playing = nil
-
-    if was_playing and sentence_idx and self.sync_controller
-            and self.sync_controller.parsed_data then
-        UIManager:scheduleIn(1.5, function()
-            self.sync_controller.reading_sentence_idx = sentence_idx - 1
-            self.sync_controller.state = self.sync_controller.STATE.PLAYING
-            if self.sync_controller.playback_bar then
-                self.sync_controller.playback_bar:updatePlayState(true)
-            end
-            if self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER then
-                self.sync_controller._piper_warmed_up = false
-            end
-            logger.warn("Audiobook: Resume — restarting from sentence", sentence_idx)
-            self.sync_controller:readNextSentence()
-        end)
-    else
-        if self.sync_controller and self.sync_controller._applyBarVisibility then
-            self.sync_controller:_applyBarVisibility()
-        end
-    end
+    -- Coming back from the dialer/another app relays out and repaints the page; those page events are not the user
+    -- browsing away.
+    if Time then self._page_follow_ignore_until = Time.now() + Time.s(3) end
 end
 
 function Audiobook:_shouldLockKoreaderMargins()
@@ -4956,10 +4070,6 @@ function Audiobook:onCloseDocument()
     if self.media_sync then
         pcall(function() self.media_sync:_persistLockedOverlayMargin() end)
     end
-    -- Do NOT stop the session recorder here: opening a new book from the
-    -- file browser fires CloseDocument, and the user expects the recording
-    -- to persist across book changes. The recorder still stops on suspend,
-    -- sleep-cover close, or explicit Stop.
     self:stopReadAlong({ drop_chrome = true })
     self._audiobook_chrome_margins_applied = false
 end
@@ -4968,165 +4078,12 @@ end
 -- without CloseDocument firing first, force-stop everything.
 function Audiobook:onCloseWidget()
     logger.warn("Audiobook: onCloseWidget event received")
-    -- Do NOT stop the session recorder here for the same reason as above:
-    -- widget teardown can happen when switching documents, and we want the
-    -- recording to continue.
     self:stopReadAlong({ drop_chrome = true })
     self._audiobook_chrome_margins_applied = false
-    if self._init_ok then
-        self:_removeSleepCoverOverride()
-    end
+    -- KOReader closes: let the TTS engine go (a new book binds again).
+    if self.tts_engine and self.tts_engine.shutdown then pcall(function() self.tts_engine:shutdown() end) end
 end
 
--- How often (seconds) the lid-close watchdog re-checks playback while a
--- suspend block is active.  When nothing is audible anymore the device is
--- sent to the normal suspend path within one interval plus a short
--- confirmation delay.
-local LID_SUSPEND_CHECK_INTERVAL = 30
--- A single non-playing observation can be a transient (track advance,
--- sentence gap); the suspend only fires once it persists this long.
-local LID_CONFIRM_INTERVAL = 5
-
---[[--
-Install custom SleepCoverClosed/Opened handlers.
-When "keep playing on lid close" is enabled AND audio is playing, the
-override prevents the device from entering full hardware suspend so
-audio continues uninterrupted.  A watchdog re-checks playback every
-LID_SUSPEND_CHECK_INTERVAL seconds and runs the original suspend path
-the moment playback stops or pauses, so the device never lies awake
-with nothing audible.  When the setting is off (or audio isn't
-playing), the original KOReader handlers are called normally.
---]]
-function Audiobook:_installSleepCoverOverride()
-    if self._orig_sleep_cover_closed then return end  -- already installed
-
-    -- Only install on devices that actually have SleepCover support
-    if not UIManager.event_handlers
-            or not UIManager.event_handlers.SleepCoverClosed then
-        return
-    end
-
-    -- Save original handlers
-    self._orig_sleep_cover_closed = UIManager.event_handlers.SleepCoverClosed
-    self._orig_sleep_cover_opened = UIManager.event_handlers.SleepCoverOpened
-
-    local plugin = self
-
-    -- Watchdog body: while a lid-close suspend block is active, re-check
-    -- playback and fall back to the original suspend path as soon as
-    -- nothing is playing anymore (BT pause button, sleep timer, playlist
-    -- end, stalled pipeline).  A brief non-playing blip (track advance,
-    -- sentence gap) only suspends if it persists through the confirmation
-    -- re-check.
-    local function lidWatchdogTick()
-        if not plugin._prevented_lid_suspend then return end
-        local still_playing = false
-        if plugin.sync_controller and plugin.sync_controller:isPlaying() then
-            still_playing = true
-        end
-        if plugin.media_sync and plugin.media_sync:isPlaying() then
-            still_playing = true
-        end
-        if still_playing then
-            plugin._lid_watchdog_blip = false
-            UIManager:scheduleIn(LID_SUSPEND_CHECK_INTERVAL, lidWatchdogTick)
-            return
-        end
-        if not plugin._lid_watchdog_blip then
-            plugin._lid_watchdog_blip = true
-            UIManager:scheduleIn(LID_CONFIRM_INTERVAL, lidWatchdogTick)
-            return
-        end
-        plugin._lid_watchdog_blip = false
-        plugin._prevented_lid_suspend = false
-        logger.warn("Audiobook: lid closed but playback stopped, suspending device")
-        if plugin._orig_sleep_cover_closed then
-            plugin._orig_sleep_cover_closed()
-        end
-    end
-    plugin._lid_watchdog_tick = lidWatchdogTick
-
-    UIManager.event_handlers.SleepCoverClosed = function()
-        -- Stop any active session recording when the cover closes.
-        if plugin.session_recorder then
-            pcall(function() plugin.session_recorder:stop() end)
-        end
-        -- Check if anything is actually playing (TTS or media file).
-        -- A paused session must NOT block suspend: with nothing audible
-        -- the device has no reason to stay awake.
-        local is_playing = false
-        if plugin.sync_controller and plugin.sync_controller:isPlaying() then
-            is_playing = true
-        end
-        if plugin.media_sync and plugin.media_sync:isPlaying() then
-            is_playing = true
-        end
-        -- If "keep playing" is on AND we're actively playing, prevent suspend
-        if plugin:getSetting("keep_playing_on_lid_close", false) and is_playing then
-            if Device.is_cover_closed ~= nil then
-                Device.is_cover_closed = true
-            end
-            local was_already_prevented = plugin._prevented_lid_suspend
-            plugin._prevented_lid_suspend = true
-            if not was_already_prevented then
-                logger.warn("Audiobook: SleepCover closed — keeping audio alive (suspend prevented)")
-            end
-            -- Arm the watchdog so the device suspends shortly after
-            -- playback stops instead of draining the battery awake.
-            plugin._lid_watchdog_blip = false
-            UIManager:unschedule(lidWatchdogTick)
-            UIManager:scheduleIn(LID_SUSPEND_CHECK_INTERVAL, lidWatchdogTick)
-            return
-        end
-        -- Setting off or not playing: use original KOReader behavior
-        if plugin._orig_sleep_cover_closed then
-            plugin._orig_sleep_cover_closed()
-        end
-    end
-
-    UIManager.event_handlers.SleepCoverOpened = function()
-        if Device.is_cover_closed ~= nil then
-            Device.is_cover_closed = false
-        end
-        if plugin._prevented_lid_suspend then
-            -- We blocked suspend on close, so there's nothing to resume from
-            plugin._prevented_lid_suspend = false
-            plugin._lid_watchdog_blip = false
-            UIManager:unschedule(lidWatchdogTick)
-            logger.warn("Audiobook: SleepCover opened — no resume needed (suspend was prevented)")
-            return
-        end
-        -- Normal resume path
-        if plugin._orig_sleep_cover_opened then
-            plugin._orig_sleep_cover_opened()
-        end
-    end
-
-    logger.dbg("Audiobook: SleepCover override installed")
-end
-
---[[--
-Restore original SleepCover handlers.
-Called on plugin teardown to leave KOReader in a clean state.
---]]
-function Audiobook:_removeSleepCoverOverride()
-    if not self._orig_sleep_cover_closed then return end
-
-    if self._lid_watchdog_tick then
-        pcall(function() UIManager:unschedule(self._lid_watchdog_tick) end)
-        self._lid_watchdog_tick = nil
-    end
-
-    if UIManager.event_handlers then
-        UIManager.event_handlers.SleepCoverClosed = self._orig_sleep_cover_closed
-        UIManager.event_handlers.SleepCoverOpened = self._orig_sleep_cover_opened
-    end
-    self._orig_sleep_cover_closed = nil
-    self._orig_sleep_cover_opened = nil
-    self._prevented_lid_suspend = nil
-    self._lid_watchdog_blip = nil
-    logger.dbg("Audiobook: SleepCover override removed")
-end
 
 -- Handle screen rotation: pause TTS, rebuild the PlaybackBar for the new
 -- screen dimensions, then resume.
@@ -5166,21 +4123,13 @@ function Audiobook:onSetRotationMode()
         return
     end
 
-    -- Handle TTS PlaybackBar rotation
-    local was_playing = self.sync_controller and self.sync_controller:isPlaying()
-    if was_playing then
-        self.sync_controller:pause()
-    end
-    local bar = self.sync_controller and self.sync_controller.playback_bar
-    if bar and bar.visible then
-        bar:onSetDimensions()
-    end
-    if was_playing then
-        UIManager:scheduleIn(0.5, function()
-            if self.sync_controller and self.sync_controller:isPaused() then
-                self.sync_controller:resume()
-            end
-        end)
+    -- Read-aloud goes on: positions do not change with the layout, only pages do. The bar is rebuilt for the new size
+    -- and the sentence shown again.
+    local sc = self.sync_controller
+    local bar = sc and sc.playback_bar
+    if bar and bar.visible then bar:onSetDimensions() end
+    if sc and (sc:isPlaying() or sc:isPaused()) then
+        UIManager:scheduleIn(0.5, function() pcall(sc._remapAfterRotation, sc) end)
     end
 end
 

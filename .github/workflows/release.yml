@@ -1,5 +1,7 @@
 name: Build and Release
 
+# Android only: the Lua plugin, the two Java helpers compiled to .dex, translations. No native binaries.
+
 on:
   push:
     tags:
@@ -7,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to build (e.g. v0.1.17.44)'
+        description: 'Tag to build (e.g. v0.7.0.0)'
         required: true
         type: string
 
@@ -26,182 +28,37 @@ jobs:
         with:
           ref: ${{ env.TAG }}
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Cache Nix store
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.nix-profile
-            ~/.nix-defexpr
-            /nix/store
-            /nix/var
-          key: nix-store-${{ hashFiles('cross-build-*.nix', 'build-bluealsa-compat.sh') }}
-          restore-keys: nix-store-
-
-      - name: Cache Piper downloads
-        uses: actions/cache@v4
-        with:
-          path: .cache/piper
-          key: piper-armv7l-${{ hashFiles('package-for-kobo.sh') }}
-
-      - name: Build bundle (espeak-ng + Piper)
-        run: bash package-for-kobo.sh --with-piper --piper-voice en_US-danny-low
-
-      - name: Build Android TTS helper (.dex)
+      - name: Tests
         run: |
-          # Install minimal Android SDK components for dex compilation
-          export ANDROID_HOME="$HOME/android-sdk"
-          mkdir -p "$ANDROID_HOME"
-          # Download command-line tools (retry on transient failures, then
-          # verify the archive before unzipping: dl.google.com occasionally
-          # serves a truncated body or an error page, and curl -s hides it)
-          CMDLINE_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-          curl -sL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/cmdline-tools.zip "$CMDLINE_URL"
-          unzip -tq /tmp/cmdline-tools.zip > /dev/null
-          unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/"
-          mv "$ANDROID_HOME/cmdline-tools" "$ANDROID_HOME/cmdline-tools-tmp"
-          mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
-          mv "$ANDROID_HOME/cmdline-tools-tmp/"* "$ANDROID_HOME/cmdline-tools/latest/"
-          rmdir "$ANDROID_HOME/cmdline-tools-tmp"
-          # Accept licenses and install build-tools + platform
+          sudo apt-get update -qq
+          sudo apt-get install -y luajit
+          for t in dev/test_docstream.lua dev/test_reader.lua dev/lua_semantics_check.lua; do luajit "$t"; done
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build .dex helpers (the committed ones are used if the runner cannot)
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" "platforms;android-34" > /dev/null 2>&1
-          # Build the .dex
-          cd android && { bash build-dex.sh || { echo "dex build failed on this runner: the committed .dex files (built by «Android plugin build») are used"; git checkout -- tts_helper.dex media_session_helper.dex; }; }
-          # Copy into the bundle
-          cp tts_helper.dex media_session_helper.dex ../kobo-tts-bundle/audiobook.koplugin/android/
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;34.0.0" "platforms;android-34" > /dev/null || true
+          cd android && { bash build-dex.sh || git checkout -- tts_helper.dex media_session_helper.dex; }
 
-      - name: Verify bundle
+      - name: Package
         run: |
-          PLUGIN_DIR="kobo-tts-bundle/audiobook.koplugin"
-          # 35 minus transcoder.lua (removed in v0.5.0: dead code)
-          EXPECTED_LUA_COUNT=34
+          mkdir -p dist/audiobook.koplugin/android
+          cp *.lua new_audio_logo.svg LICENSE README.md dist/audiobook.koplugin/
+          cp -r l10n dist/audiobook.koplugin/
+          cp android/*.dex dist/audiobook.koplugin/android/
+          cd dist && zip -qr audiobook-koplugin-android.zip audiobook.koplugin
 
-          echo "=== Lua files ==="
-          ls -la "$PLUGIN_DIR"/*.lua
-          LUA_COUNT=$(ls -1 "$PLUGIN_DIR"/*.lua 2>/dev/null | wc -l)
-          echo "Lua file count: $LUA_COUNT (expected $EXPECTED_LUA_COUNT)"
-          if [ "$LUA_COUNT" -ne "$EXPECTED_LUA_COUNT" ]; then
-              echo "ERROR: Expected $EXPECTED_LUA_COUNT Lua files, found $LUA_COUNT"
-              exit 1
-          fi
-          echo ""
-
-          echo "=== ffmpeg binary ==="
-          if [ -f "$PLUGIN_DIR/bin/ffmpeg" ] || [ -f "$PLUGIN_DIR/bin/ffmpeg.bin" ]; then
-              ls -la "$PLUGIN_DIR/bin/ffmpeg"* 2>/dev/null || true
-              echo "ffmpeg: OK"
-          else
-              echo "ERROR: bin/ffmpeg missing"
-              exit 1
-          fi
-          echo ""
-
-          echo "=== audioout daemon ==="
-          if [ -f "$PLUGIN_DIR/audioout/audioout" ] || [ -f "$PLUGIN_DIR/audioout/audioout.bin" ]; then
-              ls -la "$PLUGIN_DIR"/audioout/ 2>/dev/null || true
-              echo "audioout: OK"
-          else
-              echo "ERROR: audioout daemon missing"
-              exit 1
-          fi
-          echo ""
-
-          echo "=== legacy binaries (2011-and-earlier Kindles) ==="
-          if [ -f "$PLUGIN_DIR/bin/ffmpeg-legacy" ] || [ -f "$PLUGIN_DIR/bin/ffmpeg-legacy.bin" ]; then
-              ls -la "$PLUGIN_DIR"/bin/ffmpeg-legacy* 2>/dev/null || true
-              echo "ffmpeg-legacy: OK"
-          else
-              echo "ERROR: bin/ffmpeg-legacy missing"
-              exit 1
-          fi
-          if [ -f "$PLUGIN_DIR/espeak-ng-legacy/bin/espeak-ng" ] || [ -f "$PLUGIN_DIR/espeak-ng-legacy/bin/espeak-ng.bin" ]; then
-              ls -la "$PLUGIN_DIR"/espeak-ng-legacy/bin/ 2>/dev/null || true
-              echo "espeak-ng-legacy: OK"
-          else
-              echo "ERROR: espeak-ng-legacy/bin/espeak-ng missing"
-              exit 1
-          fi
-          echo ""
-
-          echo "=== espeak-ng binary + MBROLA ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/espeak-ng/bin/
-          echo ""
-          echo "=== MBROLA voice databases ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/espeak-ng/share/mbrola/ 2>/dev/null || true
-          echo ""
-          echo "=== Piper binary + voice ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/piper/piper.bin
-          ls -la kobo-tts-bundle/audiobook.koplugin/piper/*.onnx
-          echo ""
-          echo "=== BlueALSA (BT audio bridge) ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/bluealsa/bin/
-          ls -la kobo-tts-bundle/audiobook.koplugin/bluealsa/lib/alsa-lib/
-          ls -la kobo-tts-bundle/audiobook.koplugin/bluealsa/lib/
-          echo ""
-          echo "=== Android TTS helper ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/android/
-          echo ""
-          echo "=== Kindle GStreamer player ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/kindle/
-          echo ""
-          echo "=== wav-play (ALSA player) ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/wav-play/
-          ls -la kobo-tts-bundle/audiobook.koplugin/wav-play/lib/ 2>/dev/null || true
-          echo ""
-          echo "=== sanoTTS-jp engine (binary only — no model data may ship) ==="
-          ls -la kobo-tts-bundle/audiobook.koplugin/sanotts-jp/
-          # Exactly one file may ship: the engine binary itself.  Anything
-          # else in this directory (weights, dictionary, stray test output)
-          # is model data and must never reach the zip.  A size threshold
-          # cannot express this: the binary is ~250 KB while the smallest
-          # weights blob is 654 KB.
-          JP_COUNT=$(find kobo-tts-bundle/audiobook.koplugin/sanotts-jp -type f | wc -l)
-          if [ ! -f kobo-tts-bundle/audiobook.koplugin/sanotts-jp/snt_jp_server ] || [ "$JP_COUNT" != "1" ]; then
-            echo "ERROR: sanoTTS-jp dir must contain exactly snt_jp_server and nothing else (found $JP_COUNT files)"
-            exit 1
-          fi
-          echo ""
-          echo "=== Total size ==="
-          du -sh kobo-tts-bundle/audiobook.koplugin/
-
-      - name: Create zip
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          cd kobo-tts-bundle
-          zip -r ../audiobook-koplugin-${{ env.TAG }}.zip audiobook.koplugin/
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG }}
-          generate_release_notes: true
-          files: audiobook-koplugin-${{ env.TAG }}.zip
-          body: |
-            ## Audiobook Read-Along ${{ env.TAG }}
-
-            **Download, unzip, and copy `audiobook.koplugin/` to your KOReader plugins directory. Restart KOReader.**
-
-            ### Included
-            - Plugin (all Lua files)
-            - Bundled espeak-ng (cross-compiled for Kobo armv7l)
-            - Bundled MBROLA voice support + 7 default voices (US English, French, German, Spanish, Chinese, Portuguese)
-            - Bundled Piper neural TTS + en_US-danny-low voice
-            - Bundled BlueALSA (BT audio bridge for BlueZ Kobo devices)
-            - Bundled kindle-gst-play (GStreamer WAV player for Cat 2 Kindles)
-            - Bundled kindle-gst-play-native (KinAMP-parity fallback for audio-less PW4-class Kindles)
-            - Legacy static ffmpeg and espeak-ng for 2011-and-earlier speaker Kindles (Kindle 2/3/DXG/4/Touch/PW1)
-            - Bundled wav-play (ALSA player for PocketBook and other devices without aplay)
-            - Bundled sanoTTS-jp Japanese neural engine (binary only; weights + dictionary download in-app, ~14 MB, from sanoTTS-jp v1.0.0)
-            - Android TTS helper and MediaSession helpers (pre-built tts_helper.dex, media_session_helper.dex)
-
-            ### Install paths
-            | Platform | Path |
-            |----------|------|
-            | Kobo | `.adds/koreader/plugins/` |
-            | Kindle | `koreader/plugins/` |
-            | Linux | `~/.config/koreader/plugins/` |
-            | Android | `/sdcard/koreader/plugins/` |
-
-            See [README](https://github.com/${{ github.repository }}/blob/master/README.md) for full documentation.
+          NOTES="$(git tag -l --format='%(contents)' "$TAG")"
+          gh release create "$TAG" dist/audiobook-koplugin-android.zip --title "$TAG" --notes "${NOTES:-$TAG}" --latest \
+            || gh release upload "$TAG" dist/audiobook-koplugin-android.zip --clobber

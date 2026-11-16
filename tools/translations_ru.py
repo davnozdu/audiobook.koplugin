@@ -727,4 +727,10 @@ TRANSLATIONS_RU = {
     'Smart book (MyTTS)': 'Умная книга (MyTTS)',
     "Retellings of this book by MyTTS: what happened before, the previous chapter, this chapter, who is who, how it ends. MyTTS reads them aloud; the book's text goes to the cloud LLM chosen in MyTTS.": 'Пересказы этой книги от MyTTS: что было раньше, предыдущая глава, эта глава, кто есть кто, чем закончится. MyTTS читает их вслух; текст книги уходит облачной LLM, выбранной в MyTTS.',
     'MyTTS is not installed or the page has no text.': 'MyTTS не установлен или на странице нет текста.',
+    "When enabled, play/pause/next/prev buttons on a headset control playback.": "Если включено, кнопки гарнитуры (пауза, вперёд, назад) управляют воспроизведением.",
+    "Detailed log": "Подробный журнал",
+    "Writes debug.log in the plugin folder: read-aloud timings (time to first sound, gaps between sentences, queue fill), engine errors and recoveries. No book text. Off by default; it writes to storage on every sentence.": "Пишет debug.log в папке плагина: время чтения вслух (до первого звука, паузы между фразами, наполнение очереди), ошибки движка и восстановления. Без текста книги. По умолчанию выключен: пишет на накопитель на каждой фразе.",
+    "The TTS engine does not respond. Reading stopped.": "Движок TTS не отвечает. Чтение остановлено.",
+    "Android TTS is not available.": "Синтез речи Android недоступен.",
+    "The system's preferred text-to-speech engine (Android settings → Text-to-speech).": "Движок синтеза речи, выбранный в системе (Настройки Android → Синтез речи).",
 }

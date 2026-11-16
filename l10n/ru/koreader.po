@@ -3688,3 +3688,23 @@ msgstr "Перезапустить сейчас"
 msgid "Later"
 msgstr "Позже"
 
+msgid "When enabled, play/pause/next/prev buttons on a headset control playback."
+msgstr "Если включено, кнопки гарнитуры (пауза, вперёд, назад) управляют воспроизведением."
+
+msgid "Detailed log"
+msgstr "Подробный журнал"
+
+msgid "Writes debug.log in the plugin folder: read-aloud timings (time to first sound, gaps between sentences, queue fill), engine errors and recoveries. No book text. Off by default; it writes to storage on every sentence."
+msgstr "Пишет debug.log в папке плагина: время чтения вслух (до первого звука, паузы между фразами, наполнение очереди), ошибки движка и восстановления. Без текста книги. По умолчанию выключен: пишет на накопитель на каждой фразе."
+
+msgid "The TTS engine does not respond. Reading stopped."
+msgstr "Движок TTS не отвечает. Чтение остановлено."
+
+msgid "Android TTS is not available."
+msgstr "Синтез речи Android недоступен."
+
+msgid "The system's preferred text-to-speech engine (Android settings → Text-to-speech)."
+msgstr "Движок синтеза речи, выбранный в системе (Настройки Android → Синтез речи)."
+
+msgid "Read-aloud for Android with synchronized sentence highlighting through the system TTS engine (MyTTS or any other). Also plays pre-recorded audiobooks (mp3, m4b, m4a) and EPUB 3 Media Overlays (Storyteller format), and syncs with Audiobookshelf.\n\nUsage:\n1. Long-press a word or select text, then tap \"Read aloud from here\"\n2. Or use Tools menu → Audiobook Read-Along"
+msgstr "Чтение вслух на Android с подсветкой предложений через системный движок синтеза речи (MyTTS или любой другой). Также воспроизводит готовые аудиокниги (mp3, m4b, m4a) и EPUB 3 Media Overlays (формат Storyteller), синхронизируется с Audiobookshelf.\n\nКак пользоваться:\n1. Долгое нажатие на слово или выделение текста → «Читать вслух отсюда»\n2. Или меню Инструменты → Аудиокнига: чтение вслух"

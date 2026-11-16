@@ -28,8 +28,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y luajit
-          luajit dev/test_engine_queue.lua
-          luajit dev/test_wrap_carry.lua
+          luajit dev/test_docstream.lua
+          luajit dev/test_reader.lua
           luajit dev/lua_semantics_check.lua
 
       - name: Install Android build tools
@@ -48,9 +48,9 @@ jobs:
       - name: Package plugin
         run: |
           mkdir -p dist/audiobook.koplugin/android
-          cp *.lua voices.json new_audio_logo.svg LICENSE README.md dist/audiobook.koplugin/
+          cp *.lua new_audio_logo.svg LICENSE README.md dist/audiobook.koplugin/
           cp -r l10n dist/audiobook.koplugin/
-          cp android/*.dex android/*.java dist/audiobook.koplugin/android/
+          cp android/*.dex dist/audiobook.koplugin/android/
           cd dist && zip -qr audiobook-koplugin-android.zip audiobook.koplugin
 
       - name: Upload artifact

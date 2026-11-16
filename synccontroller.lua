@@ -1,7 +1,15 @@
 --[[--
-Sync Controller Module
-Coordinates TTS playback with text highlighting.
-Reads text sentence-by-sentence for responsive, continuous playback.
+Read-aloud controller (Android).
+
+The book goes to the Android TTS engine's own queue (TextToSpeech.speak with QUEUE_ADD), sentence by sentence, from
+one stream over the document (docstream.lua): a cursor that only moves forward, so a word is never sent twice and
+nothing is glued from screen extracts. The engine plays the queue as one continuous stream and prepares the next
+sentences while one sounds; KOReader only follows its events: onStart highlights the sentence and turns the screen to
+it, onDone keeps about a minute of speech queued. Pages turn when the voice reaches them, never because text ran out.
+
+Pause stops the queue; resume starts again from the beginning of the interrupted sentence (the engine usually still has
+its audio). Jumps (previous/next sentence, back N seconds, chapters, speed change) start a new run from a sentence's
+own position. An engine that stops answering is reconnected and the run starts again from the sentence being heard.
 
 @module synccontroller
 --]]
@@ -13,2129 +21,739 @@ local time = require("ui/time")
 local _ = require("audiobook_gettext")
 local T = require("ffi/util").template
 
--- Shared utility modules (DRY: eliminates duplicated getPluginPath, ws)
 local _utils_dir = debug.getinfo(1, "S").source:match("^@(.*/)[^/]*$") or "./"
-local Utils = dofile(_utils_dir .. "utils.lua")
-local XpText = dofile(_utils_dir .. "xptext.lua")
+local DocStream = dofile(_utils_dir .. "docstream.lua")
 local PLUGIN_PATH = _utils_dir
 
+--- Diagnostic log (plugin menu «Подробный журнал», off by default): only short lines, timings, no book text.
 local function dlog(...)
     local DL = package.loaded["audiobook_debuglog"]
-    if DL and DL.log then
-        pcall(DL.log, ...)
-    end
+    if DL and DL.log then pcall(DL.log, ...) end
 end
 
--- Words of a text exactly as extracted: two extracts of the same page edge repeat it letter for letter, while the
--- author's own repetition differs («Да, да», «тянет, тянет…»). One extraction artefact is allowed: the last word of
--- this page may come without the punctuation that follows it on the next one («расточительна» / «расточительна,»).
-local function _edgeWords(text)
-    local out = {}
-    for w in Utils.ws(text):gmatch("%S+") do out[#out + 1] = w end
-    return out
-end
-
-local function _bare(w)
-    return (w:gsub("[%p]+$", ""):gsub("\194\187$", ""):gsub("\226\128[\156\157\148\147\166]$", ""))
-end
-
--- How many leading words of [cont] repeat the last words of [text] (at most 8; 0 when none).
-local function _overlapWords(text, cont)
-    local a, b = _edgeWords(text), _edgeWords(cont)
-    for n = math.min(8, #a, #b - 1), 1, -1 do
-        local same = true
-        for i = 1, n do
-            local x, y = a[#a - n + i], b[i]
-            local edge = i == n and x == _bare(x) and x == _bare(y)
-            if (x ~= y and not edge) or y == "" then same = false; break end
-        end
-        if same then return n end
-    end
-    return 0
-end
-
--- [cont] without its first [n] words (original spelling and punctuation kept).
-local function _dropWords(cont, n)
-    local rest = Utils.ws(cont)
-    for _ = 1, n do rest = rest:gsub("^%S+%s*", "", 1) end
-    return rest
-end
-
--- ── Constants ────────────────────────────────────────────────────────
--- Number of sentences to prefetch ahead for Piper TTS.
--- With BATCH_SIZE=1 and 2 servers × 4 pipeline depth = 8 slots,
--- we need at least 8 sentences queued to keep all slots fed.
--- 20 gives comfortable headroom so sentences are ready when needed.
-local PIPER_LOOKAHEAD = 20
-
--- espeak-ng cold-start fallback:
--- espeak synthesizes in ~300ms vs Piper's 30-75s first batch on ARM.
--- The fallback keeps playing sentences via espeak until Piper delivers
--- its first result (_piper_warmed_up), so slow models on weak hardware
--- (e.g. French medium on single-core) never stall.
-
--- If Piper hasn't delivered any result after this many consecutive
--- espeak fallback sentences, kill the Piper server to free CPU/memory.
--- One Kobo page is typically 20-25 sentences; 30 gives Piper one full
--- page of breathing room before we give up.
-local PIPER_ABANDON_THRESHOLD = 30
--- When espeak has been carrying the whole session and Piper has not
--- completed a single synthesis batch after this long, the device is
--- hopeless for neural TTS: abandon early so the Piper server stops
--- stealing CPU from espeak (its batches can poll for up to 180 s).
-local PIPER_ZERO_DELIVERY_ABANDON_S = 120
-
--- ── Accumulate-then-play buffering ───────────────────────────────────
--- Piper on ARM synthesizes at ~0.3-0.5× real-time (each 5 s sentence
--- takes 15-30 s).  Playing each sentence as soon as it's ready creates
--- a choppy "5 s audio → 10 s silence → 3 s audio" pattern.
---
--- Instead, when we must wait for a sentence anyway, we keep waiting
--- until several CONSECUTIVE sentences are ready, then concat them into
--- one smooth burst (e.g. 20 s of uninterrupted audio).  The user hears
--- longer but fewer pauses, with smooth playback in between.
-local MIN_READY_AHEAD = 3         -- wait for 3+ more sentences after target
-local BUFFER_FILL_TIMEOUT_S = 20  -- max seconds to wait after target is ready
-
--- ── RTF auto-degrade escalation ──────────────────────────────────────
--- PiperQueue tracks a rolling realtime factor (synthesis time / audio
--- duration).  Above this threshold Piper cannot keep up with playback.
--- Stage 1 applies low-resource mode + aggressive sentence splitting for
--- the session; stage 2 switches to espeak for the rest of the session.
--- Neither stage touches the user's saved settings.
-local PIPER_RTF_DEGRADE_THRESHOLD = 1.2
--- Batches to wait after stage 1 before concluding it was not enough.
-local PIPER_RTF_STAGE2_SAMPLES = 3
+local function now_s() return time.to_s(UIManager:getTime()) end
 
 local SyncController = {
-    -- Playback states
-    STATE = {
-        STOPPED = "stopped",
-        PLAYING = "playing",
-        PAUSED = "paused",
-        LOADING = "loading",
-    },
+    STATE = { STOPPED = "stopped", PLAYING = "playing", PAUSED = "paused", LOADING = "loading" },
+    -- Queue budget: about a minute of speech ahead, bounded in sentences and text sent through JNI.
+    QUEUE_TARGET_S = 60,
+    QUEUE_MIN_ITEMS = 4,
+    QUEUE_MAX_ITEMS = 48,
+    QUEUE_MAX_CHARS = 10000,
+    POLL_S = 0.2,
+    MAX_RECOVERIES = 3,
+    PENDING_MAX_S = 6,
 }
 
 function SyncController:new(o)
     o = o or {}
     setmetatable(o, self)
     self.__index = self
-
     o.state = self.STATE.STOPPED
-    o.parsed_data = nil
-    o.current_word_index = 0
-    o.current_sentence_index = 0
-    -- Sentence-by-sentence queue
-    o.reading_sentence_idx = 0
-    o.total_sentences = 0
     o.current_sentence = nil
-    -- Chain generation: incremented by beginSentencePlayback so stale
-    -- completion callbacks and polling loops can detect they are outdated.
-    o._chain_generation = 0
-    -- Set to true once Piper delivers its first audio; prevents espeak
-    -- cold-start from re-triggering on page turns.
-    o._piper_warmed_up = false
-    -- Piper abandonment: if espeak runs for too many sentences without
-    -- Piper ever delivering, kill the server to free CPU on single-core.
-    o._piper_abandoned = false
-    o._espeak_fallback_count = 0
-    o._piper_first_fallback_at = nil
-    -- RTF auto-degrade: 0 = not triggered, 1 = low-resource + splitting
-    -- applied for the session, 2 = espeak session fallback active.
-    o._piper_degrade_stage = 0
-    o._piper_degrade_mark = nil
-    -- Timing
-    o.sentence_sync_start = nil
-    o.pause_time = nil
+    o.reading_sentence_idx = 0
     o.playback_bar = nil
-    -- Xpointer of the page currently being read (for re-align)
-    o.reading_page_xpointer = nil
-
+    o._q = {}            -- queued and not finished, in order: { id, s, chars, words }
+    o._q_by_id = {}
+    o._heard = {}        -- sentences heard lately: { from, t, chars }
+    o._run, o._seq = 0, 0
     return o
 end
 
---[[--
-Start read-along for given text.
-Parses text into sentences and reads them one-by-one, chaining automatically.
-@param text string The text to read
-@param opts table|nil  `{ keep_text = true }` for "read from here": do not
-  replace a sliced page suffix with a longer live capture (that always
-  restarted at the top of the page).
---]]
+-- ── Documents ─────────────────────────────────────────────────────────
+
+function SyncController:_doc()
+    local ui = self.plugin and self.plugin.ui
+    return ui and ui.document, ui
+end
+
+function SyncController:_byPosition()
+    local doc, ui = self:_doc()
+    return ui and ui.rolling and DocStream.supported(doc)
+end
+
+function SyncController:_parse(text)
+    return self.text_parser:parse(text)
+end
+
+--- A new stream at [where]: { xp = position (the sentence holding it) } | { exact = word start } | nil (top of the view).
+function SyncController:_openStream(where)
+    local doc, ui = self:_doc()
+    if not doc then return nil end
+    where = where or {}
+    if self:_byPosition() then
+        local st = DocStream.new(doc, function(t) return self:_parse(t) end)
+        if where.exact then
+            st:seekExact(where.exact)
+        else
+            local xp = where.xp
+            if not xp then pcall(function() xp = doc:getXPointer() end) end
+            if not xp or not st:seek(xp) then return nil end
+        end
+        return st
+    end
+    -- Fixed layout (PDF, DjVu): page after page.
+    local plugin = self.plugin
+    local count = 1
+    pcall(function() count = doc:getPageCount() end)
+    local page = where.page or (ui.getCurrentPage and ui:getCurrentPage()) or 1
+    local st = DocStream.PageStream.new(function(p) return plugin:getPageText(p) end, self.text_parser, page, count)
+    st:seek(page, where.index or 1)
+    return st
+end
+
+-- ── Start / stop ──────────────────────────────────────────────────────
+
+--- Start reading. [text] is not used for books read by position (the stream reads the document); opts.anchor_xp
+--- starts at the sentence holding that position («read from here»), otherwise at the sentence holding the top of the
+--- screen.
 function SyncController:start(text, opts)
     opts = opts or {}
-    local keep_text = opts.keep_text and true or false
-    -- Set only by the automatic page turn: the sentence running into this view from the previous one was heard.
-    self._xp_turned = opts.xp_turned and true or nil
-    if not opts.xp_turned then
-        self._q_spoken_end = nil
-        self._xp_cache = nil
-        -- A user jump during an asynchronous page transition is still a new run.
-        if self.tts_engine and self.tts_engine._queue_active then self.tts_engine:queueStopAndroid() end
-    end
-    -- A new start may be anywhere in the book: a peek of the next view made elsewhere must never be glued on.
-    self._wrap_peek_text = nil
-    self._wrap_peek_view = nil
-    -- XPointer of the selection a from-here start should anchor at.  Text
-    -- matching alone can lose the selection when the playback bar re-lays
-    -- the page out; the xpointer survives the reflow (issue #96).
-    self._from_here_anchor_xp = opts.anchor_xp or nil
-    -- If already playing/paused, stop TTS+highlights but keep the playback bar
-    if self.state == self.STATE.PLAYING or self.state == self.STATE.PAUSED then
-        pcall(function() self.tts_engine:stop() end)
-        pcall(function() self.highlight_manager:clearHighlights() end)
-    end
-
-    self.state = self.STATE.LOADING
-    logger.dbg("SyncController: Starting read-along with", #text, "characters")
-    self:_rememberReadingPosition()
-    -- Sentence indices are per page: what was heard before belongs to another page.
-    self._page_gen = (self._page_gen or 0) + 1
-
-    -- Log rotation baseline for diagnostics
-    local Screen = require("device").screen
-    local scr_w, scr_h = Screen:getWidth(), Screen:getHeight()
-    logger.warn("SyncController: start() — screen", scr_w, "x", scr_h,
-        "mode=", Screen:getScreenMode(),
-        "rotation=", Screen.getRotationMode and Screen:getRotationMode() or "?")
-
-    -- Create the bar BEFORE parsing.  Showing it used to call setPageMargins
-    -- (CRE reflow).  TTS and Storyteller now share a locked bottom inset, so
-    -- we only wait for reflow when live margins actually changed
-    -- (_bar_space_reflowed, set by _reserveBarSpace).
-    local created_bar = not self.playback_bar
-    if created_bar then
-        self:showPlaybackBar()
-        if self._bar_space_reflowed
-           and self.plugin and self.plugin.getCurrentPageText then
-            -- Settle token: a second start() while this loop waits must
-            -- retire the first loop, or both would begin playback.
-            self._settle_token = (self._settle_token or 0) + 1
-            self:_settleThenBegin(text, created_bar, keep_text, 0,
-                nil, self._settle_token)
-            return
-        end
-    end
-
-    self:_beginReading(text, created_bar, keep_text)
+    if not self.playback_bar then self:showPlaybackBar() end
+    self:_ttsResetClock()
+    self._recoveries = 0
+    self._user_paused = false
+    local where = opts.anchor_xp and { xp = opts.anchor_xp } or nil
+    dlog("read start", opts.anchor_xp and "anchor" or "view", self:_byPosition() and "position" or "pages")
+    self:_beginAt(where)
 end
 
---- Wait for the post-reflow layout to settle before reading the page: start
---- once two consecutive page captures agree (the single fixed delay raced
---- slow re-typesetting and captured a half-reflowed page, issue #96).
-function SyncController:_settleThenBegin(text, created_bar, keep_text, attempt, prev_norm, token)
-    if self.state ~= self.STATE.LOADING
-            or (token and self._settle_token ~= token) then
-        logger.dbg("SyncController: start deferral aborted, state=", self.state)
+--- Restart after a stop: from the top of the screen.
+function SyncController:restartFromStopped()
+    if self.state ~= self.STATE.STOPPED then return end
+    self:start()
+end
+
+--- A new run from [where] (see _openStream): drop the engine's queue, refill from there.
+function SyncController:_beginAt(where)
+    local e = self.tts_engine
+    if e then e:queueStopAndroid() end
+    self._run = self._run + 1
+    self._q, self._q_by_id = {}, {}
+    self._started_in_run = false
+    self._ended = false
+    self._pending_since = nil
+    self._t_run = now_s()
+    self.stream = self:_openStream(where)
+    if not self.stream then
+        dlog("read nothing-to-read")
+        self:stop()
         return
     end
-    local controller = self
-    local fresh
-    if self.plugin and self.plugin.getCurrentPageText then
-        pcall(function() fresh = self.plugin:getCurrentPageText() end)
-    end
-    local norm = Utils.ws(fresh or "")
-    -- keep_text: a from-here suffix must not be replaced by the full page
-    -- after the bar reflow.
-    local function begin_with_fresh()
-        if not keep_text and fresh and fresh ~= "" then
-            logger.dbg("SyncController: re-fetched page text after margin reflow settle (",
-                #text, "->", #fresh, "chars)")
-            text = fresh
-        end
-        self:_beginReading(text, created_bar, keep_text)
-    end
-    if norm ~= "" and prev_norm and norm == prev_norm then
-        dlog("page-settle", "attempt", attempt, "chars", #norm)
-        begin_with_fresh()
-        return
-    end
-    if attempt >= 8 then
-        dlog("page-settle-timeout", attempt)
-        begin_with_fresh()
-        return
-    end
-    UIManager:scheduleIn(0.2, function()
-        controller:_settleThenBegin(text, created_bar, keep_text,
-            attempt + 1, norm ~= "" and norm or nil, token)
-    end)
-end
-
-local function _stripTrailingClosers(s)
-    if not s then return "" end
-    s = s:gsub("[%s\"'%)%]%>]+$", "")
-    s = s:gsub("\194\187%s*$", "") -- »
-    s = s:gsub("\226\128[\152-\159]%s*$", "") -- curly quotes
-    return s
-end
-
-local function _sentenceHasTerminator(s)
-    s = _stripTrailingClosers(s)
-    if s == "" then return false end
-    if s:sub(-3) == "..." then return true end
-    if s:sub(-3) == "\226\128\166" then return true end -- …
-    local last = s:sub(-1)
-    if last == "." or last == "?" or last == "!" then return true end
-    -- CJK terminators are three-byte characters (issue #96).
-    local tail = s:sub(-3)
-    return tail == "\227\128\130" -- 。 U+3002
-        or tail == "\239\188\129" -- ！ U+FF01
-        or tail == "\239\188\159" -- ？ U+FF1F
-end
-
-local function _reindexSentences(parsed)
-    if not parsed or not parsed.sentences then return end
-    for i, sent in ipairs(parsed.sentences) do
-        sent.index = i
+    self.state = self.STATE.PLAYING
+    self:_ttsMarkPlay()
+    if self.playback_bar then self.playback_bar:updatePlayState(true) end
+    self:_applyBarVisibility()
+    self:_publishPlaying(true)
+    self:_fill()
+    self:_ensurePoll()
+    local MyTTS = self.plugin and self.plugin._mytts
+    if MyTTS then
+        MyTTS._sent_index, MyTTS._last_ahead = nil, nil
+        pcall(MyTTS.ahead, self.plugin)
     end
 end
 
---- Shared byte prefix length (wrap overlap only; not for display).
-local function _sharedPrefixLen(a, b)
-    if not a or not b then return 0 end
-    local n = math.min(#a, #b)
-    local i = 0
-    while i < n do
-        i = i + 1
-        if a:byte(i) ~= b:byte(i) then
-            return i - 1
-        end
+function SyncController:_publishPlaying(playing)
+    local p = self.plugin
+    if not p then return end
+    local f = playing and p.notifyAudioPlaying or p.notifyAudioPaused
+    if f then pcall(f, p) end
+end
+
+function SyncController:pause(auto)
+    if self.state ~= self.STATE.PLAYING then return end
+    self.state = self.STATE.PAUSED
+    if not auto then self._user_paused = true end
+    if self.tts_engine then self.tts_engine:pause() end
+    self:_ttsMarkPause()
+    self:_publishPlaying(false)
+    if self.playback_bar then self.playback_bar:updatePlayState(false) end
+    self:_applyBarVisibility()
+    dlog("read pause", auto and "auto" or "user")
+end
+
+--- Resume: the interrupted sentence again from its beginning.
+function SyncController:resume(auto)
+    if self.state ~= self.STATE.PAUSED then return end
+    if auto and self._user_paused then return end
+    self._user_paused = false
+    local cur = self.current_sentence
+    dlog("read resume", auto and "auto" or "user")
+    self:_restartAt(cur)
+end
+
+--- A new run from sentence [s] (its own start), or from the top of the screen.
+function SyncController:_restartAt(s)
+    if s and s.from then
+        self:_beginAt({ exact = s.from })
+    elseif s and s.page then
+        self:_beginAt({ page = s.page, index = s.index })
+    else
+        self:_beginAt(nil)
     end
+end
+
+function SyncController:stop(opts)
+    if self.state ~= self.STATE.STOPPED then dlog("read stop from", self.state) end
+    self.state = self.STATE.STOPPED
+    self._run = self._run + 1
+    if self.tts_engine then pcall(function() self.tts_engine:stop() end) end
+    if self.highlight_manager then pcall(function() self.highlight_manager:clearHighlights() end) end
+    self._q, self._q_by_id = {}, {}
+    self.stream = nil
+    self.current_sentence = nil
+    self._user_paused = false
+    self:_ttsMarkPause()
+    if opts and opts.hide_bar then
+        pcall(function() self:hidePlaybackBar() end)
+    elseif self.playback_bar then
+        pcall(function() self.playback_bar:updatePlayState(false) end)
+    end
+    self:_publishPlaying(false)
+end
+
+function SyncController:isPlaying() return self.state == self.STATE.PLAYING end
+function SyncController:isPaused() return self.state == self.STATE.PAUSED end
+function SyncController:isStopped() return self.state == self.STATE.STOPPED end
+
+-- ── The queue ─────────────────────────────────────────────────────────
+
+local function countWords(t)
+    local n = 0
+    for _ in t:gmatch("%S+") do n = n + 1 end
     return n
 end
 
-local function _rebuildSentenceWords(parser, sent)
-    if not sent or not parser or not parser.parseWords then return end
-    sent.words = {}
-    local words = parser:parseWords(sent.text or "")
-    for _, w in ipairs(words) do
-        w.sentence_index = sent.index
-        table.insert(sent.words, w)
-    end
+--- Seconds of speech queued and not yet finished (estimated from words and the measured pace).
+function SyncController:_queuedSeconds()
+    local wps = (self._wps or 2.6) * math.max(0.25, (self.tts_engine and self.tts_engine.rate) or 1)
+    local secs = 0
+    for _, it in ipairs(self._q) do secs = secs + math.max(0.4, it.words / wps) end
+    return secs
 end
 
-local function _speakWords(s)
-    local w = {}
-    for x in Utils.normalizeForMatching(s or ""):gmatch("%S+") do
-        x = x:gsub("[%p]+$", ""):lower()
-        if x ~= "" then w[#w + 1] = x end
-    end
-    return w
-end
-
---- How many leading words of `first` were already the tail of `spoken`.
-local function _wrapWordOverlap(spoken, first)
-    local a, b = _speakWords(spoken), _speakWords(first)
-    local maxk = math.min(#a, #b)
-    for k = maxk, 1, -1 do
-        local ok = true
-        for i = 1, k do
-            if a[#a - k + i] ~= b[i] then
-                ok = false
-                break
-            end
-        end
-        if ok then return k, #b end
-    end
-    return 0, #b
-end
-
---- Drop or trim the wrap tail already spoken at the end of the previous page.
---- Only sentence 1 is touched (never the rest of the new page).
---- @param consume boolean  when true (default), clear the carry afterwards
---- @return number 1 if the first sentence was removed
-function SyncController:_skipCarriedPrefix(parsed, consume)
-    local remain = self._tts_carry_skip
-    if consume ~= false then
-        self._tts_carry_skip = nil
-    end
-    if not remain or remain == "" or not parsed or not parsed.sentences then
-        return 0
-    end
-    remain = Utils.ws(remain)
-    if remain == "" then return 0 end
-    local first = parsed.sentences[1]
-    local t = first and Utils.ws(first.text) or ""
-    if t == "" then
-        table.remove(parsed.sentences, 1)
-        _reindexSentences(parsed)
-        return 0
-    end
-    local spoken = (self._spoken_norm or {})[#(self._spoken_norm or {})]
-    local w_overlap, w_first = _wrapWordOverlap(spoken or remain, t)
-    local overlap = 0
-    if t:sub(1, #remain) == remain then
-        overlap = #remain
-    elseif remain:sub(1, #t) == t then
-        overlap = #t
-    else
-        overlap = _sharedPrefixLen(remain, t)
-    end
-    -- Never cut inside a multi-byte character.  The page and the peek
-    -- extraction can differ by one character (a quote variant, a stray
-    -- mark) whose leading bytes still match, and a byte-level cut then
-    -- leaves that character's tail at the start of the remainder: the
-    -- reader hears one character again at the page turn.
-    overlap = Utils.snapToCharBoundary(t, overlap)
-    local uttered = (spoken and #spoken > 0 and (
-        spoken:sub(-#t) == t
-        or (#remain >= 8 and spoken:sub(-#remain) == remain)
-        or (overlap >= 12 and spoken:sub(-overlap) == t:sub(1, overlap))
-    )) or w_overlap >= 2
-    if not uttered and overlap < 12 then
-        dlog("page-skip-carry-keep")
-        return 0
-    end
-    -- Whole first sentence was already in the wrap clip: do not re-speak it.
-    if (overlap >= #t and #t >= 8) or (w_overlap > 0 and w_overlap >= w_first) then
-        table.remove(parsed.sentences, 1)
-        _reindexSentences(parsed)
-        dlog("page-skip-carry", 1)
-        return 1
-    end
-    local rest = Utils.ws(t:sub(overlap + 1))
-    if rest ~= "" then
-        parsed.sentences[1].text = rest
-        _rebuildSentenceWords(self.text_parser, parsed.sentences[1])
-        _reindexSentences(parsed)
-        dlog("page-trim-carry", overlap)
-        return 0
-    end
-    table.remove(parsed.sentences, 1)
-    _reindexSentences(parsed)
-    dlog("page-skip-carry", 1)
-    return 1
-end
-
-function SyncController:_rememberSpoken(text)
-    local t = Utils.ws(text)
-    if t == "" then return end
-    self._spoken_norm = self._spoken_norm or {}
-    table.insert(self._spoken_norm, t)
-    while #self._spoken_norm > 50 do
-        table.remove(self._spoken_norm, 1)
-    end
-end
-
-function SyncController:_wasSpoken(t)
-    if not t or t == "" then return false end
-    t = Utils.ws(t)
-    local list = self._spoken_norm or {}
-    -- Only the last utterance: wrap tail, not earlier sentences that
-    -- happen to recur later in the chapter.
-    local s = list[#list]
-    if not s then return false end
-    s = Utils.ws(s)
-    if s == t then return true end
-    if #t >= 8 and #s >= #t and s:sub(-#t) == t then return true end
-    local k, n = _wrapWordOverlap(s, t)
-    if k >= 2 and k >= n then return true end
-    -- Whitespace-insensitive containment (CJK-safe).  The previous page's
-    -- text often bleeds past the visible end, so its last utterance already
-    -- contains the continuation fragment this page opens with; byte-suffix
-    -- and word-overlap checks above cannot see it: the two extractions start
-    -- at different points inside the sentence, and spaceless scripts make
-    -- every sentence a single "word", so the >= 2 word threshold never
-    -- fires.  A whitespace-stripped containment match closes that gap.  CJK
-    -- fragments are allowed shorter than Latin ones: three characters are
-    -- nine bytes but are a real sentence tail, and the floor must stay at or
-    -- above findIgnoringSpaces' own 6-byte rejection limit.
-    if #t >= 12 and Utils.findIgnoringSpaces(s, t) then
-        return true
-    end
-    if #t >= 6 and Utils.hasCJKScript(t) and Utils.findIgnoringSpaces(s, t) then
-        return true
-    end
-    return false
-end
-
---- Drop the wrap tail already in the last clip (any length). Only sentence 1.
-function SyncController:_skipAlreadySpoken(parsed)
-    if not parsed or not parsed.sentences then return 0 end
-    local t = Utils.ws(parsed.sentences[1] and parsed.sentences[1].text)
-    if t == "" then
-        table.remove(parsed.sentences, 1)
-        _reindexSentences(parsed)
-        return 0
-    end
-    if not self:_wasSpoken(t) then return 0 end
-    table.remove(parsed.sentences, 1)
-    _reindexSentences(parsed)
-    logger.warn("SyncController: skipped already-spoken wrap tail")
-    dlog("page-skip-spoken", 1)
-    return 1
-end
-
---- Where the reader stands now (rolling: the document position; paging: the page), or nil.
-function SyncController:_viewIdentity()
-    local ui = self.plugin and self.plugin.ui
-    local doc = ui and ui.document
-    if not doc then return nil end
-    local ok, id = pcall(function()
-        if ui.rolling then return "pos:" .. tostring(doc:getCurrentPos()) end
-        if ui.paging and ui.getCurrentPage then return "page:" .. tostring(ui:getCurrentPage()) end
-        return nil
-    end)
-    return ok and id or nil
-end
-
---- If the last visible sentence has no .?!, append the start of the next page.
-function SyncController:_extendIncompleteLastSentence(parsed)
-    if not parsed or not parsed.sentences or #parsed.sentences == 0 then
-        return
-    end
-    local last = parsed.sentences[#parsed.sentences]
-    if not last or not last.text or _sentenceHasTerminator(last.text) then
-        return
-    end
-    -- The peek is valid only for the view it was made from: after a pause, a jump, a restart of the engine the
-    -- reader may be elsewhere, and a stale peek glued text from another chapter onto this page's last sentence.
-    local view = self:_viewIdentity()
-    local next_text = (view ~= nil and self._wrap_peek_view == view) and self._wrap_peek_text or nil
-    if not next_text or next_text == "" then
-        self._wrap_peek_text = nil
-        self._wrap_peek_view = nil
-        if self.plugin and self.plugin.peekNextPageText then
-            next_text = self.plugin:peekNextPageText()
-            if next_text and next_text ~= "" then
-                -- Do not store this as _next_page_text: that field used to
-                -- be passed to start() after GotoViewRel, so a peek of the
-                -- *current* view re-read the page we just finished.
-                self._wrap_peek_text = next_text
-                self._wrap_peek_view = view
-            end
-        end
-    end
-    if not next_text or next_text == "" then return end
-    local next_parsed = self.text_parser:parse(next_text)
-    if not next_parsed or not next_parsed.sentences or not next_parsed.sentences[1] then
-        return
-    end
-    local first = next_parsed.sentences[1]
-    if not first.text or first.text == "" then return end
-    -- Headings / new sentences usually start with a capital and a short last
-    -- line; spaceless scripts get a character-count threshold instead (the
-    -- old Latin-only guard refused the carry for every CJK page, cutting each
-    -- sentence straddling the page break, issue #96).
-    -- The whole unfinished tail of this page opens the next view as well («Лука» / «Лука отыскал…»): it is the
-    -- start of a sentence the next page reads in full, not a heading. Drop it here, or it is heard twice.
-    local tail_words = #_edgeWords(last.text)
-    if tail_words > 0 and _overlapWords(last.text, first.text) == tail_words and #_edgeWords(first.text) > tail_words then
-        table.remove(parsed.sentences)
-        dlog("page-tail-dropped", tail_words)
-        return
-    end
-    if not Utils.shouldCarryPageBoundary(last.text, first.text) then
-        return
-    end
-    local cont = first.text
-    local joiner = " "
-    if Utils.hasCJKScript(last.text) or Utils.hasCJKScript(cont) then
-        joiner = ""   -- a joining space would make the engine pause mid-word
-    elseif last.text:find("%-$") or last.text:find("\194\173$") then
-        last.text = last.text:gsub("\194\173$", ""):gsub("%-$", "")
-        joiner = ""
-    end
-    -- The peek starts one screen height lower, but the visible page is shorter (margins, the bottom bar):
-    -- the next view may begin inside the last line already on this page («…не было даже» + «даже в июле.»).
-    -- Drop the words the continuation repeats. The carry skip keeps the full first sentence of the next page.
-    local carry = cont
-    if joiner == " " then
-        local dropped = _overlapWords(last.text, cont)
-        if dropped > 0 then
-            dlog("page-wrap-overlap", dropped)
-            cont = _dropWords(cont, dropped)
-        end
-    end
-    if cont == "" then return end
-    last.text = last.text .. joiner .. cont
-    last.end_type = first.end_type or last.end_type
-    self._tts_carry_skip = Utils.ws(carry)
-    last.words = {}
-    local words = self.text_parser:parseWords(last.text)
-    for _, w in ipairs(words) do
-        w.sentence_index = last.index
-        table.insert(last.words, w)
-    end
-    logger.warn("SyncController: wrapped last sentence across page (+", #cont, "chars)")
-end
-
---- Extract the page text from the anchor xpointer's position down to the end
---- of the visible page.  Returns nil when the xpointer is not on the current
---- view or extraction fails.
-function SyncController:_extractFromXPointerOnView(xp, captured)
-    local plugin = self.plugin
-    local ui = plugin and plugin.ui
-    local doc = ui and ui.document
-    if not (doc and ui.rolling and doc.getScreenPositionFromXPointer
-                and doc.getTextFromPositions) then
-        return nil
-    end
-    local Screen = require("device").screen
-    local sh = Screen:getHeight()
-    local sw = Screen:getWidth()
-    local ok, sy = pcall(doc.getScreenPositionFromXPointer, doc, xp)
-    if not ok or type(sy) ~= "number" or sy < 0 or sy > sh then
-        dlog("from-here-xp-offpage", tostring(sy))
-        return nil
-    end
-    local ok2, res = pcall(doc.getTextFromPositions, doc,
-        {x = 0, y = math.max(0, sy)}, {x = sw, y = sh}, true)
-    local extracted = (ok2 and res and res.text) or ""
-    if Utils.ws(extracted) == "" then
-        return nil
-    end
-    -- The extraction starts at the anchor's whole line; the captured suffix
-    -- starts at a sentence inside that line.  Align on the suffix's opening
-    -- when it is recognizable, so the characters before the selection on
-    -- that line are not re-read.
-    if captured and #captured > 0 then
-        local probe = captured:sub(1, Utils.snapToCharBoundary(captured, 40))
-        if #Utils.ws(probe) >= 6 then
-            local a = Utils.findIgnoringSpaces(extracted, Utils.ws(probe))
-            if a then
-                return extracted:sub(a)
-            end
-        end
-    end
-    return extracted
-end
-
---- Continue a from-here start after the view jumped to the selection's page:
---- re-extract from the anchor once the new page's text stabilizes.
-function SyncController:_settleThenBeginAfterJump(xp, captured, created_bar, attempt, token)
-    if self.state == self.STATE.STOPPED
-            or (token and self._settle_token ~= token) then
-        return
-    end
-    local controller = self
-    local fresh
-    if self.plugin and self.plugin.getCurrentPageText then
-        pcall(function() fresh = self.plugin:getCurrentPageText() end)
-    end
-    local norm = Utils.ws(fresh or "")
-    local anchored = norm ~= "" and self:_extractFromXPointerOnView(xp, captured) or nil
-    if anchored then
-        dlog("from-here-xp-anchor-jump", "chars", #anchored, "attempt", attempt)
-        self:_beginReadingParsed(anchored, created_bar, true)
-        return
-    end
-    if attempt < 8 then
-        UIManager:scheduleIn(0.2, function()
-            controller:_settleThenBeginAfterJump(xp, captured, created_bar, attempt + 1, token)
-        end)
-        return
-    end
-    dlog("from-here-page-top", "jump", "chars", fresh and #fresh or 0)
-    self:_fromHereFallbackNotice()
-    self:_beginReadingParsed((fresh and fresh ~= "" and fresh) or captured, created_bar, true)
-end
-
---- Anchor a from-here start at the selection's xpointer.  Text matching
---- cannot follow a selection through the playback-bar reflow: the settled
---- page may no longer contain it (its first characters sit on a different
---- page), and the old fallback then read the whole page from the top
---- (issue #96).  The xpointer survives the reflow, so the reading position
---- is geometry, not text.
---- @return string|nil anchored text
---- @return boolean    true when a view jump was started (async continuation)
-function SyncController:_anchorFromHereByXPointer(xp, captured, created_bar)
-    local anchored = self:_extractFromXPointerOnView(xp, captured)
-    if anchored then
-        return anchored
-    end
-    -- Not on the current view: the reflow pushed the selection to another
-    -- page.  Move the view to it and extract once the layout settles.
-    local plugin = self.plugin
-    local ui = plugin and plugin.ui
-    if not (ui and ui.rolling and ui.document) then
-        return nil
-    end
-    ui:handleEvent(Event:new("GotoXPointer", xp))
-    local controller = self
-    local token = self._settle_token
-    UIManager:scheduleIn(0.25, function()
-        controller:_settleThenBeginAfterJump(xp, captured, created_bar, 0, token)
-    end)
-    return nil, true
-end
-
---- Tell the user a from-here start could not honor the selection and fell
---- back to the visible page top.
-function SyncController:_fromHereFallbackNotice()
-    local InfoMessage = require("ui/widget/infomessage")
-    UIManager:show(InfoMessage:new{
-        text = _("The selected text moved when the page re-laid out; starting from the top of the visible page."),
-        timeout = 4,
-    })
-end
-
---[[--
-Parse the (settled) page text and begin sentence playback.  Split out of
-start() so the initial margin reflow can settle before we capture and read
-the page (see the deferral in start()).
-@param text string The text to read
-@param created_bar boolean  true when start() created the bar for this call
-@param keep_text boolean  true for "read from here" (sliced page suffix)
---]]
-function SyncController:_beginReading(text, created_bar, keep_text)
-    -- Reading by document position (EPUB/FB2 with the engine queue): exact sentences, no screen extraction, no peek.
-    self._xp_next_parsed = nil
-    if self:_xpMode() then
-        local anchor = keep_text and self._from_here_anchor_xp or nil
-        if not keep_text or anchor then
-            local carry = self._xp_carry_highlight
-            self._xp_carry_highlight = nil
-            local parsed, empty_after_turn = self:_xpView(anchor)
-            if parsed then
-                self._tts_carry_skip = nil
-                if anchor then self._spoken_norm = {} end
-                local r = self:_beginReadingParsed(nil, created_bar, keep_text, parsed)
-                -- Turned inside a sentence: its rest is sounding on this view now; show it until the next one starts.
-                if carry and self.plugin and self.plugin:getSetting("highlight_sentences", true)
-                        and not (self.plugin._app_in_background) then
-                    pcall(function() self.highlight_manager:highlightSentence(carry, self.parsed_data) end)
-                end
-                return r
-            elseif empty_after_turn then
-                -- The whole view is the middle of a sentence begun on the previous one, already heard: go on.
-                self._empty_skip_advances = (self._empty_skip_advances or 0) + 1
-                if self._empty_skip_advances <= 3 then
-                    dlog("xp", "view-inside-sentence")
-                    self:advanceToNextPage()
-                    return
-                end
-                -- Never fall back to screen text here: it is the already sounding sentence's tail.
-                self:stop()
-                return
-            end
-        end
-    end
-    -- Page-turn snapshots can miss the first CRE line(s). Prefer a longer
-    -- live capture so those sentences are actually spoken.
-    -- Do not do this for "read from here": that text is a shorter suffix
-    -- of the page on purpose.
-    if keep_text then
-        self._tts_carry_skip = nil
-        self._spoken_norm = {}
-        -- The playback bar resizes the page when reading starts, so the
-        -- reader re-lays out the text.  The suffix sliced before that
-        -- reflow can start at a sentence that is no longer on the visible
-        -- page, and the highlight then matches nothing while the
-        -- auto-advance skips text (issue #96: a from-here sentence moved
-        -- to the previous page).  Re-anchor it in the settled page text.
-        local fresh
-        if self.plugin and self.plugin.getCurrentPageText then
-            pcall(function() fresh = self.plugin:getCurrentPageText() end)
-        end
-        local reanchored = Utils.reanchorFromHere(fresh, text)
-        if not reanchored then
-            dlog("from-here-keep", "chars", text and #text or 0)
-        else
-            local anchor_xp = self._from_here_anchor_xp
-            -- reanchored == fresh means the text anchor was NOT found in the
-            -- settled page and reanchorFromHere fell back to the whole page.
-            -- With an xpointer available, follow the selection instead.
-            if anchor_xp and fresh and reanchored == fresh then
-                local anchored, jumped = self:_anchorFromHereByXPointer(
-                    anchor_xp, text, created_bar)
-                if jumped then
-                    return  -- continuation runs once the jumped view settles
-                end
-                if anchored then
-                    dlog("from-here-xp-anchor", #text, #anchored)
-                    text = anchored
-                else
-                    dlog("from-here-page-top", "chars", #reanchored)
-                    text = reanchored
-                    self:_fromHereFallbackNotice()
-                end
-            else
-                dlog("from-here-reanchor", #text, #reanchored)
-                text = reanchored
-            end
-        end
-    elseif self.plugin and self.plugin.getCurrentPageText then
-        local fresh
-        pcall(function() fresh = self.plugin:getCurrentPageText() end)
-        if fresh and fresh ~= "" then
-            local a, b = Utils.ws(fresh), Utils.ws(text or "")
-            if #a > #b then
-                dlog("page-text-refetch", #b, #a)
-                text = fresh
-            end
-        end
-    end
-
-    return self:_beginReadingParsed(text, created_bar, keep_text)
-end
-
---[[--
-Parse the anchored page text and begin sentence playback.  Split out of
-_beginReading so the xpointer-anchored paths can land here after their own
-view settles.
---]]
-function SyncController:_beginReadingParsed(text, created_bar, keep_text, pre_parsed)
-    -- Parse the full text into sentences and words (or take the sentences read by position: they need no carry work)
-    self.parsed_data = pre_parsed or self.text_parser:parse(text)
-
-    local skipped_carry = 0
-    local skipped_spoken = 0
-    if self.parsed_data and not pre_parsed then
-        if not keep_text then
-            skipped_carry = self:_skipCarriedPrefix(self.parsed_data, true)
-            skipped_spoken = self:_skipAlreadySpoken(self.parsed_data)
-        end
-        self:_extendIncompleteLastSentence(self.parsed_data)
-    end
-
-    if not self.parsed_data or #self.parsed_data.sentences == 0 then
-        if (skipped_carry > 0 or skipped_spoken > 0)
-                and self.plugin
-                and self.plugin:getSetting("auto_advance", true) then
-            logger.warn("SyncController: page was only wrap-carry; advancing")
-            self._empty_skip_advances = (self._empty_skip_advances or 0) + 1
-            if self._empty_skip_advances > 2 then
-                dlog("page-skip-loop")
-                logger.warn("SyncController: empty-page skip loop, stopping")
-                self:stop()
-                return
-            end
-            self:advanceToNextPage()
-            return
-        end
-        logger.warn("SyncController: No sentences found in text")
-        self.state = self.STATE.STOPPED
-        -- Nothing to read on this page: remove the bar we just created so it
-        -- does not linger (and release the reserved margin) on image-only
-        -- pages.
-        if created_bar then
-            self:hidePlaybackBar()
-        end
-        local InfoMessage = require("ui/widget/infomessage")
-        UIManager:show(InfoMessage:new{
-            text = "No readable text found on this page.",
-            timeout = 2,
-        })
-        return
-    end
-
-    self._empty_skip_advances = 0
-    self.total_sentences = #self.parsed_data.sentences
-    self.reading_sentence_idx = 0
-    self._chain_generation = (self._chain_generation or 0) + 1
-    self._highest_dispatched_idx = nil
-    self:_ttsResetClock()
-    -- Don't reset _piper_warmed_up here: it persists across page turns
-    -- so espeak cold-start doesn't re-trigger when Piper is already warm.
-    -- Honor espeak-only mode: if the user enabled the setting, skip Piper
-    -- from the start.  Abandons are session-scoped and never write it.
-    if not self._piper_abandoned
-            and self.plugin
-            and self.plugin:getSetting("espeak_only_mode", false) then
-        self._piper_abandoned = true
-        logger.warn("SyncController: espeak-only mode enabled via settings")
-        pcall(function() self.tts_engine._piper:shutdown() end)
-        self:_setPiperQueueAbandoned(true)
-    end
-    self.current_word_index = 0
-    self.current_sentence_index = 0
-    self.current_sentence = nil
-
-    -- Remember the xpointer of the page we're reading so the user can
-    -- re-align the view after browsing away.
-    if self.plugin and self.plugin.ui and self.plugin.ui.document
-            and self.plugin.ui.rolling
-            and self.plugin.ui.document.getXPointer then
-        pcall(function()
-            self.reading_page_xpointer = self.plugin.ui.document:getXPointer()
-        end)
-    end
-
-    logger.dbg("SyncController: Parsed", self.total_sentences, "sentences")
-
-    -- Show playback bar only if not already showing (preserves bar across page turns)
-    if not self.playback_bar then
-        self:showPlaybackBar()
-    end
-
-    -- Bump play_generation so a late OEM onCompletion cannot skip the first
-    -- sentences of this page.
-    if self.tts_engine then
-        self.tts_engine.play_generation = (self.tts_engine.play_generation or 0) + 1
-    end
-
-    -- Toast + wait guard only on the first sentence of a session.
-    -- Page turns reuse the already-warm engine; re-arming looked like a
-    -- full TTS restart.
-    local first_in_session = not self._tts_session_warm
-    if first_in_session then
-        self._tts_heard_audio = false
-        self:_armTtsWaitUi()
-    else
-        self._tts_heard_audio = true
-        self:_disarmTtsWaitUi()
-    end
-    -- Begin reading the first sentence
-    self:readNextSentence()
-end
-
---[[--
-Synthesize and play the next sentence in the queue.
-Chains automatically: when a sentence finishes, this is called again.
---]]
-function SyncController:readNextSentence()
-    local next_idx = self.reading_sentence_idx + 1
-
-    -- Guard: reject backward jumps caused by stale scheduled callbacks.
-    -- _highest_dispatched_idx tracks the highest sentence index ever passed
-    -- to beginSentencePlayback on the current page.  If a callback fires
-    -- late and tries to read a sentence we already played, skip it.
-    if self._highest_dispatched_idx and next_idx <= self._highest_dispatched_idx then
-        logger.warn("SyncController: readNextSentence REJECTED stale idx=", next_idx,
-            " (already dispatched up to", self._highest_dispatched_idx, ")")
-        return
-    end
-
-    self.reading_sentence_idx = next_idx
-    -- New sentence: re-arm the one-shot replay guard (issue #44).
-    self._cut_retry_done = nil
-    logger.warn("SyncController: readNextSentence idx=", self.reading_sentence_idx, "/", self.total_sentences, "state=", self.state)
-
-    if self.reading_sentence_idx > self.total_sentences then
-        -- All sentences on this page are done
-        local auto_advance = self.plugin and self.plugin:getSetting("auto_advance", true)
-        logger.warn("SyncController: All", self.total_sentences, "sentences done, auto_advance=", auto_advance)
-        dlog("end-of-page", "sentences", self.total_sentences, "auto_advance", auto_advance)
-        if auto_advance then
-            self:advanceToNextPage()
-        else
-            -- Explain the stop: without auto-advance this is by design,
-            -- but a silent stop mid-book reads as a crash to the user
-            -- (issue #96).  The playback bar stays visible; its play
-            -- button restarts from the current page.
-            local InfoMessage = require("ui/widget/infomessage")
-            UIManager:show(InfoMessage:new{
-                text = _("Finished reading this page. Turn the page and start read-aloud again, or enable auto-advance in the settings."),
-                timeout = 5,
-            })
+--- Keep about QUEUE_TARGET_S of speech in the engine's queue.
+function SyncController:_fill()
+    if self.state ~= self.STATE.PLAYING or not self.stream then return end
+    if self._ended then
+        if #self._q == 0 then
+            dlog("read end of book")
             self:stop()
         end
         return
     end
-
-    local sentence = self.parsed_data.sentences[self.reading_sentence_idx]
-    if not sentence or not sentence.text or not SyncController.speakable(sentence.text) then
-        -- Skip an empty sentence, or one of punctuation only («).» split off
-        -- after a bracket): an engine has nothing to say for it, and its empty
-        -- audio was retried until the engine was reported as stopped.
-        self:readNextSentence()
-        return
-    end
-
-    -- Engine queue mode: the engine plays a continuous stream, this only keeps its queue filled.
-    if self:_queueMode() then
-        self:_queuePlay(sentence)
-        return
-    end
-
-    self.state = self.STATE.LOADING
-    local controller = self
-
-    -- espeak-only mode: skip all Piper queueing/waiting
-    if self._piper_abandoned and self.tts_engine and self.tts_engine.espeak_bin then
-        logger.dbg("SyncController: espeak-only mode, sentence", self.reading_sentence_idx)
-        local fb_file = nil
-        if self.tts_engine:usePrefetched(sentence.text) then
-            -- Prefetched during the previous sentence's playback (issue #49)
-            fb_file = self.tts_engine.current_audio_file
-        else
-            fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
+    local e = self.tts_engine
+    local t0 = os.clock()
+    local chars = 0
+    for _, it in ipairs(self._q) do chars = chars + it.chars end
+    local secs = self:_queuedSeconds()
+    local wps = (self._wps or 2.6) * math.max(0.25, e.rate or 1)
+    local added = 0
+    while #self._q < self.QUEUE_MAX_ITEMS and chars < self.QUEUE_MAX_CHARS
+            and (#self._q < self.QUEUE_MIN_ITEMS or secs < self.QUEUE_TARGET_S) do
+        local s = self._held or self.stream:next()
+        self._held = nil
+        if not s then
+            self._ended = true
+            break
         end
-        if fb_file then
-            controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
-            controller:beginSentencePlayback(sentence)
-            return
-        end
-        -- espeak failed, skip sentence
-        self:readNextSentence()
-        return
-    end
-
-    logger.dbg("SyncController: Reading sentence",
-        self.reading_sentence_idx, "/", self.total_sentences, ":",
-        sentence.text:sub(1, 60))
-
-    -- Check if we already prefetched this sentence's audio
-    local used_prefetch = self.tts_engine:usePrefetched(sentence.text)
-    if used_prefetch then
-        -- Audio is ready — apply timing and start playback immediately
-        logger.warn("SyncController: Using prefetched audio for sentence", self.reading_sentence_idx)
-        self._piper_warmed_up = true
-        if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
-            self._android_slot_hits = (self._android_slot_hits or 0) + 1
-            dlog("android-sentence", "slot-hit", "idx", self.reading_sentence_idx)
-        end
-        controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
-        controller:beginSentencePlayback(sentence)
-        return
-    end
-
-    -- Android lookahead: background synthesis for this exact sentence is
-    -- still running.  Waiting for it beats dispatching a duplicate: the
-    -- duplicate invalidates the in-flight work and re-synthesizes the same
-    -- text through the engine's slower on-demand path, which is exactly the
-    -- gap the lookahead is meant to remove (issue #96).
-    if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
-            and self.tts_engine.getAndroidPrefetchStatus
-            and self.tts_engine:getAndroidPrefetchStatus(sentence.text) == "inflight" then
-        local waited_ms = 0
-        local my_wait_gen = self._chain_generation or 0
-        local function waitForAndroidPrefetch()
-            if self.state == self.STATE.STOPPED then return end
-            if (self._chain_generation or 0) ~= my_wait_gen then return end
-            local st = self.tts_engine:getAndroidPrefetchStatus(sentence.text)
-            if st == "ready" then
-                if self.tts_engine:usePrefetched(sentence.text) then
-                    logger.warn("SyncController: Android lookahead consumed after",
-                        waited_ms, "ms wait")
-                    controller._android_lookahead_waits = (controller._android_lookahead_waits or 0) + 1
-                    controller._android_lookahead_wait_ms = (controller._android_lookahead_wait_ms or 0) + waited_ms
-                    dlog("android-lookahead", "waited", waited_ms, "ms")
-                    controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
-                    controller:beginSentencePlayback(sentence)
-                end
-                return
-            end
-            if st ~= "inflight" or waited_ms >= 10000 then
-                -- Prefetch gone (stop, superseded) or too slow: drop the
-                -- straggler and synthesize this sentence on demand.  This
-                -- must NOT re-enter readNextSentence, which would advance
-                -- the index and skip the sentence.
-                self.tts_engine:_androidPrefetchInvalidate()
-                logger.warn("SyncController: Android lookahead not ready after",
-                    waited_ms, "ms, synthesizing on demand")
-                dlog("android-lookahead", "miss", waited_ms, "ms")
-                controller.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)
-                    if not synth_success then
-                        controller:_onAndroidSynthFailed("lookahead fallback")
-                        return
-                    end
-                    controller._android_tts_fail_count = 0
-                    controller._android_reconnects = 0
-                    controller:applySentenceTiming(sentence, timing_data)
-                    controller:beginSentencePlayback(sentence)
-                end)
-                return
-            end
-            waited_ms = waited_ms + 100
-            UIManager:scheduleIn(0.1, waitForAndroidPrefetch)
-        end
-        waitForAndroidPrefetch()
-        return
-    end
-
-    -- For Piper: if a prefetch is pending/queued, wait for it instead of
-    -- launching a duplicate synthesis (which wastes ~11s and RAM).
-    local piper_status = self.tts_engine:getPiperPrefetchStatus(sentence.text)
-    local my_chain_gen = self._chain_generation or 0
-    if piper_status == "pending" or piper_status == "queued" then
-        -- Low-resource mode: the currently needed sentence jumps ahead of
-        -- queued lookahead entries so it is synthesized first.
-        if piper_status == "queued"
-                and self.tts_engine._piperLowResource
-                and self.tts_engine:_piperLowResource() then
-            self.tts_engine._piper:prioritize(sentence.text)
-        end
-        -- ── espeak cold-start fallback ─────────────────────────────
-        -- While Piper hasn't delivered any audio yet, keep playing via
-        -- espeak so the user never hits a dead stall on slow hardware.
-        local use_espeak_early = self.plugin
-            and self.plugin:getSetting("espeak_cold_start", true)
-            and self.tts_engine.espeak_bin
-            and not self._piper_warmed_up
-        if use_espeak_early then
-            logger.warn("SyncController: espeak cold-start fallback for sentence",
-                self.reading_sentence_idx, "(early, Piper status:", piper_status, ")")
-            local fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
-            if fb_file then
-                self._espeak_fallback_count = (self._espeak_fallback_count or 0) + 1
-                self:_checkPiperRtfEscalation()
-                self:_checkPiperAbandon()
-                controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
-                controller:beginSentencePlayback(sentence)
-                return
-            end
-            logger.warn("SyncController: espeak early fallback failed, waiting for Piper")
-        end
-
-        logger.warn("SyncController: Waiting for Piper prefetch (status:", piper_status,
-            ") for sentence", self.reading_sentence_idx,
-            "|", self.tts_engine:getPiperQueueSnapshot())
-        local poll_count = 0
-        local max_polls = 600  -- 150 s hard timeout (buffer wait can add time)
-        local target_ready_at = nil  -- timestamp when target first became ready
-        local _toast_shown = {}  -- track slow-synthesis toasts per sentence
-
-        -- Count how many consecutive sentences AFTER the target are ready.
-        local function countReadyAhead()
-            local count = 0
-            for offset = 1, MIN_READY_AHEAD + 2 do
-                local ai = controller.reading_sentence_idx + offset
-                if not controller.parsed_data or ai > controller.total_sentences then break end
-                local s = controller.parsed_data.sentences[ai]
-                if not s or not s.text or s.text == "" then break end
-                local st = controller.tts_engine:getPiperPrefetchStatus(s.text)
-                if st ~= "ready" then break end
-                count = count + 1
-            end
-            return count
-        end
-
-        local function waitForPiperPrefetch()
-            if controller.state == controller.STATE.STOPPED then return end
-            if (controller._chain_generation or 0) ~= my_chain_gen then
-                logger.warn("SyncController: waitForPiperPrefetch STALE gen=", my_chain_gen, ", bailing")
-                return
-            end
-            poll_count = poll_count + 1
-
-            -- Piper was abandoned mid-wait (RTF escalation stage 2): stop
-            -- waiting for audio that will never arrive.
-            if controller._piper_abandoned then
-                controller:_playViaEspeakOrSkip(sentence, "piper abandoned mid-wait")
-                return
-            end
-
-            -- Every ~4 s, check whether Piper is sustainably keeping up.
-            if poll_count % 16 == 0 then
-                controller:_checkPiperRtfEscalation()
-                if controller._piper_abandoned then
-                    controller:_playViaEspeakOrSkip(sentence, "piper too slow (rtf)")
+        local first = (#self._q == 0 and not self._started_in_run and added == 0)
+        self._seq = self._seq + 1
+        local id = "q:" .. self._run .. ":" .. self._seq
+        local ok, why = e:queueSpeakAndroid(id, s.text, first)
+        if not ok then
+            -- The engine is still binding (just started or restarted): the same sentence again shortly.
+            self._held = s
+            self._seq = self._seq - 1
+            if why == "pending" and first then
+                self._pending_since = self._pending_since or now_s()
+                if now_s() - self._pending_since < self.PENDING_MAX_S then
+                    local run = self._run
+                    UIManager:scheduleIn(0.15, function()
+                        if self._run == run then self:_fill() end
+                    end)
                     return
                 end
             end
-
-            -- Slow-synthesis warning: on underpowered devices Piper can take
-            -- 30-75s per sentence.  Warn the user so they don't think it's frozen.
-            if poll_count == 20 and not _toast_shown.slow then
-                _toast_shown.slow = true
-                -- Estimate from measured synthesis speed when available:
-                -- the old fixed "20-40 seconds" claim was wildly optimistic
-                -- on single-core devices (real: 60-150 s).
-                local pq = controller.tts_engine and controller.tts_engine._piper
-                local avg_s = pq and pq.getAvgSentenceSynthS and pq:getAvgSentenceSynthS()
-                local wait_text
-                if avg_s and avg_s >= 1 then
-                    wait_text = T(_("Neural synthesis in progress...\nThis device needs about %1 seconds per sentence."),
-                        tostring(math.floor(avg_s + 0.5)))
-                else
-                    wait_text = _("Neural synthesis in progress...\nPlease wait.")
-                end
-                local InfoMessage = require("ui/widget/infomessage")
-                UIManager:show(InfoMessage:new{
-                    text = wait_text,
-                    timeout = 4,
-                })
-            elseif poll_count == 60 and not _toast_shown.veryslow then
-                _toast_shown.veryslow = true
-                local InfoMessage = require("ui/widget/infomessage")
-                UIManager:show(InfoMessage:new{
-                    text = _("Piper is still synthesizing.\nFor faster playback, switch to the espeak backend in Tools → Audiobook → TTS Engine."),
-                    timeout = 6,
-                })
-            end
-
-            -- Use non-consuming peek so we can delay playback for buffering
-            local pf_file = controller.tts_engine:peekPrefetch(sentence.text)
-            if pf_file then
-                -- Target sentence is ready.
-                if not target_ready_at then
-                    target_ready_at = UIManager:getTime()
-                end
-
-                -- Accumulate buffer: wait for more consecutive sentences
-                local ready_ahead = countReadyAhead()
-                local remaining  = controller.total_sentences - controller.reading_sentence_idx
-                local min_needed = math.min(MIN_READY_AHEAD, remaining)
-                local enough     = ready_ahead >= min_needed
-                local elapsed_s  = time.to_s(UIManager:getTime() - target_ready_at)
-                local timed_out  = elapsed_s >= BUFFER_FILL_TIMEOUT_S
-
-                if enough or timed_out then
-                    -- Consume the prefetch and start playback
-                    local ok = controller.tts_engine:usePrefetched(sentence.text)
-                    if ok then
-                        logger.warn("SyncController: Piper prefetch arrived for sentence",
-                            controller.reading_sentence_idx, "after",
-                            poll_count * 0.25, "s  buffer:",
-                            ready_ahead, "ahead",
-                            string.format("(%.1fs since ready, %s)",
-                                elapsed_s, enough and "enough" or "timeout"),
-                            "|", controller.tts_engine:getPiperQueueSnapshot())
-                        controller._piper_warmed_up = true
-                        controller:applySentenceTiming(sentence, controller.tts_engine.timing_data)
-                        controller:beginSentencePlayback(sentence)
-                        return
-                    end
-                end
-
-                -- Keep waiting for more buffer to accumulate
-                if poll_count < max_polls then
-                    UIManager:scheduleIn(0.25, waitForPiperPrefetch)
-                else
-                    -- Hard timeout: play whatever we have
-                    local ok = controller.tts_engine:usePrefetched(sentence.text)
-                    if ok then
-                        controller._piper_warmed_up = true
-                        controller:applySentenceTiming(sentence, controller.tts_engine.timing_data)
-                        controller:beginSentencePlayback(sentence)
-                    else
-                        logger.err("SyncController: Piper prefetch hard timeout, espeak fallback")
-                        controller:_playViaEspeakOrSkip(sentence, "piper prefetch hard timeout")
-                    end
-                end
-                return
-            end
-
-            -- Target not ready yet — check for failure
-            local st = controller.tts_engine:getPiperPrefetchStatus(sentence.text)
-            if st == "failed" or (not st) then
-                -- Once Piper is known to be too slow (degrade stage >= 1),
-                -- the direct synthesize fallback just stalls for 60 s and
-                -- times out; go straight to espeak instead.
-                if controller._piper_abandoned
-                        or (controller._piper_degrade_stage or 0) >= 1 then
-                    logger.warn("SyncController: Piper prefetch failed/gone, espeak fallback (degraded)")
-                    controller:_playViaEspeakOrSkip(sentence, "piper prefetch failed")
-                    return
-                end
-                logger.warn("SyncController: Piper prefetch failed/gone, falling back to synthesize")
-                controller.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)
-                    if not synth_success then
-                        controller:_playViaEspeakOrSkip(sentence, "piper synthesize failed")
-                        return
-                    end
-                    controller:applySentenceTiming(sentence, timing_data)
-                    controller:beginSentencePlayback(sentence)
-                end)
-                return
-            end
-            if poll_count < max_polls then
-                UIManager:scheduleIn(0.25, waitForPiperPrefetch)
-            else
-                logger.err("SyncController: Piper prefetch wait timed out, espeak fallback")
-                controller:_playViaEspeakOrSkip(sentence, "piper prefetch wait timeout")
-            end
+            dlog("read dispatch-failed", why)
+            return self:_recover("dispatch " .. tostring(why), true)
         end
-        UIManager:scheduleIn(0.25, waitForPiperPrefetch)
-        return
+        self._pending_since = nil
+        local it = { id = id, s = s, chars = #s.text, words = countWords(s.text), t_q = now_s() }
+        self._q[#self._q + 1] = it
+        self._q_by_id[id] = it
+        chars = chars + it.chars
+        secs = secs + math.max(0.4, it.words / wps)
+        added = added + 1
     end
-
-    -- For Piper with no prefetch yet: route the CURRENT sentence through
-    -- the prefetch queue (instead of synthesize()) so the serial queue
-    -- processes it AND the lookahead sentences back-to-back.
-    -- synthesize() would set _piper_synthesizing=true which blocks the
-    -- entire prefetch queue during the initial ~11s synthesis — wasting
-    -- the time that could be spent prefetching sentence 2+.
-    if self.tts_engine and (self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER or self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS) then
-        logger.warn("SyncController: Queueing sentence", self.reading_sentence_idx,
-            "via Piper prefetch queue (", sentence.text:sub(1,40), ")")
-        -- Queue current sentence + lookahead
-        self.tts_engine:piperPrefetchAsync(sentence.text)
-        for offset = 1, PIPER_LOOKAHEAD do
-            local ahead_idx = self.reading_sentence_idx + offset
-            if self.parsed_data and ahead_idx <= self.total_sentences then
-                local ahead_sent = self.parsed_data.sentences[ahead_idx]
-                if ahead_sent and ahead_sent.text and ahead_sent.text ~= "" then
-                    self.tts_engine:piperPrefetchAsync(ahead_sent.text)
-                end
-            end
-        end
-        -- Kick the launcher AFTER all sentences are queued so the batcher
-        -- can group consecutive sentences per Piper call.
-        self.tts_engine:_launchNextPiperPrefetch()
-
-        -- ── espeak-ng cold-start fallback ──────────────────────────
-        -- Piper batches take 30-70s to synthesize on ARM.  If the user
-        -- enabled the fallback, play the first sentence immediately via
-        -- espeak-ng (~300ms) so there's no dead silence while Piper
-        -- warms up.  Subsequent sentences use Piper as normal.
-        local use_espeak_fallback = self.plugin
-            and self.plugin:getSetting("espeak_cold_start", true)
-            and self.tts_engine.espeak_bin
-            and not self._piper_warmed_up
-        if use_espeak_fallback then
-            logger.warn("SyncController: espeak cold-start fallback for sentence",
-                self.reading_sentence_idx)
-            local fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
-            if fb_file then
-                self._espeak_fallback_count = (self._espeak_fallback_count or 0) + 1
-                self:_checkPiperRtfEscalation()
-                self:_checkPiperAbandon()
-                controller:applySentenceTiming(sentence, self.tts_engine.timing_data)
-                controller:beginSentencePlayback(sentence)
-                return  -- Piper keeps synthesizing in background; readNextSentence will pick up Piper audio
-            end
-            -- If espeak fallback failed, fall through to Piper wait
-            logger.warn("SyncController: espeak fallback failed, waiting for Piper")
-        end
-
-        -- Show notification while waiting for Piper (no espeak fallback or it failed)
-        local InfoMessage = require("ui/widget/infomessage")
-        local engine_label = self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS
-            and _("sanoTTS") or _("Piper")
-        UIManager:show(InfoMessage:new{
-            text = T(_("Starting %1, please wait…"), engine_label),
-            timeout = 3,
-        })
-
-        -- Now wait for the current sentence to become ready
-        local poll_count = 0
-        local max_polls = 360  -- 90s timeout (batches can take 40-70s on ARM)
-        local function waitForPiperSynth()
-            if controller.state == controller.STATE.STOPPED then return end
-            if (controller._chain_generation or 0) ~= my_chain_gen then
-                logger.warn("SyncController: waitForPiperSynth STALE gen=", my_chain_gen, ", bailing")
-                return
-            end
-            poll_count = poll_count + 1
-            if controller._piper_abandoned then
-                controller:_playViaEspeakOrSkip(sentence, "piper abandoned mid-wait")
-                return
-            end
-            if poll_count % 16 == 0 then
-                controller:_checkPiperRtfEscalation()
-                if controller._piper_abandoned then
-                    controller:_playViaEspeakOrSkip(sentence, "piper too slow (rtf)")
-                    return
-                end
-            end
-            local ok = controller.tts_engine:usePrefetched(sentence.text)
-            if ok then
-                logger.warn("SyncController: Piper queue delivered sentence",
-                    controller.reading_sentence_idx, "after", poll_count * 0.25, "s",
-                    "|", controller.tts_engine:getPiperQueueSnapshot())
-                controller:applySentenceTiming(sentence, controller.tts_engine.timing_data)
-                controller:beginSentencePlayback(sentence)
-                return
-            end
-            local st = controller.tts_engine:getPiperPrefetchStatus(sentence.text)
-            if st == "failed" or (not st) then
-                logger.err("SyncController: Piper queue failed for sentence",
-                    controller.reading_sentence_idx, ", espeak fallback")
-                controller:_playViaEspeakOrSkip(sentence, "piper queue failed")
-                return
-            end
-            if poll_count < max_polls then
-                UIManager:scheduleIn(0.25, waitForPiperSynth)
-            else
-                logger.err("SyncController: Piper queue timed out for sentence",
-                    controller.reading_sentence_idx, ", espeak fallback")
-                controller:_playViaEspeakOrSkip(sentence, "piper queue timeout")
-            end
-        end
-        UIManager:scheduleIn(0.25, waitForPiperSynth)
-        return
+    if added > 0 then
+        dlog("read fill +" .. added, "queued", #self._q, string.format("%.0fs %.1fms", secs, (os.clock() - t0) * 1000))
     end
-
-    -- No prefetch available — synthesize now (first sentence, or prefetch missed)
-    logger.warn("SyncController: Synthesizing sentence", self.reading_sentence_idx, "(", sentence.text:sub(1,40), ")")
-    if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
-        self._android_ondemand = (self._android_ondemand or 0) + 1
-        dlog("android-sentence", "ondemand", "idx", self.reading_sentence_idx)
-    end
-
-    local success = self.tts_engine:synthesize(sentence.text, function(synth_success, timing_data)
-        if not synth_success then
-            logger.warn("SyncController: Synthesis failed for sentence", controller.reading_sentence_idx)
-            -- Piper failure: degrade the voice rather than drop book content
-            if controller.tts_engine.backend == controller.tts_engine.BACKENDS.PIPER or controller.tts_engine.backend == controller.tts_engine.BACKENDS.SANOTTS then
-                controller:_playViaEspeakOrSkip(sentence, "piper synthesize failed")
-            elseif controller.tts_engine.backend == controller.tts_engine.BACKENDS.ANDROID then
-                -- Neural Android engines (VoxSherpa/Kokoro) get force-stopped
-                -- for RAM. One miss can be a page-turn race: retry the same
-                -- sentence; several in a row means the engine is gone (stop).
-                controller:_onAndroidSynthFailed("synthesize callback")
-            else
-                controller:readNextSentence()
-            end
-            return
-        end
-
-        controller._android_tts_fail_count = 0
-        controller._android_reconnects = 0
-
-        -- Apply timing data to this sentence's words
-        controller:applySentenceTiming(sentence, timing_data)
-
-        -- Begin audio playback for this sentence
-        controller:beginSentencePlayback(sentence)
-    end)
-
-    if success == false then
-        -- synthesize() returned false immediately (no backend, etc.)
-        if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
-            self:_onAndroidSynthFailed("synthesize returned false")
-        else
-            self:readNextSentence()
-        end
+    if self._ended and #self._q == 0 then
+        dlog("read end of book")
+        self:stop()
     end
 end
 
---[[--
-Apply timing information to the words of a sentence.
-@param sentence table Sentence object from parsed_data
-@param timing_data table Timing array from TTS engine (may be nil)
---]]
-function SyncController:applySentenceTiming(sentence, timing_data)
-    if timing_data and #timing_data > 0 then
-        for i, word in ipairs(sentence.words) do
-            if timing_data[i] then
-                word.start_time = timing_data[i].start_time
-                word.end_time = timing_data[i].end_time
-                word.duration = timing_data[i].end_time - timing_data[i].start_time
-            end
+function SyncController:_ensurePoll()
+    if self._polling then return end
+    self._polling = true
+    local function tick()
+        if self.state ~= self.STATE.PLAYING then
+            self._polling = false
+            return
         end
-    else
-        -- Fallback: estimate timing when no TTS timing data is available.
-        -- For Piper (neural TTS), use character-length proportional timing
-        -- which better reflects uniform-rate neural synthesis than syllable
-        -- counting.  Values are scaled to match real WAV duration later,
-        -- so only the proportions between words matter.
-        local current_time = 0
-        local is_neural = self.tts_engine
-            and (self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER
-                or self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS
-                or self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID)
-        for _, word in ipairs(sentence.words) do
-            local duration
-            if is_neural then
-                local chars = #(word.clean_text or word.text:gsub("[%%p]", ""))
-                duration = math.floor(chars * 80)
-                -- CJK punctuation is multi-byte: compare the character tail
-                -- instead of the last byte (issue #96).
-                local tail = word.text:sub(-3)
-                local ends_clause = word.text:match("[,;:]$")
-                    or tail == "\239\188\140" -- ， U+FF0C
-                local ends_sentence = word.text:match("[%.%%?!]$")
-                    or tail == "\227\128\130" -- 。 U+3002
-                    or tail == "\239\188\129" -- ！ U+FF01
-                    or tail == "\239\188\159" -- ？ U+FF1F
-                    or tail == "\226\128\166" -- … U+2026
-                if ends_clause then
-                    duration = duration + 150
-                elseif ends_sentence then
-                    duration = duration + 200
+        local ok, err = pcall(self._tick, self)
+        if not ok then logger.warn("SyncController: tick failed:", err) end
+        UIManager:scheduleIn(self.POLL_S, tick)
+    end
+    UIManager:scheduleIn(self.POLL_S, tick)
+end
+
+--- Follow the engine: every start, end, error and range since the last tick, in order.
+function SyncController:_tick()
+    local e = self.tts_engine
+    local events, lost = e:queueEventsAndroid()
+    if events == nil then return end
+    if lost then return self:_recover("engine lost", true) end
+    local run = self._run
+    for _, ev in ipairs(events) do
+        if self._run ~= run or self.state ~= self.STATE.PLAYING then return end
+        local it = self._q_by_id[ev.id]
+        if it then
+            self._changed_at = now_s()
+            if ev.kind == "S" then
+                self:_onStart(it)
+            elseif ev.kind == "D" then
+                self:_onDone(it)
+            elseif ev.kind == "E" then
+                dlog("read engine-error", ev.extra)
+                if not self._started_in_run then
+                    return self:_recover("engine refuses the queue (" .. tostring(ev.extra) .. ")", true)
                 end
-            else
-                duration = self.text_parser:estimateWordDuration(word)
+                -- One sentence the engine could not say (a language it has no voice for): go on.
+                self:_onDone(it)
+            elseif ev.kind == "R" then
+                self:_onRange(it, ev.extra)
             end
-            word.start_time = current_time
-            word.end_time = current_time + duration
-            word.duration = duration
-            current_time = current_time + duration + (is_neural and 30 or 50)
         end
+    end
+    -- Nothing started or ended for far longer than the sentence could take: the engine is stuck or was restarted.
+    if #self._q > 0 and self._changed_at then
+        local head = self._q[1]
+        local limit = 25 + math.floor(head.chars / 10)
+        if now_s() - self._changed_at > limit then self:_recover("no progress for " .. limit .. " s", false) end
+    elseif #self._q > 0 then
+        self._changed_at = now_s()
     end
 end
 
---[[--
-Begin audio playback for one sentence.
-Uses GStreamer's concat element to chain ALL remaining sentences on the
-page into a single BT stream, eliminating every A2DP re-negotiation gap.
-@param sentence table Sentence object
---]]
-function SyncController:beginSentencePlayback(sentence)
-    self:_noteHeard(sentence)
-    self._tts_heard_audio = true
-    self._tts_session_warm = true
-    self:_disarmTtsWaitUi()
-    -- ── Fatal firmware error guard ──────────────────────────────
-    -- If the TTS engine detected a permanent MTK firmware error,
-    -- stop playback gracefully instead of retrying and risking
-    -- flash filesystem corruption (observed on Kobo MTK devices).
-    if self.tts_engine.player_error == "bt_firmware_missing"
-        or self.tts_engine._bt_fw_fatal_error then
-        logger.warn("SyncController: Stopping playback due to fatal BT firmware error")
-        self.state = self.STATE.STOPPED
-        -- Show the error notification once per session
-        if not self._bt_fw_error_shown then
-            self._bt_fw_error_shown = true
-            if self.plugin and self.plugin.bt_manager then
-                self.plugin.bt_manager:_showFirmwareError()
-            end
-        end
-        -- Emit stop event so the playback bar reflects the stopped state
-        UIManager:sendEvent(Event:new("AudiobookSync", self, "stopped"))
-        -- Also clear any scheduled readNextSentence callbacks
-        self._chain_generation = (self._chain_generation or 0) + 1
-        return
+function SyncController:_onStart(it)
+    if it.started then return end
+    it.started = now_s()
+    if not self._started_in_run then
+        self._started_in_run = true
+        dlog("read first-sound", string.format("%.0fms", (it.started - (self._t_run or it.started)) * 1000))
+    elseif self._last_done_t then
+        local gap = it.started - self._last_done_t
+        if gap > 0.25 then dlog("read gap", string.format("%.0fms", gap * 1000), "queued", #self._q) end
     end
-
-    logger.warn("SyncController: beginSentencePlayback sentence", sentence.index,
-        "has_audio=", self.tts_engine.current_audio_file ~= nil)
-    self:_rememberSpoken(sentence.text)
-    self.state = self.STATE.PLAYING
-    self.current_sentence = sentence
-    self.current_sentence_index = sentence.index
-    self.current_word_index = 0
-    -- Bump chain generation so stale completion callbacks bail out.
-    self._chain_generation = (self._chain_generation or 0) + 1
-    -- Track highest sentence ever dispatched for the backward-jump guard.
-    self._highest_dispatched_idx = sentence.index
-    -- Remember the first sentence's text so _remapAfterRotation can find
-    -- reading_sentence_idx in a re-parsed page.
-    self._first_play_sentence_text = sentence.text
-
-    local controller = self
-
-    -- Update playback bar
+    self._recoveries = 0
+    -- Sentences queued before it that never started (an engine that skipped them) are over.
+    while self._q[1] and self._q[1] ~= it do
+        local old = table.remove(self._q, 1)
+        self._q_by_id[old.id] = nil
+    end
+    local s = it.s
+    self.current_sentence = s
+    self.reading_sentence_idx = self.reading_sentence_idx + 1
+    self._reading_xp = s.xp0
+    self._reading_page = s.page
+    self._heard[#self._heard + 1] = { from = s.from, page = s.page, index = s.index, t = it.started,
+        chars = select(2, s.text:gsub("[^\128-\191]", "")) }
+    if #self._heard > 80 then table.remove(self._heard, 1) end
+    self:_show(it)
     if self.playback_bar then
         self.playback_bar:updatePlayState(true)
         self.playback_bar:updateProgress(self:getProgress())
         self:_refreshTtsTimeUi()
     end
-    -- Apply visibility now: state has just transitioned to PLAYING and the
-    -- "paused_only" mode needs to suppress the bar on the first sentence,
-    -- not only after a manual pause/resume cycle.  Issue #15 (PB632).
-    self:_applyBarVisibility()
+    local MyTTS = self.plugin and self.plugin._mytts
+    if MyTTS then pcall(MyTTS.ahead, self.plugin) end
+end
 
-    -- Build concat pipeline with ALL remaining sentences on the page.
-    -- Each extra sentence takes ~100-300 ms to synthesize on ARM — far
-    -- less than the ~1.5 s BT A2DP re-negotiation gap it eliminates.
-    local concat_files = nil         -- array of {file, duration_ms} for play()
-    local concat_sentences = {}      -- sentence objects (N+1, N+2, …)
-    local concat_split_points = {}   -- cumulative-ms boundaries for the sync loop
-    local concat_wav_files = {}      -- WAV paths to clean up later
-
-    if self.parsed_data and self.tts_engine.audio_player_type == "gst-bt" then
-        local synth_t0 = UIManager:getTime()
-        local first_dur = self.tts_engine:getAudioDurationMs()
-        local cumulative_ms = first_dur
-        concat_files = {}
-
-        -- Read pause settings (seconds → milliseconds)
-        -- For Piper, use the neural-specific gap settings; for espeak, use the legacy ones.
-        local is_piper_backend = self.tts_engine
-            and (self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER or self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS)
-        local sent_pause_s, para_pause_s
-        if is_piper_backend then
-            sent_pause_s = (self.plugin and self.plugin:getSetting("piper_sentence_gap", 0.3)) or 0.3
-            para_pause_s = (self.plugin and self.plugin:getSetting("piper_paragraph_gap", 1.0)) or 1.0
-        else
-            sent_pause_s = (self.plugin and self.plugin:getSetting("sentence_pause", self.tts_engine:pauseDefault("sentence_pause"))) or 0.1
-            para_pause_s = (self.plugin and self.plugin:getSetting("paragraph_pause", self.tts_engine:pauseDefault("paragraph_pause"))) or 0.8
+function SyncController:_onDone(it)
+    local t = now_s()
+    if it.started then
+        local elapsed = t - it.started
+        if elapsed > 0.5 then
+            local wps = math.max(1, math.min(6, it.words / elapsed / math.max(0.25, self.tts_engine.rate or 1)))
+            self._wps = (self._wps or wps) * 0.8 + wps * 0.2
         end
-        local sent_pause_ms = math.floor(sent_pause_s * 1000)
-        local para_pause_ms = math.floor(para_pause_s * 1000)
-
-        -- The first sentence just started playing.  Determine the
-        -- inter-sentence pause that follows it.
-        local prev_sent = sentence
-        -- Track whether we padded the first sentence's WAV so play()
-        -- uses the original (speech-only) duration for word timing.
-        local first_padded = false
-
-        for idx = self.reading_sentence_idx + 1, self.total_sentences do
-            local sent = self.parsed_data.sentences[idx]
-            if not sent or not sent.text or sent.text == "" then
-                break
-            end
-
-            -- Check prefetch availability BEFORE applying gap padding.
-            -- This prevents double-padding: if the sentence isn't ready and
-            -- we break, we haven't padded the previous sentence.  The
-            -- trailing-gap code after the loop handles the final padding.
-            local pf_file, pf_timing, pf_dur = self.tts_engine:peekPrefetch(sent.text)
-            if not pf_file then
-                if self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER or self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS then
-                    logger.warn("SyncController: Concat: Piper sentence", idx, "not ready yet, stopping concat")
-                    break
-                end
-                self.tts_engine:prefetch(sent.text)
-                pf_file, pf_timing, pf_dur = self.tts_engine:peekPrefetch(sent.text)
-            end
-            if not pf_file or pf_dur <= 0 then
-                logger.warn("SyncController: Concat synthesis failed at sentence", idx)
-                break
-            end
-
-            -- Cap concat duration BEFORE applying gap padding.
-            -- Very large merged WAVs can overwhelm the MTK Bluetooth sink's
-            -- internal buffer, causing mid-playback audio repeats on long
-            -- paragraphs.  When the limit is reached we break here; the
-            -- trailing-gap code after the loop supplies the final padding.
-            local MAX_CONCAT_MS = 30000
-            if cumulative_ms + pf_dur > MAX_CONCAT_MS then
-                logger.warn("SyncController: Concat duration limit reached (",
-                    cumulative_ms + pf_dur, "ms >", MAX_CONCAT_MS,
-                    "ms) at sentence", idx, "— splitting into next group")
-                break
-            end
-
-            -- Sentence is available — apply inter-sentence gap to the
-            -- PREVIOUS sentence's WAV (trailing silence).
-            local pause_ms = 0
-            if prev_sent then
-                if prev_sent.end_type == "paragraph" then
-                    pause_ms = para_pause_ms
-                else
-                    pause_ms = sent_pause_ms
-                end
-            end
-            if pause_ms > 0 then
-                local g_type = (prev_sent.end_type == "paragraph") and "paragraph" or "sentence"
-                if prev_sent == sentence then
-                    self.tts_engine:appendGapToWav(self.tts_engine.current_audio_file, pause_ms, g_type)
-                    first_padded = true
-                elseif #concat_files > 0 then
-                    local prev_cf = concat_files[#concat_files]
-                    if prev_cf and prev_cf.file then
-                        self.tts_engine:appendGapToWav(prev_cf.file, pause_ms, g_type)
-                        prev_cf.duration_ms = prev_cf.duration_ms + pause_ms
-                    end
-                end
-                cumulative_ms = cumulative_ms + pause_ms
-            end
-
-            -- Apply and scale timing so word highlighting works
-            controller:applySentenceTiming(sent, pf_timing)
-            if sent.words and #sent.words > 0 then
-                local last_w = sent.words[#sent.words]
-                if last_w.end_time and last_w.end_time > 0 then
-                    local scale = pf_dur / last_w.end_time
-                    for _, w in ipairs(sent.words) do
-                        if w.start_time then w.start_time = math.floor(w.start_time * scale) end
-                        if w.end_time   then w.end_time   = math.floor(w.end_time   * scale) end
-                        if w.duration   then w.duration   = math.floor(w.duration   * scale) end
-                    end
-                end
-            end
-
-            table.insert(concat_split_points, cumulative_ms)   -- this sentence starts here
-            cumulative_ms = cumulative_ms + pf_dur
-
-            table.insert(concat_files, { file = pf_file, duration_ms = pf_dur })
-            table.insert(concat_sentences, sent)
-            table.insert(concat_wav_files, pf_file)
-            prev_sent = sent
-
-            -- Transfer ownership: if this came from the Piper queue, remove
-            -- the entry so cleanQueue doesn't double-delete the file.
-            -- The file is now owned by concat_wav_files.
-            self.tts_engine:consumePiperQueueEntry(sent.text)
-
-            -- Protect espeak-ng prefetch file from _cleanPrefetch deletion
-            self.tts_engine._prefetch_in_use = true
-
-            logger.warn("SyncController: Concat +sentence", idx,
-                "dur=", pf_dur, "ms  cumulative=", cumulative_ms, "ms")
-        end
-
-        -- Pad the LAST sentence in the play group with trailing silence
-        -- matching the inter-sentence/paragraph gap.  This keeps the
-        -- pipeline continuously fed with real PCM data across concat
-        -- boundaries, eliminating the ~500ms of feeder idle-silence that
-        -- accumulates in the pipe buffer between play() calls.
-        local trailing_gap_ms = 0
-        if prev_sent then
-            if prev_sent.end_type == "paragraph" then
-                trailing_gap_ms = para_pause_ms
-            else
-                trailing_gap_ms = sent_pause_ms
-            end
-        end
-        if trailing_gap_ms > 0 then
-            local tg_type = (prev_sent and prev_sent.end_type == "paragraph") and "paragraph" or "sentence"
-            if #concat_files > 0 then
-                local last_cf = concat_files[#concat_files]
-                if last_cf and last_cf.file then
-                    self.tts_engine:appendGapToWav(last_cf.file, trailing_gap_ms, tg_type)
-                    last_cf.duration_ms = last_cf.duration_ms + trailing_gap_ms
-                end
-            else
-                -- Single sentence: pad the main audio file
-                self.tts_engine:appendGapToWav(self.tts_engine.current_audio_file, trailing_gap_ms, tg_type)
-                if not first_padded then
-                    first_padded = true
-                end
-            end
-            cumulative_ms = cumulative_ms + trailing_gap_ms
-        end
-        -- Store trailing gap so play() can log it for diagnostics.
-        self.tts_engine._trailing_gap_ms = trailing_gap_ms
-
-        if #concat_files == 0 then concat_files = nil end
-
-        -- Tell play() to use the original (unpadded) duration for the first
-        -- sentence's word-timing scaling if we padded it with silence.
-        if first_padded then
-            self.tts_engine._unpadded_duration_ms = first_dur
-        end
-
-        logger.warn("SyncController: Concat synthesis total:",
-            time.to_ms(UIManager:getTime() - synth_t0), "ms for",
-            #concat_sentences, "extra sentences, trailing_gap=", trailing_gap_ms,
-            "ms, sent_gap=", sent_pause_ms, "ms, para_gap=", para_pause_ms, "ms")
     end
-
-    local sentences_in_play = 1 + #concat_sentences
-    local my_chain_gen = self._chain_generation or 0
-
-    -- Android: a nil audio file here means the synthesis pipeline never
-    -- reached "playing" even though the callback reported success (a
-    -- system-engine hiccup, e.g. Xiaomi's engine briefly refusing
-    -- back-to-back utterances).  play() would only pop "No audio file
-    -- to play." and return false, dead-ending the chain silently (the
-    -- caller has no handler for a falsy return).  Route it through the
-    -- Android failure path instead: it retries the sentence and only
-    -- stops after repeated failures, with an actionable message.
-    if self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
-            and not self.tts_engine.current_audio_file then
-        logger.warn("SyncController: play() without audio file, Android retry")
-        self:_onAndroidSynthFailed("play without audio file")
-        return
+    self._last_done_t = t
+    -- This one and anything queued before it are over.
+    while self._q[1] do
+        local old = table.remove(self._q, 1)
+        self._q_by_id[old.id] = nil
+        if old == it then break end
     end
+    self:_fill()
+end
 
-    -- Start TTS audio playback with callbacks
-    local play_ok = self.tts_engine:play(
-        -- Word callback
-        function(timing, word_index)
-            local word = sentence.words[word_index]
-            if word then
-                controller:highlightCurrentWord(word)
-            end
-        end,
-        -- Completion callback — entire concat stream finished
-        function()
-            -- Bail if a newer beginSentencePlayback superseded us
-            if (controller._chain_generation or 0) ~= my_chain_gen then
-                logger.warn("SyncController: Completion callback STALE gen=", my_chain_gen,
-                    "current=", controller._chain_generation, ", ignoring")
-                return
-            end
-            -- Android MTK HAL teardown recovery (issue #44): the engine
-            -- flagged that the clip died far before its WAV duration.
-            -- Replay the same sentence once via the PCM stream instead of
-            -- advancing and losing it.  reading_sentence_idx still points
-            -- at this sentence, so the chain continues normally after the
-            -- retry.  _cut_retry_done bounds the replay to one attempt.
-            local early_death = controller.tts_engine._android_early_death
-            controller.tts_engine._android_early_death = nil
-            if early_death and not controller._cut_retry_done then
-                controller._cut_retry_done = true
-                logger.warn("SyncController: Replaying sentence", sentence.index,
-                    "after Android track teardown (issue #44)")
-                controller.highlight_manager:clearHighlights()
-                controller:_cleanConcatFiles()
-                controller:beginSentencePlayback(sentence)
-                return
-            end
-            local last_idx = sentence.index + sentences_in_play - 1
-            logger.warn("SyncController: Completion callback, concat ending at sentence",
-                last_idx, "state=", controller.state)
-            controller.highlight_manager:clearHighlights()
-            controller:_cleanConcatFiles()
+--- The voice is inside a sentence (onRangeStart: UTF-16 offset in its text): a sentence running onto the next screen
+--- turns it when the voice gets there.
+function SyncController:_onRange(it, extra)
+    if not it.turn_at or it.turned then return end
+    local start = tonumber((extra or ""):match("^(%d+)"))
+    if not start or start < it.turn_at then return end
+    it.turned = true
+    self:_follow(it, true)
+end
 
-            -- Skip reading index past all sentences played in this concat
-            controller.reading_sentence_idx = controller.reading_sentence_idx + (sentences_in_play - 1)
-
-            -- If the screen was rotated while this concat was playing,
-            -- the page now shows different text.  Re-read the current page,
-            -- find the last sentence we actually played, and update
-            -- total_sentences / reading_sentence_idx so the "end of page?"
-            -- check in readNextSentence() uses the new layout.
-            local last_sent = #concat_sentences > 0
-                and concat_sentences[#concat_sentences] or sentence
-            if controller._rotated_during_playback then
-                controller._rotated_during_playback = false
-                local fresh_text = controller.plugin and controller.plugin:getCurrentPageText()
-                if fresh_text then
-                    local fresh_parsed = controller.text_parser:parse(fresh_text)
-                    if fresh_parsed and #fresh_parsed.sentences > 0 then
-                        -- Find the last-played sentence in the new page parse
-                        local last_text = Utils.ws(last_sent.text)
-                        local found_idx = nil
-                        for i, s in ipairs(fresh_parsed.sentences) do
-                            if Utils.ws(s.text) == last_text then
-                                found_idx = i
-                                break
-                            end
-                        end
-                        if found_idx then
-                            logger.warn("SyncController: Post-rotation re-check: last played sentence",
-                                found_idx, "/", #fresh_parsed.sentences, "in new layout")
-                            controller.parsed_data = fresh_parsed
-                            controller.total_sentences = #fresh_parsed.sentences
-                            controller.reading_sentence_idx = found_idx
-                            controller._highest_dispatched_idx = found_idx
-                            -- readNextSentence() will +1 → found_idx+1
-                            -- If > total_sentences → advance; else play remaining
-                        else
-                            -- Last played sentence not found on current page
-                            -- (it scrolled off entirely) — force page advance
-                            logger.warn("SyncController: Post-rotation: last sentence not on page, advancing")
-                            controller.reading_sentence_idx = controller.total_sentences
-                            controller._highest_dispatched_idx = controller.total_sentences
-                        end
-                    end
-                end
-            end
-
-            -- Pause duration based on the LAST sentence in the concat
-            -- For neural TTS (Piper), the trailing gap silence is already
-            -- padded into the audio file by the concat builder.  Use a
-            -- minimal UIManager delay so the next sentence starts right
-            -- after the padded silence finishes playing.
-            local is_neural = controller.tts_engine
-                and (controller.tts_engine.backend == controller.tts_engine.BACKENDS.PIPER or controller.tts_engine.backend == controller.tts_engine.BACKENDS.SANOTTS)
-            local delay = 0.2
-            if is_neural then
-                -- Gap always padded into audio for Piper — minimal scheduling delay
-                delay = 0.05
-                logger.warn("SyncController: Piper gap padded in audio (", last_sent.end_type, "), delay=0.05s")
-            elseif last_sent.end_type == "paragraph" then
-                delay = (controller.plugin and controller.plugin:getSetting("paragraph_pause", controller.tts_engine:pauseDefault("paragraph_pause"))) or 0.8
-            else
-                delay = (controller.plugin and controller.plugin:getSetting("sentence_pause", controller.tts_engine:pauseDefault("sentence_pause"))) or 0.1
-            end
-            logger.warn("SyncController: Scheduling next sentence in", delay, "s",
-                "from sentence=", last_sent.index, "state=", controller.state)
-            local chain_func = function()
-                controller._pending_chain_func = nil
-                -- Bail if a newer sentence started playing since this was scheduled
-                if (controller._chain_generation or 0) ~= my_chain_gen then
-                    logger.warn("SyncController: chain_func STALE gen=", my_chain_gen,
-                        "current=", controller._chain_generation, ", ignoring")
-                    return
-                end
-                if controller.state ~= controller.STATE.STOPPED then
-                    controller:readNextSentence()
-                else
-                    logger.dbg("SyncController: chain timer fired after user-initiated stop",
-                        "(was scheduled after sentence", last_sent.index, ")")
-                end
-            end
-            -- Unschedule any stale chain_func from a previous completion
-            if controller._pending_chain_func then
-                UIManager:unschedule(controller._pending_chain_func)
-            end
-            controller._pending_chain_func = chain_func
-            UIManager:scheduleIn(delay, chain_func)
-        end,
-        -- Failure callback
-        function()
-            logger.warn("SyncController: Async BT launch failure, stopping read-along")
-            controller:_cleanConcatFiles()
-            controller:stop()
-        end,
-        -- concat_files for gapless BT playback
-        concat_files
-    )
-
-    -- Android play() can return false when it could not launch audio at all
-    -- (TTS helper unavailable, or a prefetched clip failed to start).  The
-    -- historical contract had no handler for a falsy return and the chain
-    -- dead-ended silently; route it through the Android retry path, which
-    -- resynthesizes the sentence on demand and only stops after repeated
-    -- failures.
-    if not play_ok and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
-        self:_onAndroidSynthFailed("play() could not start audio")
-        return
-    end
-
-    if play_ok then
-        -- Scale the FIRST sentence's word timings to match the real WAV
-        -- duration.  play() scales engine.timing_data but the sync loop
-        -- reads sentence.words which still have the raw espeak estimates.
-        local first_dur = self.tts_engine._current_audio_duration_ms or 0
-        if first_dur > 0 and sentence.words and #sentence.words > 0 then
-            local last_w = sentence.words[#sentence.words]
-            if last_w.end_time and last_w.end_time > 0 then
-                local scale = first_dur / last_w.end_time
-                for _, w in ipairs(sentence.words) do
-                    if w.start_time then w.start_time = math.floor(w.start_time * scale) end
-                    if w.end_time   then w.end_time   = math.floor(w.end_time   * scale) end
-                    if w.duration   then w.duration   = math.floor(w.duration   * scale) end
-                end
-                logger.dbg("SyncController: Scaled sentence", sentence.index, "words by", scale)
-            end
-        end
-
-        -- Track how many sentences are in this play() for progress reporting
-        self._sentences_in_play = sentences_in_play
-
-        if #concat_sentences > 0 then
-            self._concat_sentences = concat_sentences
-            self._concat_split_points = concat_split_points
-            self._concat_boundary_idx = 0
-            self._concat_wav_files = concat_wav_files
-            -- For Piper: schedule prefetch for sentences BEYOND the concat
-            -- batch so they'll be ready when this concat stream finishes.
-            if self.tts_engine and (self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER or self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS)
-                    and not self._piper_abandoned then
-                local last_concat_idx = self.reading_sentence_idx + #concat_sentences
-                for offset = 1, PIPER_LOOKAHEAD do
-                    self:_prefetchNextSentence(last_concat_idx + offset)
-                end
-            end
-            -- Schedule next-page prefetch in background so it's ready
-            -- when we finish all sentences on this page.
-            self:_prefetchNextPage()
-        else
-            self._concat_sentences = nil
-            self._concat_split_points = nil
-            self._concat_boundary_idx = nil
-            self._concat_wav_files = nil
-            -- Single sentence — prefetch upcoming ones.
-            -- For Piper (~4-5× real-time on ARM), queue 20 sentences so
-            -- both servers always have batches waiting.
-            if self.tts_engine and (self.tts_engine.backend == self.tts_engine.BACKENDS.PIPER or self.tts_engine.backend == self.tts_engine.BACKENDS.SANOTTS)
-                    and not self._piper_abandoned then
-                for offset = 1, PIPER_LOOKAHEAD do
-                    self:_prefetchNextSentence(self.reading_sentence_idx + offset)
-                end
-            else
-                self:_prefetchNextSentence()
-                -- Android: queue the sentence after next as well; the second
-                -- request waits behind the in-flight synthesis and launches
-                -- the moment the engine frees, so a slow engine never idles
-                -- between lookaheads (issue #96).
-                if self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID then
-                    self:_prefetchNextSentence(self.reading_sentence_idx + 2)
-                end
-            end
-        end
-
-        -- Highlight the sentence being read — show immediately so the user
-        -- can see what is about to be spoken.  The highlight stays until the
-        -- sync loop switches to the next sentence.
-        if self.plugin and self.plugin:getSetting("highlight_sentences", true) then
-            -- Delay sentence highlight to roughly match when audio reaches
-            -- the speaker.  For persistent BT pipeline the audio travels
-            -- through a pipe buffer + BT codec; showing the highlight at
-            -- that time keeps it synchronized with what the user hears.
-            local hl_delay = 0.05
-            if self.tts_engine._persistent_pipeline then
-                hl_delay = math.max(0.05, (self.tts_engine.playback_latency_ms or 300) / 1000)
-            end
-            local hl_sched_time = UIManager:getTime()
-            UIManager:scheduleIn(hl_delay, function()
-                if controller.state == controller.STATE.STOPPED then return end
-                local hl_delta = time.to_ms(UIManager:getTime() - hl_sched_time)
-                logger.warn("SyncController: Highlighting sentence", sentence.index,
-                    "(scheduled+" .. hl_delta .. "ms)")
-                local ok, err = pcall(controller.highlightCurrentSentence, controller, sentence)
-                if not ok then
-                    logger.warn("SyncController: Sentence highlight failed:", err)
-                end
-            end)
-        end
-
-        -- Start sync loop for highlighting during this sentence
-        self._latency_locked = false  -- will be computed from actual launch time
-        self:startSentenceSyncLoop(sentence)
-    else
-        self:_cleanConcatFiles()
-        logger.warn("SyncController: play() failed, stopping read-along")
+--- The engine stopped answering: reconnect when it was lost, then start again from the sentence being heard.
+function SyncController:_recover(reason, lost)
+    self._recoveries = (self._recoveries or 0) + 1
+    logger.warn("SyncController: recovery", self._recoveries, ":", reason)
+    dlog("read recover", self._recoveries, reason)
+    local e = self.tts_engine
+    e:queueStopAndroid()
+    if lost or not self._started_in_run then pcall(function() e:reconnectAndroidTts() end) end
+    if self._recoveries > self.MAX_RECOVERIES then
         self:stop()
+        local InfoMessage = require("ui/widget/infomessage")
+        UIManager:show(InfoMessage:new{ text = _("The TTS engine does not respond. Reading stopped."), timeout = 5 })
+        return
     end
-
-    logger.dbg("SyncController: Playback started for sentence", sentence.index,
-        #concat_sentences > 0 and ("(+concat " .. #concat_sentences .. " more)") or "")
+    local head = self._q[1]
+    local s = (head and head.started and head.s) or self.current_sentence or (head and head.s)
+    self:_restartAt(s)
 end
 
---[[--
-Prefetch a future sentence's audio in the background.
-Called right after the current sentence starts playing, so espeak-ng
-runs its synthesis while audio is streaming. When the current sentence
-finishes, the next one's WAV is already on disk.
-@param explicit_idx number|nil  If provided, prefetch this sentence index
-                                instead of reading_sentence_idx + 1.
---]]
---- True when [text] has something to say: a letter or a digit, not just
---- punctuation.  UTF-8 lead bytes C3–DF (Latin-1 letters, Greek, Cyrillic,
---- Armenian, Hebrew, Arabic…) and E3–EF (CJK, Hangul, kana) count as letters;
---- C2 («», NBSP) and E2 (dashes, …, quotes) are punctuation.  A Greek or
---- Chinese sentence used to be skipped as «punctuation only».
-function SyncController.speakable(text)
-    return text ~= nil and text:find("[%w\195-\223\227-\239]") ~= nil
+-- ── Showing: highlight and page follow ────────────────────────────────
+
+function SyncController:_pageMode()
+    local _, ui = self:_doc()
+    return not (ui and ui.view and ui.view.view_mode == "scroll")
 end
 
-function SyncController:_prefetchNextSentence(explicit_idx)
-    local next_idx = explicit_idx or (self.reading_sentence_idx + 1)
-    if not self.parsed_data then
-        return -- nothing to prefetch
+--- Pages shown at once (two in dual-page mode).
+function SyncController:_visiblePages()
+    local doc = self:_doc()
+    local n = 1
+    if doc and doc.getVisiblePageCount then
+        local ok, v = pcall(doc.getVisiblePageCount, doc)
+        if ok and type(v) == "number" and v >= 1 then n = v end
     end
-    if next_idx > self.total_sentences then
-        -- Last sentence of the page on Android: synthesize the next page's
-        -- first sentence now, so the page turn does not wait for it too.
-        if self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
-                and self.tts_engine:androidPrefetchEnabled()
-                and self.plugin and self.plugin:getSetting("auto_advance", true) then
-            self:_prefetchNextPage()
-        end
-        return
-    end
-    local next_sentence = self.parsed_data.sentences[next_idx]
-    if not next_sentence or not next_sentence.text or next_sentence.text == "" then
-        return
-    end
-    if not SyncController.speakable(next_sentence.text) then
-        -- Punctuation only is skipped when read; look ahead past it.
-        if not explicit_idx or explicit_idx == next_idx then
-            return self:_prefetchNextSentence(next_idx + 1)
-        end
-        return
-    end
-    -- Defer prefetch so it doesn't block the UI thread.
-    -- espeak-ng synthesis takes ~100-300ms - running it synchronously right
-    -- after play() would freeze touch input.  A 200ms delay lets UIManager
-    -- drain any queued touch/gesture events before the blocking synthesis
-    -- starts.  The prefetched audio is still available well before a
-    -- typical sentence finishes playing (~2-5s).
-    local engine = self.tts_engine
-    local text = next_sentence.text
-    -- Piper abandoned for the session: prefetch via espeak synthesis
-    -- instead of the dead Piper queue.
-    local use_espeak = self._piper_abandoned and true or false
-    UIManager:scheduleIn(0.2, function()
-        engine:prefetch(text, use_espeak)
-    end)
+    return n
 end
 
---[[--
-Clean up WAV files created for a multi-sentence concat pipeline.
-Called when the pipeline finishes, is stopped, or is skipped.
---]]
-function SyncController:_cleanConcatFiles()
-    if self._concat_wav_files then
-        for _, f in ipairs(self._concat_wav_files) do
-            os.remove(f)
-        end
-    end
-    self._concat_wav_files = nil
-    self._concat_sentences = nil
-    self._concat_split_points = nil
-    self._concat_boundary_idx = nil
-    -- Allow engine cleanup to proceed
-    if self.tts_engine then
-        self.tts_engine._prefetch_in_use = false
-    end
+function SyncController:_currentPage()
+    local doc, ui = self:_doc()
+    local p
+    pcall(function() p = ui.paging and ui:getCurrentPage() or doc:getCurrentPage() end)
+    return p
 end
 
---[[--
-Prefetch the next page's text in the background.
-Called when we're near the end of the current page's sentences so the
-page transition is near-instant.
---]]
-function SyncController:_prefetchNextPage()
-    if self._next_page_prefetched then return end
-    if not self.plugin or not self.plugin.ui then return end
-    -- Read by position: the next view's sentences are already known exactly (same build as this view), nothing to peek.
-    if self._xp_next_parsed and self:_queueMode() then
-        self._next_page_prefetched = true
-        self._q_next_parsed = self._xp_next_parsed
-        dlog("queue", "next-page xp", #self._xp_next_parsed.sentences)
-        self:_queueFill()
-        return
-    end
-    -- The view was read by position but no sentence starts on the next one (it is the middle of this view's last
-    -- sentence, or the book ends): a screen peek would only glue that middle on again. The page turns when the
-    -- sentence is done.
-    if self.parsed_data and self.parsed_data.by_position then
-        self._next_page_prefetched = true
-        return
-    end
+--- Page of a sentence (its first word); nil when unknown.
+function SyncController:_pageOf(s, last)
+    if s.page then return s.page end
+    local doc = self:_doc()
+    local p
+    local xp = last and s.xp1 or s.xp0
+    if xp then pcall(function() p = doc:getPageFromXPointer(xp) end) end
+    return p
+end
 
-    self._next_page_prefetched = true
+--- True when the page shown is the one read-aloud put there (or shows the sentence): the reader did not browse away.
+function SyncController:_following(page)
+    local cur = self:_currentPage()
+    if not cur then return true end
+    if self._shown_page == nil or cur == self._shown_page then return true end
+    -- Browsed elsewhere, or onto the page being read.
+    if page and page >= cur and page < cur + self:_visiblePages() then
+        self._shown_page = cur
+        return true
+    end
+    return false
+end
+
+function SyncController:_gotoPage(page, xp)
+    local doc, ui = self:_doc()
+    if self:_pageMode() or ui.paging then
+        ui:handleEvent(Event:new("GotoPage", page))
+    elseif xp then
+        ui:handleEvent(Event:new("GotoXPointer", xp, xp))
+    end
+    self._shown_page = self:_currentPage()
+end
+
+--- Turn the screen to the sentence [it] (or, with [inside], to its part on the next screen) and highlight it.
+function SyncController:_show(it, inside)
+    self:_follow(it, inside)
+end
+
+function SyncController:_follow(it, inside)
     local plugin = self.plugin
-    local controller = self
-
-    -- Defer to avoid blocking the sync loop
-    UIManager:scheduleIn(0.1, function()
-        if controller.state == controller.STATE.STOPPED then return end
-        local next_text = plugin.peekNextPageText and plugin:peekNextPageText()
-        if next_text and next_text ~= "" then
-            controller._next_page_text = next_text
-            -- Parse the full next page and pre-queue upcoming sentences.
-            -- For Piper, this feeds them into the prefetch queue so
-            -- both servers start synthesizing while the current page's
-            -- audio is still playing.  By page-turn time, most or all
-            -- of the next page's sentences will already be ready.
-            local parsed = controller.text_parser:parse(next_text)
-            if parsed and parsed.sentences and #parsed.sentences > 0 then
-                -- Queue mode looks at the next page before this page's last sentence has sounded. That sentence
-                -- already carries the start of the next page (_extendIncompleteLastSentence), so judge the carry as
-                -- if it had been heard; otherwise a short carried piece was queued again and its words sounded twice.
-                local saved = controller._spoken_norm
-                local last = controller:_queueMode() and controller.parsed_data
-                    and controller.parsed_data.sentences[controller.total_sentences or 0]
-                if last and last.text then
-                    controller._spoken_norm = {}
-                    for _, t in ipairs(saved or {}) do table.insert(controller._spoken_norm, t) end
-                    table.insert(controller._spoken_norm, Utils.ws(last.text))
-                end
-                controller:_skipCarriedPrefix(parsed, false)
-                controller._spoken_norm = saved
-                dlog("queue", "next-page carry", controller._tts_carry_skip and #controller._tts_carry_skip or 0,
-                    "first", parsed.sentences[1] and #parsed.sentences[1].text or 0)
-            end
-            if parsed and parsed.sentences and #parsed.sentences > 0 then
-                local is_piper = controller.tts_engine
-                    and (controller.tts_engine.backend == controller.tts_engine.BACKENDS.PIPER or controller.tts_engine.backend == controller.tts_engine.BACKENDS.SANOTTS)
-                if is_piper then
-                    -- Queue the first 6 next-page sentences (2 batches
-                    -- of 3) into the Piper prefetch system.  We don't
-                    -- queue ALL sentences because that floods the queue
-                    -- behind current-page work.  The remaining sentences
-                    -- will be queued by readNextSentence's own lookahead
-                    -- once the page actually turns.
-                    local MAX_NEXT_PAGE_PREFETCH = 6
-                    local queued = 0
-                    for i, sent in ipairs(parsed.sentences) do
-                        if i > MAX_NEXT_PAGE_PREFETCH then break end
-                        if sent.text and sent.text ~= "" then
-                            controller.tts_engine:piperPrefetchAsync(sent.text)
-                            queued = queued + 1
-                        end
-                    end
-                    -- Kick the launcher so batches start immediately
-                    controller.tts_engine:_launchNextPiperPrefetch()
-                    logger.warn("SyncController: Next page prefetched,",
-                        #next_text, "chars,", queued, "of",
-                        #parsed.sentences, "sentences queued for Piper")
-                elseif controller:_queueMode() then
-                    -- Queue mode: the first sentences of the next page join the engine queue (gapless page turn).
-                    controller._q_next_parsed = parsed
-                    controller:_queueFill()
-                else
-                    local first_text = parsed.sentences[1].text
-                    if first_text and first_text ~= "" then
-                        controller.tts_engine:prefetch(first_text)
-                    end
-                    logger.warn("SyncController: Next page prefetched,", #next_text, "chars")
-                end
-            end
-        else
-            logger.warn("SyncController: Next page prefetch — no text")
+    if not plugin then return end
+    local s = it.s
+    local p0 = self:_pageOf(s)
+    local follow = plugin:getSetting("auto_advance", true)
+    if follow and not plugin._app_in_background and self:_following(p0) then
+        local cur = self:_currentPage()
+        local nvis = self:_visiblePages()
+        if inside then
+            local p1 = self:_pageOf(s, true)
+            if p1 and cur and p1 >= cur + nvis then self:_gotoPage(cur + nvis, nil) end
+        elseif p0 and cur and (p0 >= cur + nvis or (p0 < cur and (self:_pageOf(s, true) or p0) < cur)) then
+            -- Not on the screen (a sentence begun on the previous screen and running onto this one is: it stays).
+            self:_gotoPage(p0, s.xp0)
+        elseif self._shown_page == nil then
+            self._shown_page = cur
         end
-    end)
+        -- A sentence that runs onto the next screen turns it when the voice gets there.
+        if not inside and s.xp1 and self:_pageMode() then
+            cur = self:_currentPage()
+            local p1 = self:_pageOf(s, true)
+            if cur and p1 and p1 >= cur + nvis then
+                local doc = self:_doc()
+                local next_xp
+                pcall(function() next_xp = doc:getPageXPointer(cur + nvis) end)
+                it.turn_at = next_xp and DocStream.offsetAt(doc, s, next_xp)
+            end
+        end
+    end
+    if plugin:getSetting("highlight_sentences", true) and not plugin._app_in_background then
+        pcall(self.highlightCurrentSentence, self, s)
+    end
 end
 
---[[--
-Reserve the playback bar's height in the document's bottom margin so the bar
-never covers book text.
+function SyncController:highlightCurrentSentence(s)
+    if not s or not self.highlight_manager then return end
+    if self.plugin and self.plugin._app_in_background then return end
+    if s.xp0 then
+        self.highlight_manager:highlightSentence({ xp0 = s.xp0, xp1 = s.xp1, text = s.text, index = 0 }, nil)
+    elseif s.sentence and s.page == self:_currentPage() then
+        self.highlight_manager:highlightSentence(s.sentence, s.parsed)
+    end
+end
 
-TTS and Storyteller share one inset (Audiobook:_ensureAudiobookChromeMargins).
-When margins are locked, this is a no-op after the first typeset — switching
-modes must not call SetPageMargins (that is the CRE spinning-layout icon).
-Returns via _bar_space_reflowed whether live margins changed (start() waits
-for the reflow only then).
+--- Back to the page being read (the «○» button, auto return after browsing).
+function SyncController:refocusToReading()
+    local s = self.current_sentence
+    if not s then return end
+    local p = self:_pageOf(s)
+    if p then self:_gotoPage(p, s.xp0) end
+    UIManager:scheduleIn(0.3, function()
+        if self.current_sentence == s then pcall(self.highlightCurrentSentence, self, s) end
+    end)
+end
+SyncController.realignToReadingPage = SyncController.refocusToReading
 
-Rolling (CreDocument/EPUB) only — paged documents have fixed layout.
---]]
+--- Screen size or font changed: positions are the same, only pages moved. Show the sentence again.
+function SyncController:_remapAfterRotation()
+    self._shown_page = nil
+    local head = self._q[1]
+    if head and head.started then self:_follow(head) end
+end
+
+-- ── Jumps ─────────────────────────────────────────────────────────────
+
+function SyncController:_active()
+    return self.state == self.STATE.PLAYING or self.state == self.STATE.PAUSED
+end
+
+function SyncController:nextSentence()
+    if not self:_active() then return end
+    local head = self._q[1]
+    local nxt = self._q[2]
+    if nxt then return self:_restartAt(nxt.s) end
+    local s = self.stream and self.stream:next()
+    if s then self:_restartAt(s) end
+end
+
+function SyncController:prevSentence()
+    if not self:_active() then return end
+    local cur = self.current_sentence
+    if not cur then return end
+    if cur.from and self.stream and self.stream.sentenceBefore then
+        local prev = self.stream:sentenceBefore(cur.from)
+        return self:_restartAt(prev or cur)
+    end
+    if cur.page then
+        if (cur.index or 1) > 1 then return self:_beginAt({ page = cur.page, index = cur.index - 1 }) end
+        return self:_beginAt({ page = math.max(1, cur.page - 1) })
+    end
+end
+
+--- Back about [seconds] of listening (a headset «previous»: the listener missed something). A pause does not count:
+--- each sentence counts at most 30 s.
+function SyncController:rewind(seconds)
+    if not self:_active() then return end
+    local heard = self._heard
+    local t_now = now_s()
+    local target, back, later = nil, 0, t_now
+    for i = #heard, 1, -1 do
+        local h = heard[i]
+        back = back + math.min(30, math.max(0, later - h.t))
+        target = h
+        later = h.t
+        if back >= seconds then break end
+    end
+    dlog("read rewind", seconds)
+    if target then
+        -- Heard sentences from here on are heard again: drop them from the history.
+        for i = #heard, 1, -1 do
+            local h = table.remove(heard)
+            if h == target then break end
+        end
+        if target.from then return self:_beginAt({ exact = target.from }) end
+        return self:_beginAt({ page = target.page, index = target.index })
+    end
+    self:_restartAt(self.current_sentence)
+end
+
+--- Characters read per second, measured on the sentences heard (a pause, over 30 s, does not count); nil until a
+--- minute of reading. Follows the engine's real speed.
+function SyncController:charsPerSecond()
+    local heard = self._heard
+    local chars, secs = 0, 0
+    for i = 1, #heard - 1 do
+        local d = heard[i + 1].t - heard[i].t
+        if d > 0 and d <= 30 then chars = chars + (heard[i].chars or 0); secs = secs + d end
+    end
+    if secs < 60 then return nil end
+    return chars / secs
+end
+
+-- ── Chapters and progress ─────────────────────────────────────────────
+
+--- The table of contents, kept while the layout (page count) is the same: asked on every sentence for the progress.
+function SyncController:_toc()
+    local doc = self:_doc()
+    local count
+    pcall(function() count = doc:getPageCount() end)
+    if self._toc_cache and self._toc_count == count and self._toc_doc == doc then return self._toc_cache end
+    self._toc_cache, self._toc_count, self._toc_doc = self:_documentToc() or false, count, doc
+    return self._toc_cache
+end
+
+--- First and next chapter page around [page].
+function SyncController:_chapterBounds(page)
+    local toc = self:_toc()
+    local doc = self:_doc()
+    local count = 1
+    pcall(function() count = doc:getPageCount() end)
+    local c0, c1 = 1, count + 1
+    for _, entry in ipairs(toc or {}) do
+        local p = tonumber(entry.page)
+        if p then
+            if p <= page and p >= c0 then c0 = p end
+            if p > page and p < c1 then c1 = p end
+        end
+    end
+    return c0, c1
+end
+
+--- Progress through the chapter being read, 0–100.
+function SyncController:getProgress()
+    local s = self.current_sentence
+    local p = s and self:_pageOf(s) or self:_currentPage()
+    if not p then return 0 end
+    local c0, c1 = self:_chapterBounds(p)
+    if c1 <= c0 then return 0 end
+    return math.max(0, math.min(100, (p - c0) / (c1 - c0) * 100))
+end
+
+--- Scrub the chapter: [pct] 0–1 maps onto its pages.
+function SyncController:seekToProgress(pct)
+    if not self:_active() then return end
+    pct = math.max(0, math.min(1, tonumber(pct) or 0))
+    local s = self.current_sentence
+    local p = s and self:_pageOf(s) or self:_currentPage()
+    if not p then return end
+    local c0, c1 = self:_chapterBounds(p)
+    local target = math.max(c0, math.min(c1 - 1, math.floor(c0 + pct * (c1 - c0))))
+    if self:_byPosition() then
+        local doc = self:_doc()
+        local xp
+        pcall(function() xp = doc:getPageXPointer(target) end)
+        if xp then self:_beginAt({ xp = xp }) end
+    else
+        self:_beginAt({ page = target })
+    end
+end
+
+function SyncController:_gotoTocEntry(entry)
+    if not entry then return end
+    if not self:_active() then
+        local _, ui = self:_doc()
+        if entry.xpointer and ui.rolling then ui:handleEvent(Event:new("GotoXPointer", entry.xpointer))
+        elseif entry.page then ui:handleEvent(Event:new("GotoPage", entry.page)) end
+        return
+    end
+    self._shown_page = nil
+    if entry.xpointer and self:_byPosition() then
+        self:_beginAt({ xp = entry.xpointer })
+    elseif entry.page then
+        self:_beginAt({ page = entry.page })
+    end
+end
+
+function SyncController:jumpTocRelative(delta)
+    local toc = self:_documentToc()
+    if not toc then
+        if delta > 0 then self:nextSentence() else self:prevSentence() end
+        return
+    end
+    local s = self.current_sentence
+    local page = (s and self:_pageOf(s)) or self:_currentPage() or 1
+    local idx = 1
+    for i, entry in ipairs(toc) do
+        if entry.page and entry.page <= page then idx = i end
+    end
+    idx = math.max(1, math.min(#toc, idx + delta))
+    self:_gotoTocEntry(toc[idx])
+end
+
+-- ── Speed ─────────────────────────────────────────────────────────────
+
+--- An explicit TTS rate from the player's speed control. Queued audio has the old rate: start again from the sentence
+--- being heard so the change is heard at once.
+function SyncController:setSpeechRate(speed)
+    speed = math.max(0.25, math.min(2.0, tonumber(speed) or 1.0))
+    if self.plugin and self.plugin.setSetting then self.plugin:setSetting("speech_rate", speed) end
+    if self.tts_engine and self.tts_engine.setRate then self.tts_engine:setRate(speed) end
+    if self.playback_bar and self.playback_bar.updateSpeed then
+        pcall(function() self.playback_bar:updateSpeed(speed) end)
+    end
+    if self.state == self.STATE.PLAYING then self:_restartAt(self.current_sentence) end
+    return speed
+end
+
+-- Old names some callers still use.
+function SyncController:updateText() self:start() end
+function SyncController:readNextSentence() if self.state ~= self.STATE.STOPPED then self:_restartAt(self.current_sentence) end end
+function SyncController:getCurrentSentenceIndex() return self.reading_sentence_idx end
+function SyncController:getCurrentWordIndex() return 0 end
+function SyncController:getPlaybackTime() return 0 end
+function SyncController:getTotalDuration() return 0 end
+function SyncController:updatePlaybackBar()
+    if not self.playback_bar then return end
+    self.playback_bar:updateProgress(self:getProgress())
+    self.playback_bar:updatePlayState(self:isPlaying())
+    self:_refreshTtsTimeUi()
+end
+
+--- Where MyTTS's «prepare» text should begin: the sentence being heard (or the top of the screen).
+function SyncController:aheadFrom()
+    local s = self.current_sentence
+    return s and s.xp0
+end
+
+-- ── Playback bar (shared AudiobookPlayer chrome) ──────────────────────
+
 function SyncController:_reserveBarSpace()
     if self._bar_space_reserved then
         self._bar_space_reflowed = false
@@ -2176,26 +794,7 @@ function SyncController:showPlaybackBar()
     -- TTS read-along reuses the AudiobookPlayer chrome in tts_mode (mini bar
     -- with speed/sleep controls, full player with chapter list and scrubber).
     -- Same hotfix-load convention as MediaSync.
-    local AudiobookPlayer
-    do
-        local candidates = {
-            PLUGIN_PATH .. "audiobookplayer.fix31.lua",
-            PLUGIN_PATH .. "audiobookplayer.fix30.lua",
-            PLUGIN_PATH .. "audiobookplayer.fix29.lua",
-            PLUGIN_PATH .. "audiobookplayer.lua",
-        }
-        for _, path in ipairs(candidates) do
-            local f = io.open(path, "r")
-            if f then
-                f:close()
-                AudiobookPlayer = dofile(path)
-                break
-            end
-        end
-    end
-    if not AudiobookPlayer then
-        AudiobookPlayer = dofile(PLUGIN_PATH .. "audiobookplayer.lua")
-    end
+    local AudiobookPlayer = dofile(PLUGIN_PATH .. "audiobookplayer.lua")
 
     local plugin = self.plugin
     local title = _("Audiobook")
@@ -2397,1463 +996,6 @@ function SyncController:hidePlaybackBar()
     end
 end
 
---[[--
-Navigate the view back to the page currently being read aloud.
-Triggered by the re-align button on the PlaybackBar.
---]]
-function SyncController:realignToReadingPage()
-    if not self.reading_page_xpointer then
-        logger.dbg("SyncController: No reading xpointer to realign to")
-        return
-    end
-    if not self.plugin or not self.plugin.ui then return end
-    local ui = self.plugin.ui
-    if ui.rolling then
-        ui:handleEvent(Event:new("GotoXPointer", self.reading_page_xpointer))
-    end
-    -- Re-apply sentence highlight after the page settles
-    if self.current_sentence
-            and self.plugin:getSetting("highlight_sentences", true) then
-        local sentence = self.current_sentence
-        UIManager:scheduleIn(0.3, function()
-            pcall(self.highlightCurrentSentence, self, sentence)
-        end)
-    end
-    self.current_word_index = 0  -- force word re-highlight
-end
-
---[[--
-Update the playback bar with current state.
---]]
-function SyncController:updatePlaybackBar()
-    if not self.playback_bar then
-        return
-    end
-
-    -- Update current word display
-    if self.current_sentence and self.current_word_index > 0 then
-        for _, word in ipairs(self.current_sentence.words) do
-            if word.index == self.current_word_index then
-                self.playback_bar:updateCurrentWord(word.text)
-                break
-            end
-        end
-    end
-
-    -- Update progress
-    self.playback_bar:updateProgress(self:getProgress())
-
-    -- Update play/pause state
-    self.playback_bar:updatePlayState(self:isPlaying())
-    self:_refreshTtsTimeUi()
-end
-
---[[--
-Re-parse the visible page after a screen rotation and remap the currently-
-playing sentence into the fresh parse.  Updates parsed_data, total_sentences,
-reading_sentence_idx, current_sentence, and the concat_sentences array so
-that highlight positioning, progress reporting, and page-end detection all
-use the new layout.
---]]
-function SyncController:_remapAfterRotation()
-    if not self.plugin then return end
-
-    local fresh_text = self.plugin:getCurrentPageText()
-    if not fresh_text then
-        logger.warn("SyncController: _remapAfterRotation — no page text")
-        -- At minimum re-apply the highlight with the old sentence
-        if self.current_sentence then
-            pcall(self.highlightCurrentSentence, self, self.current_sentence)
-        end
-        return
-    end
-
-    local fresh_parsed = self.text_parser:parse(fresh_text)
-    if not fresh_parsed or #fresh_parsed.sentences == 0 then
-        logger.warn("SyncController: _remapAfterRotation — parse empty")
-        if self.current_sentence then
-            pcall(self.highlightCurrentSentence, self, self.current_sentence)
-        end
-        return
-    end
-
-    -- Find the currently-playing sentence in the fresh parse
-    local cur_text = self.current_sentence and Utils.ws(self.current_sentence.text) or ""
-    local found_idx = nil
-    for i, s in ipairs(fresh_parsed.sentences) do
-        if Utils.ws(s.text) == cur_text then
-            found_idx = i
-            break
-        end
-    end
-
-    if not found_idx then
-        -- Sentence scrolled off-screen after rotation.  Scan nearby pages
-        -- (up to ±2 screens) to find it and scroll the view there.
-        logger.warn("SyncController: _remapAfterRotation — sentence not on visible page, scanning nearby")
-        local ui = self.plugin and self.plugin.ui
-        if ui and ui.rolling and ui.document then
-            local doc = ui.document
-            local Screen = require("device").screen
-            local page_h = Screen:getHeight()
-            local saved_pos = doc:getCurrentPos()
-            local target_pos = nil
-            local scan_offsets = { -page_h, page_h, -2*page_h, 2*page_h }
-
-            for _, offset in ipairs(scan_offsets) do
-                local try_pos = math.max(0, saved_pos + offset)
-                doc:gotoPos(try_pos)
-                local ok, res = pcall(doc.getTextFromPositions, doc,
-                    {x = 0, y = 0},
-                    {x = Screen:getWidth(), y = Screen:getHeight()},
-                    true)
-                if ok and res and res.text then
-                    local scan_parsed = self.text_parser:parse(res.text)
-                    if scan_parsed then
-                        for i, s in ipairs(scan_parsed.sentences) do
-                            if Utils.ws(s.text) == cur_text then
-                                found_idx = i
-                                fresh_parsed = scan_parsed
-                                fresh_text = res.text
-                                target_pos = try_pos
-                                logger.warn("SyncController: Found sentence at offset", offset, "idx", i)
-                                break
-                            end
-                        end
-                    end
-                end
-                if found_idx then break end
-            end
-
-            -- Always restore first — then navigate properly if we found it
-            doc:gotoPos(saved_pos)
-
-            if found_idx and target_pos then
-                -- Navigate the view to the page containing our sentence.
-                local delta_pages = math.floor((target_pos - saved_pos) / page_h + 0.5)
-                if delta_pages ~= 0 then
-                    ui:handleEvent(Event:new("GotoViewRel", delta_pages))
-                    -- Update the reading xpointer for the re-align button
-                    pcall(function()
-                        self.reading_page_xpointer = doc:getXPointer()
-                    end)
-                    -- Re-read the actual visible text after navigation
-                    -- (GotoViewRel may snap differently than raw gotoPos)
-                    local nav_text = self.plugin:getCurrentPageText()
-                    if nav_text then
-                        local nav_parsed = self.text_parser:parse(nav_text)
-                        if nav_parsed then
-                            -- Re-find our sentence in the actual visible text
-                            local nav_found = nil
-                            for i, s in ipairs(nav_parsed.sentences) do
-                                if Utils.ws(s.text) == cur_text then
-                                    nav_found = i
-                                    break
-                                end
-                            end
-                            if nav_found then
-                                found_idx = nav_found
-                                fresh_parsed = nav_parsed
-                            end
-                        end
-                    end
-                end
-            else
-                -- Not found nearby — keep current view
-                logger.warn("SyncController: Sentence not found within ±2 pages, keeping view")
-                return
-            end
-        else
-            return
-        end
-    end
-
-    logger.warn("SyncController: _remapAfterRotation — mapped to sentence",
-        found_idx, "/", #fresh_parsed.sentences)
-
-    -- Carry forward the word timing from the old sentence objects into the
-    -- matching new ones.  The concat audio is still playing, so the timing
-    -- values (start_time, end_time) must stay identical.
-    local old_sentences = self.parsed_data and self.parsed_data.sentences or {}
-    for _, old_s in ipairs(old_sentences) do
-        local old_t = Utils.ws(old_s.text)
-        for _, new_s in ipairs(fresh_parsed.sentences) do
-            if Utils.ws(new_s.text) == old_t then
-                -- Copy word timings
-                if old_s.words and new_s.words and #old_s.words == #new_s.words then
-                    for wi, ow in ipairs(old_s.words) do
-                        new_s.words[wi].start_time = ow.start_time
-                        new_s.words[wi].end_time = ow.end_time
-                        new_s.words[wi].duration = ow.duration
-                    end
-                end
-                -- Copy end_type for pause calculation
-                new_s.end_type = old_s.end_type or new_s.end_type
-                break
-            end
-        end
-    end
-
-    -- Update core state
-    self.parsed_data = fresh_parsed
-    self.total_sentences = #fresh_parsed.sentences
-    self.current_sentence = fresh_parsed.sentences[found_idx]
-    self.current_sentence_index = found_idx
-
-    -- The reading_sentence_idx tracks where the concat started — remap it
-    -- so the completion callback's arithmetic stays correct.
-    -- reading_sentence_idx currently points to the first sentence of the
-    -- concat.  Find that sentence in the new parse too.
-    if self._concat_sentences then
-        -- Remap each concat sentence to its new-parse counterpart
-        for ci, old_cs in ipairs(self._concat_sentences) do
-            local ct = Utils.ws(old_cs.text)
-            for _, new_s in ipairs(fresh_parsed.sentences) do
-                if Utils.ws(new_s.text) == ct then
-                    self._concat_sentences[ci] = new_s
-                    break
-                end
-            end
-        end
-    end
-
-    -- Fix reading_sentence_idx: it should point to the first sentence in
-    -- the current play batch (the one before the concat extras)
-    local first_text = self._first_play_sentence_text
-    if first_text then
-        for i, s in ipairs(fresh_parsed.sentences) do
-            if Utils.ws(s.text) == Utils.ws(first_text) then
-                self.reading_sentence_idx = i
-                -- Update the backward-jump guard so post-rotation
-                -- readNextSentence calls are accepted.
-                self._highest_dispatched_idx = i
-                break
-            end
-        end
-    end
-
-    -- Force word re-highlight on next tick
-    self.current_word_index = 0
-
-    -- Re-apply sentence highlight with the new sentence object
-    if self.plugin and self.plugin:getSetting("highlight_sentences", true) then
-        self.highlight_manager:clearHighlights()
-        pcall(self.highlightCurrentSentence, self, self.current_sentence)
-    end
-
-    -- Update progress bar
-    if self.playback_bar then
-        self.playback_bar:updateProgress(self:getProgress())
-    end
-end
-
---[[--
-Sync loop for the current sentence.
-Updates word highlighting based on elapsed time.
-@param sentence table The sentence being played
---]]
-function SyncController:startSentenceSyncLoop(sentence)
-    -- Only set sentence_sync_start on a fresh start, not on resume.
-    -- resume() already adjusts sentence_sync_start for pause duration.
-    if not self._resuming_sync then
-        self.sentence_sync_start = UIManager:getTime()
-    end
-    self._resuming_sync = false
-    -- Generation counter: old sync loops exit when a new one starts
-    self.sync_generation = (self.sync_generation or 0) + 1
-    local my_generation = self.sync_generation
-
-    local function syncUpdate()
-        -- Only exit completely if stopped or superseded
-        if self.state == self.STATE.STOPPED then
-            return
-        end
-        if self.sync_generation ~= my_generation then
-            return -- superseded by a newer sync loop
-        end
-
-        -- Auto-pause when a menu/dialog opens (we can't receive ShowConfigMenu events).
-        -- Setting "pause_on_menu" (default on).  With it off, narration keeps
-        -- playing while a menu is up; the sync loop only skips highlight work
-        -- so we do not refresh the page under the menu.
-        -- IMPORTANT: this must run even when state==PAUSED so we can detect the
-        -- overlay closing and call resume().  The old code checked state==PLAYING
-        -- first, which caused the loop to exit permanently while paused.
-        local pause_on_menu = not self.plugin
-            or self.plugin.getSetting == nil
-            or self.plugin:getSetting("pause_on_menu", true)
-        if self.playback_bar and self.playback_bar._isOverlayActive and self.playback_bar:_isOverlayActive() then
-            if pause_on_menu then
-                if not self._auto_paused_by_overlay then
-                    self._auto_paused_by_overlay = true
-                    logger.warn("SyncController: auto-pause, extra UI widget on stack")
-                    self:pause(true)   -- auto=true: overlay-initiated pause
-                end
-                -- Keep polling so we can resume when the overlay closes
-                UIManager:scheduleIn(0.3, syncUpdate)
-                return
-            elseif self._auto_paused_by_overlay then
-                self._auto_paused_by_overlay = false
-                self:resume(true)      -- auto=true: only resumes if user didn't explicitly pause
-                if self.state == self.STATE.PAUSED then
-                    -- User had explicitly paused — keep the sync loop alive
-                    -- but stay in the paused polling branch below.
-                    UIManager:scheduleIn(0.1, syncUpdate)
-                end
-                return -- if resume succeeded it restarts the sync loop itself
-            else
-                -- Menus up, keep playing: skip highlight work under them.
-                UIManager:scheduleIn(0.1, syncUpdate)
-                return
-            end
-        elseif self._auto_paused_by_overlay then
-            self._auto_paused_by_overlay = false
-            self:resume(true)      -- auto=true: only resumes if user didn't explicitly pause
-            if self.state == self.STATE.PAUSED then
-                -- User had explicitly paused — keep the sync loop alive
-                -- but stay in the paused polling branch below.
-                UIManager:scheduleIn(0.1, syncUpdate)
-            end
-            return -- if resume succeeded it restarts the sync loop itself
-        end
-
-        -- Detect screen rotation: CRe's native selection is wiped on redraw,
-        -- and the visible text reflows (different sentences/word count on page).
-        -- We must re-parse the page and remap all state to the new layout.
-        local Screen = require("device").screen
-        local cur_w, cur_h = Screen:getWidth(), Screen:getHeight()
-        if self._last_screen_w and self._last_screen_h
-                and (cur_w ~= self._last_screen_w or cur_h ~= self._last_screen_h) then
-            self._last_screen_w = cur_w
-            self._last_screen_h = cur_h
-            -- Flag so the completion callback re-checks page boundaries
-            self._rotated_during_playback = true
-            -- Invalidate prefetched next page — page boundary shifted
-            self._next_page_text = nil
-            self._next_page_prefetched = false
-            logger.warn("SyncController: Rotation detected during playback",
-                "old=", self._last_screen_w, "x", self._last_screen_h,
-                "new=", cur_w, "x", cur_h)
-
-            -- Re-parse the visible page and remap current sentence
-            local controller_ref = self
-            UIManager:scheduleIn(0.3, function()
-                if controller_ref.state == controller_ref.STATE.STOPPED then return end
-                controller_ref:_remapAfterRotation()
-            end)
-        end
-        self._last_screen_w = self._last_screen_w or cur_w
-        self._last_screen_h = self._last_screen_h or cur_h
-
-        -- Skip word-highlighting work when not actively playing
-        if self.state ~= self.STATE.PLAYING then
-            UIManager:scheduleIn(0.1, syncUpdate)
-            return
-        end
-
-        -- audioout daemon: its rendered-position clock replaces the whole
-        -- anchor dance below. pos_ms is what the sink is playing RIGHT NOW
-        -- (probe-measured, interpolated), and the group's first sample sits
-        -- at _audioout_start_ms, so word time = pos_ms - start_ms with no
-        -- latency constant at all. Before the first buffer renders, pos_ms
-        -- is 0 and the highlight simply waits: self-anchoring.
-        local adjusted
-        if self.tts_engine._audioout_active and self.tts_engine._audioout_client then
-            self._latency_locked = true
-            -- 400 ms: the sync tick runs at 20 Hz on the UI thread; a
-            -- wedged daemon must never hold it for seconds.
-            local st = self.tts_engine._audioout_client:status(400)
-            if not st or not st.pos_ms then
-                UIManager:scheduleIn(0.05, syncUpdate)
-                return
-            end
-            adjusted = (st.pos_ms or 0) - (self.tts_engine._audioout_start_ms or 0)
-        end
-
-        if not adjusted then
-        -- Dynamic BT latency detection: poll GStreamer's stderr for the
-        -- PLAYING transition.  Once detected, anchor the sync timer to NOW
-        -- with only a small codec-buffering offset (~150ms).
-        -- Fallback: if the process launched but we never see PLAYING (e.g.
-        -- non-BT player), use 3000ms from launch as the static estimate.
-        if not self._latency_locked then
-            if self.tts_engine:isGstPlaying() then
-                -- Audio output is about to flow (GStreamer PLAYING state or
-                -- wav-play header confirmation).
-                self.sentence_sync_start = UIManager:getTime()
-                if self.tts_engine._persistent_pipeline then
-                    -- Persistent pipeline: latency = feeder read delay +
-                    -- pipe buffer + BT codec (~200ms).  Use engine's value.
-                    self._locked_latency_ms = self.tts_engine.playback_latency_ms or 300
-                elseif self.tts_engine.audio_player_type == "aplay" then
-                    -- Direct ALSA playback (wav-play): virtually no latency
-                    -- since audio starts as soon as frames are written.
-                    self._locked_latency_ms = 100
-                else
-                    local warm = self.tts_engine._socket_clean
-                    self._locked_latency_ms = warm and 500 or 1500
-                end
-                self._latency_locked = true
-                logger.warn("SyncController: Sync anchored (persistent=",
-                    self.tts_engine._persistent_pipeline ~= nil,
-                    ", offset=", self._locked_latency_ms, "ms)")
-            elseif self.tts_engine._audio_launched_at then
-                -- Fallback: if 5s passed since launch without PLAYING, lock
-                -- to the launch time with a static estimate.
-                local since_launch = time.to_ms(UIManager:getTime() - self.tts_engine._audio_launched_at)
-                if since_launch > 5000 then
-                    self.sentence_sync_start = self.tts_engine._audio_launched_at
-                    self._locked_latency_ms = 3000
-                    self._latency_locked = true
-                    logger.warn("SyncController: Sync fallback — 5s without PLAYING, using 3000ms")
-                end
-            end
-            -- While waiting for PLAYING, don't advance highlighting at all.
-            -- This prevents the highlight from rushing ahead on page transitions
-            -- before BT audio actually starts.
-            if not self._latency_locked then
-                UIManager:scheduleIn(0.05, syncUpdate)
-                return
-            end
-        end
-
-        local elapsed = time.to_ms(UIManager:getTime() - self.sentence_sync_start)
-        local latency = self._locked_latency_ms or self.tts_engine.playback_latency_ms or 0
-        adjusted = elapsed - latency
-        end  -- end legacy wall-clock path (audioout computes adjusted above)
-
-        -- Multi-sentence concat boundary detection: advance through split
-        -- points as elapsed time crosses each one.
-        if self._concat_sentences and self._concat_split_points then
-            local switched = false
-            while true do
-                local next_b = (self._concat_boundary_idx or 0) + 1
-                if next_b <= #self._concat_split_points
-                        and adjusted >= self._concat_split_points[next_b] then
-                    self._concat_boundary_idx = next_b
-                    switched = true
-                else
-                    break
-                end
-            end
-            if switched then
-                local bi = self._concat_boundary_idx
-                local next_sent = self._concat_sentences[bi]
-                sentence = next_sent
-                self.current_sentence = next_sent
-                self.current_sentence_index = next_sent.index
-                self.current_word_index = 0
-                logger.warn("SyncController: Concat boundary → sentence", next_sent.index)
-                -- Skip the separate clearHighlights() call — highlightSentence()
-                -- already clears the old selection internally.  Calling both
-                -- triggers TWO e-ink refreshes in rapid succession, which
-                -- causes enough CPU load on ARM to starve the audio pipeline.
-                if self.plugin and self.plugin:getSetting("highlight_sentences", true) then
-                    pcall(self.highlightCurrentSentence, self, next_sent)
-                else
-                    self.highlight_manager:clearHighlights()
-                end
-                if self.playback_bar then
-                    self.playback_bar:updateProgress(self:getProgress())
-                end
-                -- When we reach the last 2 sentences, trigger next-page prefetch
-                if bi >= #self._concat_sentences - 1 and not self._next_page_prefetched then
-                    self:_prefetchNextPage()
-                end
-            end
-        end
-
-        -- Time offset for word lookup within the active concat sentence.
-        -- Always read from self.current_sentence so that after rotation
-        -- remapping the sync loop uses the fresh-parse sentence object.
-        local active_sentence = self.current_sentence or sentence
-        local time_offset = 0
-        if self._concat_boundary_idx and self._concat_boundary_idx > 0
-                and self._concat_split_points then
-            time_offset = self._concat_split_points[self._concat_boundary_idx]
-        end
-
-        -- Find current word in the active sentence by time
-        if adjusted > 0 then
-            local word_time = adjusted - time_offset
-            for _, word in ipairs(active_sentence.words) do
-                if word.start_time and word.end_time then
-                    if word_time >= word.start_time and word_time < word.end_time then
-                        if word.index ~= self.current_word_index then
-                            self:highlightCurrentWord(word)
-                        end
-                        break
-                    end
-                end
-            end
-        end
-
-        -- Update playback bar
-        self:updatePlaybackBar()
-
-        -- Continue loop (20Hz is plenty for e-ink word highlighting)
-        UIManager:scheduleIn(0.05, syncUpdate)
-    end
-
-    UIManager:scheduleIn(0.05, syncUpdate)
-end
-
---[[--
-Highlight the current word.
-@param word table Word object
---]]
-function SyncController:highlightCurrentWord(word)
-    if not word then
-        return
-    end
-
-    self.current_word_index = word.index
-
-    -- Android synthesizeToFile has no word timestamps, so estimated word
-    -- boxes would drift off the spoken text on neural engines.  Keep the
-    -- sentence-level underline only (skipping keeps estimated word boxes
-    -- from being treated as truth; rolling platforms paint the real word
-    -- box from the cached line map instead).
-    local android_tts = self.tts_engine
-        and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
-    if not android_tts
-        and self.plugin and self.plugin:getSetting("highlight_words", true) then
-        self.highlight_manager:highlightWord(word, self.parsed_data)
-    end
-end
-
---[[--
-Highlight the current sentence.
-@param sentence table Sentence object
---]]
---- Where the page being read starts: an xpointer for reflowable books, a
---- page number for fixed-layout ones.  Recorded on every start() (page turns
---- included), used by the «○» button.
-function SyncController:_rememberReadingPosition()
-    self._reading_xp, self._reading_page = nil, nil
-    local ui = self.plugin and self.plugin.ui
-    if not (ui and ui.document) then return end
-    pcall(function()
-        if ui.rolling and ui.document.getXPointer then
-            self._reading_xp = ui.document:getXPointer()
-        elseif ui.getCurrentPage then
-            self._reading_page = ui:getCurrentPage()
-        end
-    end)
-end
-
---- Bring the view back to the page being read and repaint the sentence.
-function SyncController:refocusToReading()
-    local ui = self.plugin and self.plugin.ui
-    if not ui then return end
-    local moved = pcall(function()
-        if self._reading_xp and ui.rolling then
-            ui.rolling:onGotoXPointer(self._reading_xp, self._reading_xp)
-        elseif self._reading_page then
-            ui:handleEvent(Event:new("GotoPage", self._reading_page))
-        end
-    end)
-    logger.warn("SyncController: Refocus to reading position, moved=", moved)
-    -- The view the sentence was read on is restored exactly; repaint its
-    -- highlight once CRe has re-rendered (retry while the page is settling).
-    local sentence = self.current_sentence
-    if not sentence then return end
-    local tries = 0
-    local function paint()
-        if self.current_sentence ~= sentence then return end
-        if self.state ~= self.STATE.PLAYING and self.state ~= self.STATE.PAUSED then return end
-        tries = tries + 1
-        pcall(self.highlightCurrentSentence, self, sentence)
-        local shown = self.highlight_manager and self.highlight_manager:hasHighlights()
-        if not shown and tries < 5 then
-            UIManager:scheduleIn(0.3, paint)
-        end
-    end
-    UIManager:scheduleIn(0.3, paint)
-end
-
-function SyncController:highlightCurrentSentence(sentence)
-    if not sentence then
-        return
-    end
-
-    self.current_sentence_index = sentence.index
-    -- Screen off / another app in front: nothing to see, no repaint; the sentence is painted on return.
-    if self.plugin and self.plugin._app_in_background then return end
-    self.highlight_manager:highlightSentence(sentence, self.parsed_data)
-end
-
---[[--
-Advance to the next page and continue reading.
---]]
-function SyncController:advanceToNextPage()
-    if not self.plugin or not self.plugin.ui then
-        self:stop()
-        return
-    end
-
-    -- Mark as loading during page transition
-    self.state = self.STATE.LOADING
-    self._chain_generation = (self._chain_generation or 0) + 1
-    self.highlight_manager:clearHighlights()
-
-    local ui = self.plugin.ui
-    local before = ""
-    local before_xp
-    pcall(function()
-        before = Utils.ws(self.plugin:getCurrentPageText() or "")
-        if ui.document and ui.document.getXPointer then
-            before_xp = ui.document:getXPointer()
-        end
-    end)
-
-    ui:handleEvent(Event:new("GotoViewRel", 1))
-
-    -- Read by position: the view moved once its position did; no waiting for two equal screen extracts.
-    if self:_xpMode() then
-        self._next_page_text = nil
-        self._next_page_prefetched = false
-        self._page_turn_gen = (self._page_turn_gen or 0) + 1
-        local xgen = self._page_turn_gen
-        local tries = 0
-        local function tryXp()
-            if self.state == self.STATE.STOPPED or self._page_turn_gen ~= xgen then return end
-            local after_xp
-            pcall(function() after_xp = ui.document:getXPointer() end)
-            if after_xp and after_xp ~= before_xp then
-                dlog("xp", "turn", tries)
-                self:start("", { xp_turned = true })
-                return
-            end
-            tries = tries + 1
-            if tries < 15 then
-                UIManager:scheduleIn(0.1, tryXp)
-            else
-                dlog("page-turn-stuck", "xp")
-                logger.warn("SyncController: Page turn did not change the view")
-                self:stop()
-            end
-        end
-        UIManager:scheduleIn(0.05, tryXp)
-        return
-    end
-
-    -- Never start() from peeked text: peekNextPageText can return the page
-    -- we just finished, which re-reads it.  Do not issue a second GotoViewRel
-    -- while waiting: a lagging text snapshot would skip a page the reader
-    -- already turned.
-    self._next_page_text = nil
-    self._next_page_prefetched = false
-    self._wrap_peek_text = nil
-    self._wrap_peek_view = nil
-    self._page_turn_gen = (self._page_turn_gen or 0) + 1
-    local gen = self._page_turn_gen
-
-    -- CRE often returns the new view without the first line(s) on the first
-    -- read. Wait until two captures match, always keeping the longest.
-    local best_text
-    local stable = 0
-
-    local function tryStart(attempt)
-        if self.state == self.STATE.STOPPED then return end
-        if self._page_turn_gen ~= gen then return end
-        local text = self.plugin:getCurrentPageText()
-        local after = Utils.ws(text or "")
-        local after_xp
-        pcall(function()
-            if ui.document and ui.document.getXPointer then
-                after_xp = ui.document:getXPointer()
-            end
-        end)
-        local xp_moved = before_xp and after_xp and after_xp ~= before_xp
-        if after == "" or (before ~= "" and after == before) then
-            if attempt < 8 then
-                dlog("page-turn-same", attempt)
-                UIManager:scheduleIn(0.2, function()
-                    tryStart(attempt + 1)
-                end)
-                return
-            end
-            if not (xp_moved and after ~= "") then
-                dlog("page-turn-stuck")
-                logger.warn("SyncController: Page turn did not change the view")
-                self:stop()
-                return
-            end
-            dlog("page-turn-xp-stale", attempt)
-        end
-        if best_text and Utils.ws(best_text) == after then
-            stable = stable + 1
-        else
-            if not best_text or #after > #Utils.ws(best_text) then
-                best_text = text
-            end
-            stable = 0
-            dlog("page-turn-settle", attempt, "n", #after)
-        end
-        if stable < 1 and attempt < 10 then
-            UIManager:scheduleIn(0.2, function()
-                tryStart(attempt + 1)
-            end)
-            return
-        end
-        dlog("page-turn-ok", "attempt", attempt, "n", #(best_text or text or ""))
-        self:start(best_text or text)
-    end
-
-    UIManager:scheduleIn(0.3, function()
-        tryStart(1)
-    end)
-end
-
---[[--
-Pause playback.
-@param auto bool  true when called by the overlay auto-pause logic
---]]
---- Tell Android (media session) whether we play: a pause from the bar used to leave it «playing».
-function SyncController:_publishPlaying(playing)
-    local p = self.plugin
-    if not p then return end
-    local f = playing and p.notifyAudioPlaying or p.notifyAudioPaused
-    if f then pcall(f, p) end
-end
-
-function SyncController:pause(auto)
-    if self.state == self.STATE.PLAYING then
-        self:_publishPlaying(false)
-        self.state = self.STATE.PAUSED
-        self.pause_time = UIManager:getTime()
-        self.tts_engine:pause()
-
-        -- Track whether the pause originated from a user action (button tap)
-        -- vs the automatic overlay detector.  On overlay close we only
-        -- auto-resume when the user did NOT explicitly pause.
-        if not auto then
-            self._user_paused = true
-        end
-        self:_ttsMarkPause()
-
-        if self.playback_bar then
-            self.playback_bar:updatePlayState(false)
-        end
-        self:_applyBarVisibility()
-
-        logger.dbg("SyncController: Paused (auto=", auto, ", user_paused=", self._user_paused, ")")
-    end
-end
-
---[[--
-Resume playback.
-@param auto bool  true when called by the overlay auto-resume logic
---]]
-function SyncController:resume(auto)
-    if self.state == self.STATE.PAUSED then
-        -- If this is an auto-resume (overlay closed) but the user had
-        -- explicitly paused, stay paused.
-        if auto and self._user_paused then
-            logger.dbg("SyncController: Skipping auto-resume — user paused")
-            return
-        end
-
-        self.state = self.STATE.PLAYING
-        self:_publishPlaying(true)
-        -- Clear the user-paused flag on any successful resume
-        self._user_paused = false
-
-        -- Android TTS: start the interrupted sentence again from its first
-        -- word (setting "resume_sentence_start", default on).  The engine
-        -- usually still holds that sentence's audio, so it starts at once.
-        local sentence = self.current_sentence
-        if sentence and sentence.index
-                and self.tts_engine and self.tts_engine.backend == self.tts_engine.BACKENDS.ANDROID
-                and not self._concat_sentences
-                and (self:_queueMode() or not self.plugin or self.plugin:getSetting("resume_sentence_start", true)) then
-            logger.warn("SyncController: Resuming sentence", sentence.index, "from its start")
-            self._chain_generation = (self._chain_generation or 0) + 1
-            pcall(function() self.tts_engine:stop() end)
-            pcall(function() self.highlight_manager:clearHighlights() end)
-            self.reading_sentence_idx = sentence.index - 1
-            self._highest_dispatched_idx = sentence.index - 1
-            self:_ttsMarkPlay()
-            if self.playback_bar then
-                self.playback_bar:updatePlayState(true)
-            end
-            self:_applyBarVisibility()
-            self:readNextSentence()
-            return
-        end
-
-        -- Adjust sentence sync start to account for pause duration
-        if self.sentence_sync_start and self.pause_time then
-            local pause_duration = UIManager:getTime() - self.pause_time
-            self.sentence_sync_start = self.sentence_sync_start + pause_duration
-        end
-
-        self.tts_engine:resume()
-        self:_ttsMarkPlay()
-
-        if self.playback_bar then
-            self.playback_bar:updatePlayState(true)
-        end
-        self:_applyBarVisibility()
-
-        -- Re-apply sentence highlight — CRe's native selection is wiped
-        -- whenever the page redraws (e.g. after rotation), so we must
-        -- repaint it.
-        if self.current_sentence
-                and self.plugin
-                and self.plugin:getSetting("highlight_sentences", true) then
-            local sentence = self.current_sentence
-            UIManager:scheduleIn(0.15, function()
-                pcall(self.highlightCurrentSentence, self, sentence)
-            end)
-        end
-        -- Reset current_word_index so the sync loop's "changed?" check
-        -- will fire again and re-highlight the current word.
-        self.current_word_index = 0
-
-        -- Restart the sync loop for the current sentence.
-        -- Set _resuming_sync so startSentenceSyncLoop doesn't reset
-        -- the timing anchor that we just adjusted for pause duration.
-        -- For the persistent BT pipeline add a short delay so gst-launch
-        -- has time to drain the FIFO and the MTK sink stabilises before
-        -- we start advancing word highlights.
-        if self.current_sentence then
-            self._resuming_sync = true
-            local delay = (self.tts_engine and self.tts_engine._persistent_pipeline)
-                and 0.25 or 0
-            UIManager:scheduleIn(delay, function()
-                if self.state == self.STATE.PLAYING then
-                    self:startSentenceSyncLoop(self.current_sentence)
-                end
-            end)
-        end
-
-        logger.warn("SyncController: Resumed")
-    end
-end
-
---[[--
-Toast while the first System TTS / Piper clip is still synthesizing.
-Cancelled as soon as audio starts.  A second toast at 12s explains that
-on-device neural engines can be too slow on this hardware.
---]]
-function SyncController:_ttsWaitEngineLabel()
-    local engine = self.tts_engine
-    if not engine then return _("TTS") end
-    local B = engine.BACKENDS
-    if engine.backend == B.PIPER then
-        return _("Piper")
-    end
-    if engine.backend == B.ANDROID and engine.androidEngineDisplayName then
-        local name = engine:androidEngineDisplayName()
-        if name and name ~= "" then
-            return T(_("System TTS (%1)"), name)
-        end
-        return _("System TTS")
-    end
-    return _("TTS")
-end
-
-function SyncController:_armTtsWaitUi()
-    self:_disarmTtsWaitUi()
-    local engine = self.tts_engine
-    if not engine then return end
-    local B = engine.BACKENDS
-    if engine.backend ~= B.ANDROID
-        and engine.backend ~= B.PIPER then
-        return
-    end
-    local name = self:_ttsWaitEngineLabel()
-    self._tts_wait_engine_label = name
-    local InfoMessage = require("ui/widget/infomessage")
-    UIManager:show(InfoMessage:new{
-        text = T(_("Starting %1, please wait…"), name),
-        timeout = 3,
-    })
-    local controller = self
-    self._tts_wait_slow_fn = function()
-        controller._tts_wait_slow_fn = nil
-        if controller._tts_heard_audio or controller.state == controller.STATE.STOPPED then
-            return
-        end
-        UIManager:show(InfoMessage:new{
-            text = T(_("Still waiting for %1 after 12 seconds.\n\nOn-device neural voices (SherpaTTS, VoxSherpa TTS, and similar) often run slower than real time on this e-reader. If nothing plays, this device is probably not suited to that TTS engine; try another system voice."),
-                controller._tts_wait_engine_label or name),
-            timeout = 10,
-        })
-    end
-    UIManager:scheduleIn(12, self._tts_wait_slow_fn)
-end
-
-function SyncController:_disarmTtsWaitUi()
-    if self._tts_wait_slow_fn then
-        UIManager:unschedule(self._tts_wait_slow_fn)
-        self._tts_wait_slow_fn = nil
-    end
-end
-
---[[--
-Android TTS (VoxSherpa / Sherpa / Pico) failed.  One miss can be a
-page-turn race (stale onError after a stop). Retry the same sentence
-instead of skipping it.  Several real failures in a row usually means
-the engine process was killed — stop rather than racing the book.
---]]
-function SyncController:_onAndroidSynthFailed(reason)
-    self:_disarmTtsWaitUi()
-    self._android_tts_fail_count = (self._android_tts_fail_count or 0) + 1
-    logger.warn("SyncController: Android TTS failed (", reason, ") count=",
-        self._android_tts_fail_count)
-    local timed_out = (type(reason) == "string" and reason:find("timeout", 1, true))
-        or (self.tts_engine and self.tts_engine._android_synth_timeout)
-    if self.tts_engine then
-        self.tts_engine._android_synth_timeout = nil
-    end
-    local InfoMessage = require("ui/widget/infomessage")
-    if timed_out then
-        local name = self._tts_wait_engine_label or self:_ttsWaitEngineLabel()
-        UIManager:show(InfoMessage:new{
-            text = T(_("No audio from %1 after a long wait.\n\nThis e-reader is probably too slow for that on-device neural engine. Open the TTS app once, or switch to another system voice."),
-                name),
-            timeout = 12,
-        })
-        self:stop()
-        return
-    end
-    -- The engine process restarted (app update, memory reclaim): the old
-    -- connection never recovers, so bind again before giving up.  At most
-    -- twice per failure streak; a success resets both counters.
-    if self._android_tts_fail_count >= 2 and (self._android_reconnects or 0) < 2
-            and self.tts_engine and self.tts_engine.reconnectAndroidTts then
-        local controller = self
-        local engine = self.tts_engine
-        local gen = self._chain_generation or 0
-        local now = os.time()
-        -- Рвём соединение не сразу: старый экземпляр синтезатора должен успеть закрыться, иначе
-        -- система снимает процесс читалки нативным вызовом в уже разорванное соединение
-        -- (два подряд пустых клипа и мгновенный реконнект совпали с падением KOReader).
-        if now - (self._android_last_reconnect or 0) >= 10 then
-            self._android_last_reconnect = now
-            self._android_reconnects = (self._android_reconnects or 0) + 1
-            self._android_tts_fail_count = 0
-            UIManager:scheduleIn(2, function()
-                if (controller._chain_generation or 0) ~= gen then return end
-                local ok, res = pcall(function() return engine:reconnectAndroidTts() end)
-                logger.warn("SyncController: Android TTS reconnect", controller._android_reconnects,
-                    "ok=", ok, res)
-            end)
-        end
-    elseif self._android_tts_fail_count >= 4 then
-        UIManager:show(InfoMessage:new{
-            text = _("The Android TTS engine stopped. Neural voices can be killed for memory; open the TTS app once, then start read-aloud again."),
-            timeout = 10,
-        })
-        self:stop()
-        return
-    end
-    -- readNextSentence already incremented the index; retry this sentence.
-    if self.reading_sentence_idx and self.reading_sentence_idx > 0 then
-        self.reading_sentence_idx = self.reading_sentence_idx - 1
-        -- Lower the dispatched watermark so the retry passes the
-        -- backward-jump guard in readNextSentence: the failed attempt
-        -- recorded this index as dispatched, and the guard would otherwise
-        -- reject re-dispatching it (silent dead end).
-        self._highest_dispatched_idx = self.reading_sentence_idx
-    end
-    UIManager:scheduleIn(0.35, function()
-        if self.state == self.STATE.STOPPED then return end
-        self:readNextSentence()
-    end)
-end
-
---[[--
-Play a sentence via the espeak fallback instead of dropping it.  Used when
-Piper fails or times out for a sentence: silently skipping book content is
-the worst possible failure mode, so degrade the voice instead.  Falls
-through to readNextSentence() only when espeak is unavailable or fails.
-@param sentence table
-@param reason string  Log context
-@return boolean  true when the sentence is being played via espeak
---]]
-function SyncController:_playViaEspeakOrSkip(sentence, reason)
-    if self.tts_engine and self.tts_engine.espeak_bin then
-        logger.warn("SyncController: espeak fallback for sentence",
-            self.reading_sentence_idx, "(", reason, ")")
-        local fb_file = self.tts_engine:espeakSynthesizeFallback(sentence.text)
-        if fb_file then
-            self._espeak_fallback_count = (self._espeak_fallback_count or 0) + 1
-            self:_checkPiperRtfEscalation()
-            self:_checkPiperAbandon()
-            self:applySentenceTiming(sentence, self.tts_engine.timing_data)
-            self:beginSentencePlayback(sentence)
-            return true
-        end
-        logger.warn("SyncController: espeak fallback failed (", reason,
-            "), skipping sentence")
-    else
-        logger.warn("SyncController: no espeak fallback available (", reason,
-            "), skipping sentence")
-    end
-    self:readNextSentence()
-    return false
-end
-
---[[--
-RTF auto-degrade escalation.  PiperQueue's rolling realtime factor tells us
-when synthesis is slower than playback and no amount of buffering will fix
-the stall pattern:
-
-  stage 0 → 1: apply low-resource mode and aggressive sentence splitting
-               for the session, with a message explaining what changed.
-               If the user already enabled both settings, there is nothing
-               left to apply and we go straight to stage 2.
-  stage 1 → 2: after PIPER_RTF_STAGE2_SAMPLES more batches are still above
-               threshold, switch to espeak for the rest of the session.
-
-Both stages are session-scoped: the user's saved settings are never
-modified, and Piper is tried again on the next playback session.
---]]
-function SyncController:_checkPiperRtfEscalation()
-    if self._piper_abandoned then return end
-    if not self.tts_engine or not self.tts_engine._piper then return end
-    if self.tts_engine.backend ~= self.tts_engine.BACKENDS.PIPER and self.tts_engine.backend ~= self.tts_engine.BACKENDS.SANOTTS then return end
-    local pq = self.tts_engine._piper
-    local rtf = pq:getRtf()
-    if not rtf or rtf < PIPER_RTF_DEGRADE_THRESHOLD then return end
-
-    local stage = self._piper_degrade_stage or 0
-    local InfoMessage = require("ui/widget/infomessage")
-
-    if stage == 0 then
-        local already_low   = self.tts_engine:_piperLowResource()
-        local already_split = self.tts_engine:_piperAggressiveSplit()
-        if already_low and already_split then
-            -- Nothing left to apply: the user already runs both mitigations
-            -- and Piper still cannot keep up.  Skip stage 1: set the stage
-            -- marker so the window check below passes immediately and we
-            -- fall through to stage 2 in this same call.
-            stage = 1
-            self._piper_degrade_stage = 1
-            self._piper_degrade_mark = pq:getRtfSampleCount() - PIPER_RTF_STAGE2_SAMPLES
-        else
-            if not already_low then self.tts_engine._session_low_resource = true end
-            if not already_split then self.tts_engine._session_split_long = true end
-            self._piper_degrade_stage = 1
-            self._piper_degrade_mark = pq:getRtfSampleCount()
-            local applied = {}
-            if not already_low then table.insert(applied, _("low-resource mode")) end
-            if not already_split then table.insert(applied, _("sentence splitting")) end
-            logger.warn("SyncController: Piper RTF degrade stage 1, rtf=",
-                string.format("%.2f", rtf), "applied:", table.concat(applied, ", "))
-            UIManager:show(InfoMessage:new{
-                text = T(_("Piper is synthesizing slower than playback (%1x realtime).\nApplying %2 to compensate (this session only)."),
-                    string.format("%.1f", rtf), table.concat(applied, " + ")),
-                timeout = 8,
-            })
-            return
-        end
-    end
-
-    if stage == 1 then
-        -- Give the stage-1 mitigations a fair window before concluding
-        -- they are insufficient.
-        if (pq:getRtfSampleCount() - (self._piper_degrade_mark or 0))
-                < PIPER_RTF_STAGE2_SAMPLES then
-            return
-        end
-        self._piper_degrade_stage = 2
-        logger.warn("SyncController: Piper RTF degrade stage 2, rtf=",
-            string.format("%.2f", rtf), "— espeak session fallback")
-        self._piper_abandoned = true
-        pcall(function() pq:shutdown() end)
-        self:_setPiperQueueAbandoned(true)
-        UIManager:show(InfoMessage:new{
-            text = _("This device is too slow for Piper voices.\nSwitching to espeak for this session.\nPiper will be tried again the next time you start playback."),
-            timeout = 8,
-        })
-    end
-end
-
---[[--
-Check whether Piper should be abandoned while espeak fallbacks carry the
-session.  Two triggers: too many consecutive espeak fallbacks, or a
-zero-delivery timeout when Piper has not completed a single synthesis
-batch after PIPER_ZERO_DELIVERY_ABANDON_S (its server keeps stealing CPU
-from espeak on hopeless devices, issue #49).  Shows a one-time warning,
-kills the Piper server to free CPU, and switches the session to
-espeak-only mode.  Session-scoped only: Piper is tried again on the next
-playback session, and the user's engine setting is never modified.
-Called from espeak fallback success paths in readNextSentence().
---]]
---- Mirror the session-level Piper abandon onto the prefetch queue so it
---- stops launching servers and queueing batches (the queue object itself
---- has no session knowledge).  Cleared from stop() so the next playback
---- start tries Piper again.
-function SyncController:_setPiperQueueAbandoned(flag)
-    if self.tts_engine and self.tts_engine._piper then
-        pcall(function() self.tts_engine._piper:setAbandoned(flag) end)
-    end
-end
-
-function SyncController:_checkPiperAbandon()
-    if self._piper_abandoned then return end
-    if not self.tts_engine or not self.tts_engine._piper then return end
-
-    -- Remember when espeak first had to carry the session on its own
-    if not self._piper_first_fallback_at then
-        self._piper_first_fallback_at = UIManager:getTime()
-    end
-
-    local reason
-    if (self._espeak_fallback_count or 0) >= PIPER_ABANDON_THRESHOLD then
-        reason = T(_("it still had not produced any audio after %1 espeak sentences"),
-            tostring(self._espeak_fallback_count))
-    elseif self.tts_engine._piper:getRtfSampleCount() == 0
-            and time.to_s(UIManager:getTime() - self._piper_first_fallback_at)
-                >= PIPER_ZERO_DELIVERY_ABANDON_S then
-        reason = T(_("it still had not produced any audio after %1 minutes of espeak fallback"),
-            tostring(math.floor(PIPER_ZERO_DELIVERY_ABANDON_S / 60)))
-    end
-    if not reason then return end
-
-    self._piper_abandoned = true
-    logger.warn("SyncController: Abandoning Piper:", reason, "-- killing servers")
-    pcall(function() self.tts_engine._piper:shutdown() end)
-    self:_setPiperQueueAbandoned(true)
-
-    -- Show a non-blocking warning so the user understands what happened
-    local InfoMessage = require("ui/widget/infomessage")
-    UIManager:show(InfoMessage:new{
-        text = T(_("Piper neural TTS could not keep up on this device: %1.\n\nSwitching to espeak for the rest of this session. Piper will be tried again the next time you start playback. To keep espeak permanently, select it in:\n  Audiobook > Voice settings > TTS engine"),
-            reason),
-        timeout = 10,
-    })
-end
-
---[[--
-Stop playback completely.
---]]
-function SyncController:stop(opts)
-    -- Log at WARN level with traceback when stopping from an active state
-    -- so we can diagnose unexpected stops (e.g. "Chain BLOCKED" on Kindle).
-    -- Mirror the reason into the plugin debug log: bug reports usually
-    -- attach debug.log rather than KOReader's crash.log, and this line
-    -- carries the state the crash log would only show (issue #96).
-    if self.state ~= self.STATE.STOPPED then
-        local trace = debug.traceback("", 2)
-        logger.warn("SyncController: stop() from state=", self.state,
-            "sentence=", self.reading_sentence_idx, "/", self.total_sentences,
-            "caller:", trace)
-        dlog("stop", "from_state", self.state,
-            "idx", self.reading_sentence_idx, "total", self.total_sentences,
-            "android_fails", self._android_tts_fail_count or 0,
-            "player_error", self.tts_engine and self.tts_engine.player_error or "none",
-            "slot_hits", self._android_slot_hits or 0,
-            "ondemand", self._android_ondemand or 0,
-            "lookahead_waits", self._android_lookahead_waits or 0,
-            "lookahead_wait_ms", self._android_lookahead_wait_ms or 0,
-            "lookahead_disabled", self.tts_engine
-                and self.tts_engine._android_prefetch_session_disabled or false)
-    end
-    self.state = self.STATE.STOPPED
-
-    -- Cancel any pending next-sentence timer so a stale closure cannot
-    -- fire after stop (or worse, after a *new* session has started).
-    if self._pending_chain_func then
-        UIManager:unschedule(self._pending_chain_func)
-        self._pending_chain_func = nil
-    end
-
-    if self.tts_engine then
-        pcall(function() self.tts_engine:stop() end)
-    end
-    if self.highlight_manager then
-        pcall(function() self.highlight_manager:clearHighlights() end)
-    end
-
-    -- Keep the playback bar visible in the stopped state: it shows what
-    -- happened and its play button restarts from the current page.  A
-    -- mid-book stop that removed the whole UI looked like a crash (issue
-    -- #96, persistent PCM stream).  Only the explicit close paths pass
-    -- hide_bar (the bar's own close button, and the full teardown in
-    -- Audiobook:stopReadAlong), and those hide it themselves.
-    if opts and opts.hide_bar then
-        pcall(function() self:hidePlaybackBar() end)
-    else
-        pcall(function()
-            if self.playback_bar then
-                self.playback_bar:updatePlayState(false)
-            end
-        end)
-    end
-
-    self.parsed_data = nil
-    self.current_word_index = 0
-    self.current_sentence_index = 0
-    self.reading_sentence_idx = 0
-    self._highest_dispatched_idx = nil
-    self._piper_warmed_up = false
-    self._piper_abandoned = false
-    self:_setPiperQueueAbandoned(false)
-    self._espeak_fallback_count = 0
-    self._piper_first_fallback_at = nil
-    self._piper_degrade_stage = 0
-    self._piper_degrade_mark = nil
-    -- Session-scoped auto-degrade flags end with the session; the user's
-    -- saved settings are never touched.
-    if self.tts_engine then
-        self.tts_engine._session_low_resource = nil
-        self.tts_engine._session_split_long = nil
-    end
-    self.total_sentences = 0
-    self.current_sentence = nil
-    self.sentence_sync_start = nil
-    self.pause_time = nil
-    self.reading_page_xpointer = nil
-    self._user_paused = false
-    self._auto_paused_by_overlay = false
-    self._latency_locked = false
-    self._locked_latency_ms = nil
-    self._next_page_text = nil
-    self._next_page_prefetched = false
-    self._wrap_peek_text = nil
-    self._wrap_peek_view = nil
-    self._tts_carry_skip = nil
-    self._spoken_norm = nil
-    self._empty_skip_advances = nil
-    self._page_turn_gen = (self._page_turn_gen or 0) + 1
-    self:_disarmTtsWaitUi()
-    self._tts_session_warm = false
-    self._tts_heard_audio = false
-    self._android_tts_fail_count = 0
-    self._last_screen_w = nil
-    self._last_screen_h = nil
-    self._rotated_during_playback = false
-    self._first_play_sentence_text = nil
-    self:_cleanConcatFiles()
-    self:_queueReset()
-
-    logger.warn("SyncController: Stopped")
-end
-
---[[--
-Restart read-aloud from the top of the currently shown page after a stop.
-The playback bar stays visible in the stopped state, and its play button
-routes here.  Reads whatever page is on screen, so turning the page first
-moves the restart point forward.
---]]
-function SyncController:restartFromStopped()
-    if self.state ~= self.STATE.STOPPED then return end
-    local text = self.plugin and self.plugin.getCurrentPageText
-        and self.plugin:getCurrentPageText()
-    if not text or text == "" then
-        logger.warn("SyncController: restartFromStopped: no page text available")
-        return
-    end
-    logger.warn("SyncController: restarting read-aloud from the current page")
-    self:start(text)
-end
-
---[[--
-Jump to next sentence.
---]]
-function SyncController:nextSentence()
-    if not self.parsed_data or self.state == self.STATE.STOPPED then
-        return
-    end
-
-    -- If we're mid-concat, advance reading index to the sentence currently
-    -- being heard so readNextSentence skips past it.
-    if self._concat_sentences and self._concat_boundary_idx
-            and self._concat_boundary_idx > 0 then
-        self.reading_sentence_idx = self._concat_sentences[self._concat_boundary_idx].index
-    end
-
-    self:_cleanConcatFiles()
-    pcall(function() self.tts_engine:stop() end)
-    self.highlight_manager:clearHighlights()
-
-    -- User-initiated jump: reset backward-jump guard
-    self._highest_dispatched_idx = nil
-    -- readNextSentence() increments the index and starts the next one
-    self:readNextSentence()
-end
-
---[[--
-Jump to previous sentence.
---]]
---- When each sentence of this page began to sound (for «back N seconds»).
-function SyncController:_noteHeard(sentence)
-    if not sentence or not sentence.index then return end
-    self._heard = self._heard or {}
-    local last = self._heard[#self._heard]
-    if last and last.idx == sentence.index and last.gen == self._page_gen then return end
-    table.insert(self._heard, { idx = sentence.index, t = time.to_s(UIManager:getTime()), gen = self._page_gen,
-        chars = sentence.text and select(2, sentence.text:gsub("[^\128-\191]", "")) or 0 })
-    while #self._heard > 60 do table.remove(self._heard, 1) end
-end
-
---- Back about [seconds] of listening: to the sentence that was sounding then (a headset «previous» press — the
---- listener missed something).  A pause does not count: each sentence counts at most 30 s.  Before this page's
---- first sentence it goes to that sentence.
-function SyncController:rewind(seconds)
-    if not self.parsed_data or self.state == self.STATE.STOPPED then return end
-    local heard = self._heard or {}
-    local now = time.to_s(UIManager:getTime())
-    local target, back, later = nil, 0, now
-    for i = #heard, 1, -1 do
-        local h = heard[i]
-        if h.gen ~= self._page_gen then break end
-        back = back + math.min(30, math.max(0, later - h.t))
-        target = h.idx
-        later = h.t
-        if back >= seconds then break end
-    end
-    target = target or self.reading_sentence_idx or 1
-    logger.warn("SyncController: rewind", seconds, "s to sentence", target)
-    self:_cleanConcatFiles()
-    pcall(function() self.tts_engine:stop() end)
-    self.highlight_manager:clearHighlights()
-    self._highest_dispatched_idx = nil
-    self.reading_sentence_idx = math.max(0, target - 1)
-    -- Paused: resume from there.
-    if self.state == self.STATE.PAUSED then
-        self.state = self.STATE.PLAYING
-        self._user_paused = false
-        self:_ttsMarkPlay()
-        if self.playback_bar then self.playback_bar:updatePlayState(true) end
-        pcall(function() self:_applyBarVisibility() end)
-    end
-    self:readNextSentence()
-end
-
---- Characters read per second, as measured on the sentences heard (a pause, over 30 s, does not count); nil until
---- a minute of reading.  Follows the engine's real speed (MyTTS's own speed setting included).
-function SyncController:charsPerSecond()
-    local heard = self._heard or {}
-    local chars, secs = 0, 0
-    for i = 1, #heard - 1 do
-        local d = heard[i + 1].t - heard[i].t
-        if d > 0 and d <= 30 then chars = chars + (heard[i].chars or 0); secs = secs + d end
-    end
-    if secs < 60 then return nil end
-    return chars / secs
-end
-
-function SyncController:prevSentence()
-    if not self.parsed_data or self.state == self.STATE.STOPPED then
-        return
-    end
-
-    -- If mid-concat, figure out which sentence we're currently hearing
-    local current_idx = self.reading_sentence_idx
-    if self._concat_sentences and self._concat_boundary_idx
-            and self._concat_boundary_idx > 0 then
-        current_idx = self._concat_sentences[self._concat_boundary_idx].index
-    end
-
-    self:_cleanConcatFiles()
-    pcall(function() self.tts_engine:stop() end)
-    self.highlight_manager:clearHighlights()
-
-    -- User-initiated jump: reset backward-jump guard
-    self._highest_dispatched_idx = nil
-    -- Go back 2 because readNextSentence() will increment by 1
-    self.reading_sentence_idx = math.max(0, current_idx - 2)
-    self:readNextSentence()
-end
-
---[[--
-Update text when page changes externally.
-@param text string New page text
---]]
-function SyncController:updateText(text)
-    -- Restart with new text (preserves playback bar)
-    self:start(text)
-end
-
---[[--
-Check if currently playing.
-@return boolean
---]]
-function SyncController:isPlaying()
-    return self.state == self.STATE.PLAYING
-end
-
---[[--
-Check if currently paused.
-@return boolean
---]]
-function SyncController:isPaused()
-    return self.state == self.STATE.PAUSED
-end
-
---[[--
-Check if stopped.
-@return boolean
---]]
-function SyncController:isStopped()
-    return self.state == self.STATE.STOPPED
-end
-
---[[--
-Get current playback time within current sentence (ms).
-@return number
---]]
-function SyncController:getPlaybackTime()
-    if self.sentence_sync_start then
-        return time.to_ms(UIManager:getTime() - self.sentence_sync_start)
-    end
-    return 0
-end
-
---[[--
-Get current word index.
-@return number
---]]
-function SyncController:getCurrentWordIndex()
-    return self.current_word_index
-end
-
---[[--
-Get current sentence index.
-@return number
---]]
-function SyncController:getCurrentSentenceIndex()
-    return self.current_sentence_index
-end
-
---[[--
-Get total duration (not applicable for sentence-by-sentence, returns 0).
-@return number
---]]
-function SyncController:getTotalDuration()
-    return 0
-end
-
---[[--
-Get progress as percentage (0-100).
-Based on how many sentences of the current page have been read.
-@return number
---]]
-function SyncController:getProgress()
-    if self.total_sentences > 0 then
-        -- During a concat pipeline, the reading_sentence_idx points to
-        -- sentence 1, but we may already be hearing sentence 5.  Use the
-        -- concat boundary index to show real progress.
-        local effective_idx = self.reading_sentence_idx
-        if self._concat_sentences and self._concat_boundary_idx
-                and self._concat_boundary_idx > 0 then
-            effective_idx = self._concat_sentences[self._concat_boundary_idx].index
-        end
-        return math.min(100, (effective_idx / self.total_sentences) * 100)
-    end
-    return 0
-end
-
--- Elapsed wall-clock of actual speech (pauses excluded), for the TTS bar's
--- time display.  Total is estimated as elapsed / progress once enough of
--- the page has been read to make the estimate meaningful.
 function SyncController:_ttsResetClock()
     self._tts_elapsed_acc = 0
     self._tts_play_t0 = UIManager:getTime()
@@ -3900,62 +1042,6 @@ function SyncController:_refreshTtsTimeUi()
     pcall(function() bar:updateTimeDisplay(elapsed, total) end)
 end
 
--- Apply an explicit TTS rate selected by the shared audiobook-player speed UI.
--- TTSEngine supports 0.25x..2.0x, which is intentionally narrower than the
--- aligned-audio player's 0.5x..3.0x range.
-function SyncController:setSpeechRate(speed)
-    speed = tonumber(speed) or 1.0
-    speed = math.max(0.25, math.min(2.0, speed))
-    if self.plugin and self.plugin.setSetting then
-        self.plugin:setSetting("speech_rate", speed)
-    end
-    if self.tts_engine and self.tts_engine.setRate then
-        self.tts_engine:setRate(speed)
-    end
-    if self.playback_bar and self.playback_bar.updateSpeed then
-        pcall(function() self.playback_bar:updateSpeed(speed) end)
-    end
-    -- Piper and sanoTTS apply the rate when they synthesize, so audio that is
-    -- already synthesized keeps the old speed.  The engine prefetches many
-    -- sentences ahead and concatenates up to ~30 s per group, so without this
-    -- the user hears no change for a long time and the control looks dead.
-    -- Re-read the current sentence at the new rate instead.  Only while
-    -- playing: restarting a paused session would start playback again.
-    if self.state == self.STATE.PLAYING then
-        pcall(function() self:_restartFromCurrentSentence() end)
-    end
-    return speed
-end
-
---[[--
-Drop the audio already synthesized at the old rate and start again from the
-sentence being spoken, so a mid-session speed (or voice) change is heard at
-once instead of after the prefetched queue and the current concat group drain.
-Mirrors the primitives seekToProgress uses.
---]]
-function SyncController:_restartFromCurrentSentence()
-    if not self.parsed_data or not self.total_sentences or self.total_sentences < 1 then
-        return
-    end
-    local target = (self.current_sentence and self.current_sentence.index)
-        or self.reading_sentence_idx
-    target = tonumber(target)
-    if not target or target < 1 then return end
-    if target > self.total_sentences then target = self.total_sentences end
-    logger.warn("SyncController: restarting at sentence", target,
-        "to apply the new speech rate")
-    self:_cleanConcatFiles()
-    pcall(function() self.tts_engine:stop() end)
-    if self.highlight_manager then
-        pcall(function() self.highlight_manager:clearHighlights() end)
-    end
-    self._highest_dispatched_idx = nil
-    -- readNextSentence() increments, so land on `target`.
-    self.reading_sentence_idx = target - 1
-    self:readNextSentence()
-end
-
--- Same rate list as the speech-rate picker in the TTS settings dialog.
 function SyncController:cycleSpeechRate()
     local speeds = {0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0}
     local plugin = self.plugin
@@ -3983,27 +1069,6 @@ function SyncController:setSpeechVolumePct(pct)
     end
 end
 
--- Scrub the page: pct (0-1) maps onto the sentence index, playback restarts
--- from that sentence.
-function SyncController:seekToProgress(pct)
-    if not self.parsed_data or not self.total_sentences or self.total_sentences < 1 then
-        return
-    end
-    pct = tonumber(pct) or 0
-    if pct < 0 then pct = 0 end
-    if pct > 1 then pct = 1 end
-    local target = math.max(1, math.min(self.total_sentences, math.floor(pct * self.total_sentences + 0.5)))
-    self:_cleanConcatFiles()
-    pcall(function() self.tts_engine:stop() end)
-    if self.highlight_manager then
-        pcall(function() self.highlight_manager:clearHighlights() end)
-    end
-    self._highest_dispatched_idx = nil
-    -- readNextSentence() increments, so land on `target`
-    self.reading_sentence_idx = target - 1
-    self:readNextSentence()
-end
-
 function SyncController:_documentToc()
     local ui = self.plugin and self.plugin.ui
     if not (ui and ui.document and ui.document.getToc) then return nil end
@@ -4012,51 +1077,6 @@ function SyncController:_documentToc()
     return nil
 end
 
-function SyncController:_gotoTocEntry(entry)
-    if not entry then return end
-    local ui = self.plugin and self.plugin.ui
-    if not ui then return end
-    if entry.xpointer and ui.rolling then
-        ui:handleEvent(Event:new("GotoXPointer", entry.xpointer))
-    elseif entry.page and ui.document and ui.document.gotoPage then
-        pcall(function() ui.document:gotoPage(entry.page, true) end)
-    end
-    local controller = self
-    UIManager:scheduleIn(0.35, function()
-        if controller.state == controller.STATE.STOPPED then return end
-        local text = controller.plugin and controller.plugin.getCurrentPageText
-            and controller.plugin:getCurrentPageText()
-        if text and text ~= "" then
-            controller:start(text)
-        end
-    end)
-end
-
-function SyncController:jumpTocRelative(delta)
-    local toc = self:_documentToc()
-    if not toc then
-        if delta > 0 then self:nextSentence() else self:prevSentence() end
-        return
-    end
-    local current_page
-    local ui = self.plugin and self.plugin.ui
-    if ui and ui.document and ui.document.getCurrentPage then
-        local ok, page = pcall(function() return ui.document:getCurrentPage() end)
-        if ok then current_page = page end
-    end
-    local idx = 1
-    if current_page then
-        for i, entry in ipairs(toc) do
-            if entry.page and entry.page <= current_page then
-                idx = i
-            end
-        end
-    end
-    idx = idx + delta
-    if idx < 1 then idx = 1 end
-    if idx > #toc then idx = #toc end
-    self:_gotoTocEntry(toc[idx])
-end
 
 function SyncController:showTocPicker()
     local toc = self:_documentToc()
@@ -4096,608 +1116,6 @@ function SyncController:showTocPicker()
             current = current,
         })
     end
-end
-
-
--- ═══════════════════════════════════════════════════════════════════════
--- Engine queue mode (Android, MyTTS by default)
---
--- The sentences go to the engine's own queue (TextToSpeech.speak, QUEUE_ADD), a few ahead of the voice. The engine
--- plays them as one continuous stream and prepares the next ones while the current one sounds, so a busy KOReader
--- (page render, highlight) can no longer open a gap: nothing here sits between two sentences. The plugin follows the
--- engine's onStart to highlight, move the page, keep the queue filled. The first sentences of the next page are
--- queued before the page ends, so a page turn is gapless too. Pause = stop the queue; resume = the current sentence
--- again from its start (the engine still has its audio). A stalled or lost engine restarts the queue from the current
--- sentence; after several failures in a row the session falls back to the per-sentence file path.
--- ═══════════════════════════════════════════════════════════════════════
-
--- ═══════════════════════════════════════════════════════════════════════
--- Reading by document position (xptext.lua): EPUB/FB2 in queue mode.
--- ═══════════════════════════════════════════════════════════════════════
-
-function SyncController:_xpMode()
-    if self._xp_disabled then return false end
-    local ui = self.plugin and self.plugin.ui
-    local doc = ui and ui.document
-    if not (ui and ui.rolling and doc and doc.getNextVisibleWordStart and doc.getTextFromXPointers) then return false end
-    if self.plugin.getSetting and not self.plugin:getSetting("xp_reading", true) then return false end
-    return self:_queueMode()
-end
-
---- Sentences of [list] (xptext sentences) in the parsed_data shape the controller uses.
-local function _xpParsed(list)
-    local parsed = { sentences = {}, words = {}, text = "", by_position = true }
-    local texts = {}
-    for i, s in ipairs(list) do
-        local ns = { index = i, text = s.text, end_type = s.end_type, start_pos = 0, end_pos = 0, words = {},
-                     xp0 = s.xp0, xp1 = s.xp1, xp_turn_at = s.turn_at }
-        for _, w in ipairs(s.words or {}) do
-            local nw = {}
-            for k, v in pairs(w) do nw[k] = v end
-            nw.sentence_index = i
-            ns.words[#ns.words + 1] = nw
-            parsed.words[#parsed.words + 1] = nw
-        end
-        parsed.sentences[i] = ns
-        texts[i] = s.text
-    end
-    parsed.text = table.concat(texts, " ")
-    return parsed
-end
-
---- Build the current view by position. Returns parsed_data, or nil (and true when the view holds only the middle of a
---- sentence already heard). Remembers the next view for the queue and for the next page turn.
-function SyncController:_xpView(anchor)
-    local doc = self.plugin.ui.document
-    local turned = self._xp_turned
-    self._xp_turned = nil
-    self._xp_cache = nil
-    local parser = self.text_parser
-    local ok, v, why = pcall(XpText.build, doc, function(t) return parser:parse(t) end, { anchor = anchor, ahead_pages = 6 })
-    if not ok then why, v = tostring(v), nil end
-    if not v then
-        logger.warn("SyncController: reading by position unavailable here (", why, "); screen text used")
-        dlog("xp", "fallback", why)
-        return nil
-    end
-    local list = v.current
-    local source = "built"
-    if not anchor then
-        if turned and self._q_dispatched_end then
-            -- Queued ranges are canonical. Re-parsing from 80 words back can split a long sentence at
-            -- different places; never append those overlapping chunks behind later queued speech.
-            list = {}
-            for _, m in pairs(self._q_ids or {}) do
-                if m.xp0 and XpText.within(doc, m.xp0, v.view_start, v.next_start) then
-                    list[#list + 1] = {text=m.text, xp0=m.xp0, xp1=m.xp1, words={}}
-                end
-            end
-            for _, s in ipairs(v.current) do
-                local suffix = XpText.after(doc, s, self._q_dispatched_end)
-                if suffix then list[#list + 1] = suffix end
-            end
-            table.sort(list, function(a,b)
-                return a.xp0 ~= b.xp0 and XpText.within(doc, b.xp0, a.xp0, nil)
-            end)
-            source = "queued"
-        elseif not turned and v.prev_tail then
-            table.insert(list, 1, v.prev_tail)
-            source = "with-prev"
-        end
-    end
-    -- A view can start inside an utterance already started on the preceding view. Text matching cannot
-    -- distinguish an extraction tail from an author's repetition: compare document positions instead.
-    if turned and self._q_spoken_end then
-        local kept = {}
-        for _, s in ipairs(list) do
-            if s.xp0 and XpText.within(doc, s.xp0, self._q_spoken_end, nil) then kept[#kept + 1] = s end
-        end
-        list = kept
-        local playing = self._q_ids and self._q_ids[self._q_current_id]
-        if playing and not playing.terminal and playing.xp0 and playing.xp1
-                and XpText.within(doc, playing.xp1, v.view_start, nil)
-                and (not v.next_start or not XpText.within(doc, playing.xp0, v.next_start, nil)) then
-            -- Keep the sounding utterance as the current item (also for pause/resume), bound to the same ID.
-            local carry = { text = playing.text, xp0 = playing.xp0, xp1 = playing.xp1, words = {} }
-            if v.next_start and XpText.within(doc, playing.xp1, v.next_start, nil) then
-                local prefix = doc:getTextFromXPointers(playing.xp0, v.next_start) or ""
-                carry.turn_at = XpText.utf16AtKey(carry.text, #XpText.key(prefix))
-            end
-            table.insert(list, 1, carry)
-        end
-    end
-    -- Recompute the screen crossing for canonical queued chunks as well as freshly parsed ones.
-    if v.next_start then
-        for _, s in ipairs(list) do
-            if s.xp0 and s.xp1 and XpText.within(doc, s.xp1, v.next_start, nil)
-                    and not XpText.within(doc, s.xp0, v.next_start, nil) then
-                local prefix = doc:getTextFromXPointers(s.xp0, v.next_start) or ""
-                s.turn_at = XpText.utf16AtKey(s.text, #XpText.key(prefix))
-            end
-        end
-    end
-    self._xp_next_parsed = (#v.next > 0) and _xpParsed(v.next) or nil
-    self._xp_cache = (v.next_start and #v.next > 0) and { at = v.next_start, list = v.next } or nil
-    dlog("xp", "view", #list, "next", #v.next, source, turned and "turned" or "", anchor and "anchor" or "")
-    if #list == 0 then return nil, turned end
-    self._empty_skip_advances = 0
-    return _xpParsed(list)
-end
-
---- The voice reached the part of the page's last sentence that lies on the next view: turn now, keep the sentence
---- highlighted there.
-function SyncController:_xpTurnInsideSentence(sentence)
-    if self._q_advancing then return end
-    self._q_advancing = true
-    self._xp_carry_highlight = { xp0 = sentence.xp0, xp1 = sentence.xp1, text = sentence.text, index = 0 }
-    dlog("xp", "turn-inside", sentence.index)
-    self:advanceToNextPage()
-end
-
-SyncController.QUEUE_AHEAD = 6
-SyncController.QUEUE_TARGET_S = 60
-SyncController.QUEUE_MAX_ITEMS = 64
-SyncController.QUEUE_MAX_CHARS = 12000
-SyncController.QUEUE_POLL_S = 0.15
-SyncController.QUEUE_MAX_RECOVERIES = 3
--- How long a new run waits for an engine that is still binding before the session falls back to the file path.
-SyncController.QUEUE_PENDING_MAX_S = 6
-local MYTTS_PACKAGE = "com.davnozdu.supertonic.tts.fork"
-
-function SyncController:_queueMode()
-    if self._q_disabled then return false end
-    local e = self.tts_engine
-    if not e or e.backend ~= e.BACKENDS.ANDROID then return false end
-    local atts = e._android_tts or (e._ensureAndroidTts and e:_ensureAndroidTts())
-    if not (atts and atts.hasQueue and atts:hasQueue()) then return false end
-    local default = e:_androidEnginePackage() == MYTTS_PACKAGE
-    if not self.plugin then return default end
-    return self.plugin:getSetting("android_queue_mode", default) and true or false
-end
-
-function SyncController:_queueReset()
-    self._q_ids = {}          -- utterance id -> { page = token|"next", idx = n, text = s }
-    self._q_positions = {}    -- exact document range -> id; identical words at different positions stay distinct
-    self._q_queued = {}       -- sentence idx of the current page -> id
-    self._q_page = nil        -- page token the maps belong to
-    self._q_next = nil        -- next-page sentences already queued: list of { id, text }
-    self._q_next_parsed = nil
-    self._q_advancing = nil
-    self._q_last_started, self._q_last_done, self._q_last_error = nil, nil, nil
-    self._q_changed_at = nil
-    self._q_backlog = nil
-    self._q_spoken_end = nil
-    self._q_current_id = nil
-    self._q_dispatched_end = nil
-end
-
-local function qnorm(t) return Utils.ws(t or "") end
-local function qposition(s)
-    if s and s.xp0 and s.xp1 then return s.xp0 .. "\0" .. s.xp1 end
-end
-
-function SyncController:_queueRemember(id, sentence, page, idx)
-    local pos = qposition(sentence)
-    self._q_ids[id] = { page = page, idx = idx, text = sentence.text,
-        xp0 = sentence.xp0, xp1 = sentence.xp1, position = pos }
-    if pos then self._q_positions[pos] = id end
-    if sentence.xp1 then self._q_dispatched_end = sentence.xp1 end
-end
-
-function SyncController:_queuePrune()
-    for id, m in pairs(self._q_ids) do
-        local past = m.page ~= self._q_page and m.page ~= "next"
-        local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
-        if m.page == "next" and m.xp1 and self._q_spoken_end and doc then
-            past = XpText.within(doc, self._q_spoken_end, m.xp1, nil)
-        end
-        if past and m.terminal then
-            if m.position then self._q_positions[m.position] = nil end
-            self._q_ids[id] = nil
-        end
-    end
-end
-
-function SyncController:_queueId(idx)
-    self._q_seq = (self._q_seq or 0) + 1
-    return "q:" .. tostring(self._q_run or 0) .. ":" .. tostring(self._q_seq) .. ":" .. tostring(idx)
-end
-
---- Queue [sentence] (and the next ones). A sentence already in the queue only moves the bookkeeping: no flush, no gap.
-function SyncController:_queuePlay(sentence, retry)
-    local e = self.tts_engine
-    if not retry then self._q_pending_since = nil end
-    local page = self._page_gen or 0
-    if not self._q_ids then self:_queueReset() end
-    if self._q_page ~= page then
-        -- A new page: sentences of it queued ahead (at the end of the previous one) are bound to their indices here.
-        self._q_queued = {}
-        self._q_page = page
-        if e._queue_active and self.parsed_data.by_position then
-            for _, s in ipairs(self.parsed_data.sentences) do
-                local id = self._q_positions[qposition(s)]
-                local m = id and self._q_ids[id]
-                if m then m.page, m.idx = page, s.index; self._q_queued[s.index] = id end
-            end
-        elseif e._queue_active and self._q_next then
-            local bound = 0
-            for k, entry in ipairs(self._q_next) do
-                local s = self.parsed_data.sentences[sentence.index + k - 1]
-                if not s or qnorm(s.text) ~= qnorm(entry.text) then break end
-                local m = self._q_ids[entry.id]
-                if m then m.page, m.idx = page, s.index end
-                self._q_queued[s.index] = entry.id
-                bound = bound + 1
-            end
-            logger.warn("SyncController: queue: next page bound", bound, "of", #self._q_next)
-            dlog("queue", "bind", bound, "of", #self._q_next)
-        end
-        self._q_next = nil
-        self._q_next_parsed = nil
-        self._q_advancing = nil
-        self:_queuePrune()
-    end
-    self.state = self.STATE.PLAYING
-    self.current_sentence = self.current_sentence or sentence
-    local queued = e._queue_active and self._q_queued[sentence.index]
-    local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
-    if not queued and e._queue_active and sentence.xp0 and self._q_dispatched_end and doc
-            and XpText.within(doc, sentence.xp0, self._q_dispatched_end, nil) then
-        -- The buffer drained at a page boundary. Append the new range, don't flush an audible tail.
-        local id = self:_queueId(sentence.index)
-        if not e:queueSpeakAndroid(id, sentence.text, false) then return self:_queueRecover("refill refused", true) end
-        self:_queueRemember(id, sentence, page, sentence.index)
-        self._q_queued[sentence.index], queued = id, id
-        self._q_changed_at = UIManager:getTime()
-    end
-    if not queued then
-        -- A new run: start, jump, resume, recovery. Whatever the engine still had is dropped.
-        self._q_run = (self._q_run or 0) + 1
-        self._q_ids, self._q_positions, self._q_queued, self._q_next = {}, {}, {}, nil
-        self._q_backlog = nil
-        self._q_started_in_run = false
-        self._q_dispatched_end = nil
-        local id = self:_queueId(sentence.index)
-        local ok, why = e:queueSpeakAndroid(id, sentence.text, true)
-        if not ok then
-            -- The engine is still binding (just reconnected, MyTTS restarted): try again on a timer, never by sleeping
-            -- on the UI thread. Only an engine that stays away falls back to the per-sentence file path.
-            local now = UIManager:getTime()
-            self._q_pending_since = self._q_pending_since or now
-            if why == "pending" and time.to_s(now - self._q_pending_since) < self.QUEUE_PENDING_MAX_S then
-                dlog("queue", "engine-pending", sentence.index)
-                local controller, run, gen = self, self._q_run, self._page_gen
-                UIManager:scheduleIn(0.1, function()
-                    if controller.state == controller.STATE.PLAYING and controller._q_run == run
-                            and controller._page_gen == gen and controller.parsed_data
-                            and controller.parsed_data.sentences[sentence.index] == sentence then
-                        controller:_queuePlay(sentence, true)
-                    end
-                end)
-                return
-            end
-            self._q_pending_since = nil
-            logger.warn("SyncController: queue dispatch failed (", why, "); falling back to per-sentence playback")
-            dlog("queue", "dispatch-failed", why)
-            self._q_disabled = true
-            self.reading_sentence_idx = sentence.index - 1
-            self._highest_dispatched_idx = sentence.index - 1
-            self:readNextSentence()
-            return
-        end
-        self._q_pending_since = nil
-        self:_queueRemember(id, sentence, page, sentence.index)
-        self._q_first_id = id
-        self._q_queued[sentence.index] = id
-        self._q_changed_at = UIManager:getTime()
-        dlog("queue", "run", self._q_run, "from", sentence.index)
-    elseif queued == self._q_last_started then
-        -- Bound from the previous page and already sounding: show it now.
-        self:_queueOnStart(queued)
-    end
-    if queued and self._q_ids[queued] and self._q_ids[queued].terminal then
-        self.reading_sentence_idx = sentence.index
-        self:readNextSentence()
-        return
-    end
-    if self.playback_bar then
-        self.playback_bar:updatePlayState(true)
-    end
-    self:_applyBarVisibility()
-    self:_queueFill(sentence.index)
-    self:_queueEnsurePoll()
-end
-
---- Keep [QUEUE_AHEAD] sentences queued past [from] (default: the one sounding), into the next page when it is known.
-function SyncController:_queueFill(from)
-    local e = self.tts_engine
-    if not e or not e._queue_active or not self.parsed_data or self.state ~= self.STATE.PLAYING then return end
-    from = from or self.reading_sentence_idx or 1
-    local count, chars, seconds = 0, 0, 0
-    local rate = math.max(0.25, tonumber(e.rate) or 1)
-    local function room()
-        return count < self.QUEUE_MAX_ITEMS and chars < self.QUEUE_MAX_CHARS
-            and (count <= self.QUEUE_AHEAD or seconds < self.QUEUE_TARGET_S)
-    end
-    local function add(sentence, page, idx)
-        if not (sentence and SyncController.speakable(sentence.text)) then return true, "skip" end
-        local pos = qposition(sentence)
-        local id = pos and self._q_positions[pos]
-        local doc = self.plugin and self.plugin.ui and self.plugin.ui.document
-        if pos and not id and self._q_dispatched_end and doc then
-            local suffix = XpText.after(doc, sentence, self._q_dispatched_end)
-            if not suffix then return true, "skip" end
-            if suffix ~= sentence then
-                sentence.text, sentence.xp0, sentence.xp1, sentence.words = suffix.text, suffix.xp0, suffix.xp1, {}
-                sentence.xp_turn_at = nil
-                pos = qposition(sentence)
-            end
-        end
-        if not id and page ~= "next" then id = self._q_queued[idx] end
-        local m = id and self._q_ids[id]
-        if pos and not m and self._q_spoken_end and doc
-                and not XpText.within(doc, sentence.xp0, self._q_spoken_end, nil) then return true, "skip" end
-        if m and m.terminal then return true, id end
-        if not room() or (count > 0 and chars + #sentence.text > self.QUEUE_MAX_CHARS) then return false end
-        if not id then
-            id = self:_queueId(idx)
-            if not e:queueSpeakAndroid(id, sentence.text, false) then return false end
-            self:_queueRemember(id, sentence, page, idx)
-        end
-        count, chars = count + 1, chars + #sentence.text
-        local words = 0
-        for _ in sentence.text:gmatch("%S+") do words = words + 1 end
-        -- Learned from audible start/done, when available. Estimate without counting UTF-8 bytes as letters.
-        seconds = seconds + math.max(0.4, words / (self._q_words_per_second or 2.7) / rate)
-        return true, id
-    end
-    for idx = from, self.total_sentences or 0 do
-        local ok, id = add(self.parsed_data.sentences[idx], self._q_page, idx)
-        if not ok then return end
-        self._q_queued[idx] = id
-    end
-    if self.plugin and not self.plugin:getSetting("auto_advance", true) then return end
-    if not room() then return end
-    if not self._q_next_parsed then
-        if not self._next_page_prefetched then self:_prefetchNextPage() end
-        return
-    end
-    local future = {}
-    for k, sentence in ipairs(self._q_next_parsed.sentences) do
-        -- In the screen path a future sentence has no position; preserve its already queued ordinal ID.
-        local old = self._q_next and self._q_next[k]
-        if old and not qposition(sentence) then
-            count, chars = count + 1, chars + #sentence.text
-            seconds = seconds + math.max(0.4, #sentence.text / 15 / rate)
-            future[#future + 1] = old
-        else
-            local ok, id = add(sentence, "next", k)
-            if not ok then break end
-            future[#future + 1] = { id = id, text = sentence.text }
-        end
-    end
-    self._q_next = future
-    self._q_buffer_seconds = seconds
-
-end
-
-function SyncController:_queueEnsurePoll()
-    if self._q_polling then return end
-    self._q_polling = true
-    local controller = self
-    local function tick()
-        local e = controller.tts_engine
-        if controller.state ~= controller.STATE.PLAYING or not e or not e._queue_active then
-            controller._q_polling = false
-            return
-        end
-        local ok, err = pcall(controller._queueTick, controller)
-        if not ok then logger.warn("SyncController: queue tick failed:", err) end
-        UIManager:scheduleIn(controller.QUEUE_POLL_S, tick)
-    end
-    UIManager:scheduleIn(self.QUEUE_POLL_S, tick)
-end
-
---- Follow the engine: every start, end, error and stop since the last tick, in the order they happened.
-function SyncController:_queueTick()
-    local e = self.tts_engine
-    local events, lost = e:queueEventsAndroid()
-    if events == nil then return self:_queueTickLegacy() end
-    if lost then return self:_queueRecover("engine lost", true) end
-    -- Events left over when a handler turned the page or started a new run (the state was not PLAYING) come first.
-    if self._q_backlog then
-        local all = self._q_backlog
-        for _, ev in ipairs(events) do all[#all + 1] = ev end
-        events = all
-        self._q_backlog = nil
-    end
-    for i, ev in ipairs(events) do
-        if self.state ~= self.STATE.PLAYING or not e._queue_active then
-            local rest = {}
-            for k = i, #events do rest[#rest + 1] = events[k] end
-            self._q_backlog = rest
-            return
-        end
-        local mine = self._q_ids and self._q_ids[ev.id]
-        if ev.kind == "S" and mine then
-            self._q_last_started = ev.id
-            self._q_changed_at = UIManager:getTime()
-            self:_queueOnStart(ev.id)
-        elseif ev.kind == "D" and mine then
-            self._q_last_done = ev.id
-            self._q_changed_at = UIManager:getTime()
-            self:_queueOnDone(ev.id)
-        elseif ev.kind == "E" then
-            if mine then
-                self._q_changed_at = UIManager:getTime()
-                logger.warn("SyncController: queue: engine refused", ev.id, ev.extra)
-                dlog("queue", "error", ev.id, ev.extra)
-                -- Refused before anything of this run was heard: the run itself is dead (the engine dropped the
-                -- connection, MyTTS was updated or restarted). The other sentences of the run were refused with it;
-                -- one recovery for all of them.
-                if not self._q_started_in_run and ev.id == self._q_first_id then
-                    return self:_queueRecover("engine refuses the queue (" .. tostring(ev.extra) .. ")", true)
-                end
-                -- One sentence the engine could not say (e.g. a language it has no voice for): go on.
-                self:_queueOnDone(ev.id)
-            end
-        elseif ev.kind == "X" then
-            if mine then dlog("queue", "engine-stop", ev.id, ev.extra) end
-        elseif ev.kind == "R" and mine then
-            self:_queueOnRange(ev.id, ev.extra)
-        end
-    end
-    -- Nothing started or ended for far longer than the sentence could take: the engine is stuck or was restarted.
-    local cur = self.current_sentence
-    local limit = 25 + math.floor(((cur and cur.text and #cur.text) or 0) / 10)
-    if self._q_changed_at and time.to_s(UIManager:getTime() - self._q_changed_at) > limit then
-        self:_queueRecover("no progress for " .. limit .. " s", false)
-    end
-end
-
---- Older tts_helper.dex without the event log: follow its «last started/done/error» fields.
-function SyncController:_queueTickLegacy()
-    local st = self.tts_engine:queueStateAndroid()
-    if not st then return end
-    if st.lost then return self:_queueRecover("engine lost", true) end
-    if st.started ~= "" and st.started ~= self._q_last_started and self._q_ids[st.started] then
-        self._q_last_started = st.started
-        self._q_changed_at = UIManager:getTime()
-        self:_queueOnStart(st.started)
-    end
-    if st.error ~= "" and st.error ~= self._q_last_error and self._q_ids[st.error] then
-        self._q_last_error = st.error
-        self._q_changed_at = UIManager:getTime()
-        logger.warn("SyncController: queue: engine refused", st.error)
-        dlog("queue", "error", st.error)
-        if st.error == self._q_first_id and not self._q_started_in_run then
-            return self:_queueRecover("engine refuses the queue", true)
-        end
-        self:_queueOnDone(st.error)
-    end
-    if st.done ~= "" and st.done ~= self._q_last_done and self._q_ids[st.done] then
-        self._q_last_done = st.done
-        self._q_changed_at = UIManager:getTime()
-        self:_queueOnDone(st.done)
-    end
-    local cur = self.current_sentence
-    local limit = 25 + math.floor(((cur and cur.text and #cur.text) or 0) / 10)
-    if self._q_changed_at and time.to_s(UIManager:getTime() - self._q_changed_at) > limit then
-        self:_queueRecover("no progress for " .. limit .. " s", false)
-    end
-end
-
---- The voice is inside a sentence (engine onRangeStart: characters of its text). A sentence that started on this view
---- and runs onto the next one turns the page when the voice reaches its part there, not at the next sentence.
-function SyncController:_queueOnRange(id, extra)
-    local m = self._q_ids and self._q_ids[id]
-    if not m or m.page ~= self._q_page or self._q_advancing or not self.parsed_data then return end
-    if m.idx ~= (self.total_sentences or 0) then return end
-    local sentence = self.parsed_data.sentences[m.idx]
-    if not (sentence and sentence.xp_turn_at) then return end
-    local start = tonumber((extra or ""):match("^(%d+)"))
-    if not start or start < sentence.xp_turn_at then return end
-    self._q_range_turn = sentence
-    self:_xpTurnInsideSentence(sentence)
-end
-
-function SyncController:_queueOnStart(id)
-    local m = self._q_ids and self._q_ids[id]
-    if not m then return end
-    m.started_at = m.started_at or UIManager:getTime()
-    self._q_current_id = id
-    if m.xp1 then self._q_spoken_end = m.xp1 end
-    if m.page == "next" then
-        -- The voice is already on the next page: turn it (the queue goes on; the new page binds what is queued).
-        if not self._q_advancing then
-            self._q_advancing = true
-            dlog("queue", "page-turn-on-start", id)
-            self:advanceToNextPage()
-        end
-        return
-    end
-    if m.page ~= self._q_page or not self.parsed_data then
-        dlog("queue", "start-stale", id)
-        return
-    end
-    local sentence = self.parsed_data.sentences[m.idx]
-    if not sentence then return end
-    dlog("queue", "start", m.idx, "of", self.total_sentences, "page", self._q_page, "id", id)
-    self:_publishPlaying(true)
-    self._q_recoveries = 0
-    self._q_started_in_run = true
-    self:_noteHeard(sentence)
-    self._tts_heard_audio = true
-    self._tts_session_warm = true
-    self:_disarmTtsWaitUi()
-    self:_rememberSpoken(sentence.text)
-    self.state = self.STATE.PLAYING
-    self.reading_sentence_idx = m.idx
-    self._highest_dispatched_idx = m.idx
-    self.current_sentence = sentence
-    self.current_sentence_index = sentence.index
-    self.current_word_index = 0
-    self._first_play_sentence_text = self._first_play_sentence_text or sentence.text
-    if self.playback_bar then
-        self.playback_bar:updatePlayState(true)
-        self.playback_bar:updateProgress(self:getProgress())
-        self:_refreshTtsTimeUi()
-    end
-    if self.plugin and self.plugin:getSetting("highlight_sentences", true) then
-        local ok, err = pcall(self.highlightCurrentSentence, self, sentence)
-        if not ok then logger.warn("SyncController: queue highlight failed:", err) end
-    end
-    self:_queueFill(m.idx)
-end
-
-function SyncController:_queueOnDone(id)
-    local m = self._q_ids and self._q_ids[id]
-    dlog("queue", "done", m and m.idx or "?", "page", m and m.page or "?", "cur", self._q_page)
-    if not m then return end
-    m.terminal = true
-    if self._q_current_id == id then self._q_current_id = nil end
-    if m.started_at then
-        local elapsed = time.to_s(UIManager:getTime() - m.started_at)
-        local words = 0
-        for _ in m.text:gmatch("%S+") do words = words + 1 end
-        if elapsed > 0.5 then
-            local wps = math.max(1, math.min(6, words / elapsed / math.max(0.25, self.tts_engine.rate or 1)))
-            self._q_words_per_second = (self._q_words_per_second or wps) * 0.8 + wps * 0.2
-        end
-    end
-    if m.page ~= self._q_page then self:_queuePrune(); return end
-    -- A future synthesis error is terminal for that ID, but never moves the playback cursor. The whole
-    -- page is complete only once every speakable entry is terminal (punctuation-only tails need no callback).
-    for idx, s in ipairs(self.parsed_data.sentences) do
-        local entry = self._q_ids[self._q_queued[idx]]
-        if SyncController.speakable(s.text) and not (entry and entry.terminal) then return end
-    end
-    if not self._q_advancing then
-        self._q_advancing = true
-        dlog("queue", "page-turn-on-done")
-        if not self.plugin or self.plugin:getSetting("auto_advance", true) then self:advanceToNextPage()
-        else self:stop() end
-    end
-end
-
---- The engine stopped answering: the queue starts again from the sentence being read.
-function SyncController:_queueRecover(reason, lost)
-    self._q_recoveries = (self._q_recoveries or 0) + 1
-    logger.warn("SyncController: queue recovery", self._q_recoveries, ":", reason)
-    dlog("queue", "recover", self._q_recoveries, reason)
-    local e = self.tts_engine
-    e:queueStopAndroid()
-    self._q_backlog = nil
-    if lost or not self._q_started_in_run then pcall(function() e:reconnectAndroidTts() end) end
-    if self._q_recoveries > self.QUEUE_MAX_RECOVERIES then
-        logger.warn("SyncController: queue mode off for this session after", self._q_recoveries, "recoveries")
-        self._q_disabled = true
-    end
-    local idx = (self.current_sentence and self.current_sentence.index) or math.max(1, self.reading_sentence_idx or 1)
-    self.reading_sentence_idx = idx - 1
-    self._highest_dispatched_idx = idx - 1
-    self._q_changed_at = UIManager:getTime()
-    self:readNextSentence()
 end
 
 return SyncController
