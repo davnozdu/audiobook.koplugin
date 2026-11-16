@@ -44,8 +44,6 @@ local SyncController = {
     -- Screen off / another app in front: the page is not drawn, so the engine is asked once a second. Android kills a
     -- background app that keeps over 2 % of a CPU for 5 minutes («excessive cpu»); five wake-ups a second did that.
     POLL_BG_S = 2.0,
-    -- With the wake channel the engine reports itself; this is only the stall watchdog.
-    POLL_WAKE_S = 5.0,
     MAX_RECOVERIES = 3,
     PENDING_MAX_S = 6,
 }
@@ -170,6 +168,7 @@ end
 function SyncController:pause(auto)
     if self.state ~= self.STATE.PLAYING then return end
     self.state = self.STATE.PAUSED
+    if self._watchdog then UIManager:unschedule(self._watchdog); self._watchdog = nil end
     if not auto then self._user_paused = true end
     if self.tts_engine then self.tts_engine:pause() end
     self:_ttsMarkPause()
@@ -203,6 +202,7 @@ end
 function SyncController:stop(opts)
     if self.state ~= self.STATE.STOPPED then dlog("read stop from", self.state) end
     self.state = self.STATE.STOPPED
+    if self._watchdog then UIManager:unschedule(self._watchdog); self._watchdog = nil end
     self._run = self._run + 1
     if self.tts_engine then pcall(function() self.tts_engine:stop() end) end
     if self.highlight_manager then pcall(function() self.highlight_manager:clearHighlights() end) end
@@ -321,34 +321,51 @@ function SyncController:_fill()
 end
 
 function SyncController:_ensurePoll()
-    if self._polling then return end
-    self._polling = true
-    -- Wake channel: the engine's start/done/error events wake KOReader at once (highlight and page turn on time);
-    -- the periodic tick is then only the watchdog («no progress»), every few seconds.
+    -- Wake channel: the engine's start/done/error events wake KOReader at once (highlight and page turn on time) and
+    -- nothing is polled. One alarm stays armed for a stalled or killed engine: it is moved on every event, so while
+    -- reading goes on it never fires.
     local Wake = require("audiobook_wakeup")
     local e = self.tts_engine
-    local events = Wake.ok and e and e.wakeEvents and e:wakeEvents()
-    if events then
-        Wake.on("synccontroller", function()
-            if self.state == self.STATE.PLAYING then
-                local ok, err = pcall(self._tick, self)
-                if not ok then logger.warn("SyncController: tick failed:", err) end
-            end
-        end)
+    if Wake.ok and e and e.wakeEvents and e:wakeEvents() then
+        local function run()
+            if self.state ~= self.STATE.PLAYING then return end
+            local ok, err = pcall(self._tick, self)
+            if not ok then logger.warn("SyncController: tick failed:", err) end
+            self:_armWatchdog()
+        end
+        Wake.on("synccontroller", run)
+        UIManager:scheduleIn(self.POLL_S, run)
+        return
     end
+    if self._polling then return end
+    self._polling = true
     local function tick()
         if self.state ~= self.STATE.PLAYING then
             self._polling = false
-            Wake.off("synccontroller")
             return
         end
         local ok, err = pcall(self._tick, self)
         if not ok then logger.warn("SyncController: tick failed:", err) end
-        local delay = events and self.POLL_WAKE_S
-            or (self.plugin and self.plugin._app_in_background and self.POLL_BG_S or self.POLL_S)
-        UIManager:scheduleIn(delay, tick)
+        UIManager:scheduleIn(self.plugin and self.plugin._app_in_background and self.POLL_BG_S or self.POLL_S, tick)
     end
     UIManager:scheduleIn(self.POLL_S, tick)
+end
+
+--- The stall alarm of the wake mode: at the time the current sentence may take at most (same limit as _tick's).
+function SyncController:_armWatchdog()
+    if self._watchdog then UIManager:unschedule(self._watchdog) end
+    if self.state ~= self.STATE.PLAYING or #self._q == 0 then self._watchdog = nil; return end
+    local head = self._q[1]
+    local limit = 25 + math.floor((head.chars or 0) / 10)
+    local since = self._changed_at and (now_s() - self._changed_at) or 0
+    self._watchdog = function()
+        self._watchdog = nil
+        if self.state ~= self.STATE.PLAYING then return end
+        local ok, err = pcall(self._tick, self)
+        if not ok then logger.warn("SyncController: tick failed:", err) end
+        self:_armWatchdog()
+    end
+    UIManager:scheduleIn(math.max(1, limit - since + 1), self._watchdog)
 end
 
 --- Follow the engine: every start, end, error and range since the last tick, in order.

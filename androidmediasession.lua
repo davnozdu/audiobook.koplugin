@@ -323,18 +323,23 @@ function AndroidMediaSession:startPolling(plugin)
             self:_handle(cmd)
         end
     end
-    if self._wake then Wake.on("mediasession", process) end
+    if self._wake then
+        -- Events wake KOReader by themselves (buttons, calls, unplug): no periodic tick at all.
+        Wake.on("mediasession", process)
+        UIManager:scheduleIn(0.2, process)   -- anything queued before the channel was set up
+        return
+    end
     local function tick()
         if self._poll_gen ~= gen then return end
         process()
         -- Headphones gone while playing (Bluetooth off, cable out): pause, as media apps do, instead of going on
-        -- through the speaker. With the wake channel Java reports it at once; here it is only a fallback check.
+        -- through the speaker. (With the wake channel Java reports it at once and this tick does not run.)
         local p = self._plugin
         local playing = p and isPlaying(p)
         local bg = p and p._app_in_background
         self._route_ticks = (self._route_ticks or 0) + 1
         -- The route matters only while something plays (pause on unplug); idle, it is not asked at all.
-        if p and playing and self._route_ticks >= ((bg or self._wake) and 1 or 5) then
+        if p and playing and self._route_ticks >= (bg and 1 or 5) then
             self._route_ticks = 0
             local on = self:headphonesOn()
             if playing and on == false and self._headphones == true then
@@ -346,13 +351,7 @@ function AndroidMediaSession:startPolling(plugin)
         end
         local sc, ms = p and p.sync_controller, p and p.media_sync
         local paused = (sc and sc.isPaused and sc:isPaused()) or (ms and ms.state == "paused")
-        local delay
-        if self._wake then
-            -- Events wake KOReader by themselves: this tick is only a safety net.
-            delay = playing and 5 or paused and 15 or 30
-        else
-            delay = playing and (bg and 1 or 0.2) or paused and 0.5 or (bg and 2 or 1)
-        end
+        local delay = playing and (bg and 1 or 0.2) or paused and 0.5 or (bg and 2 or 1)
         UIManager:scheduleIn(delay, tick)
     end
     UIManager:scheduleIn(0.2, tick)
