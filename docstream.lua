@@ -275,7 +275,8 @@ local function textOf(doc, words)
             from, cur = i, b
         end
     end
-    return table.concat(parts, "\n")
+    -- A blank line: the parser joins single line breaks (wrapped PDF lines) and keeps blank ones as paragraphs.
+    return table.concat(parts, "\n\n")
 end
 DocStream.textOf = textOf
 

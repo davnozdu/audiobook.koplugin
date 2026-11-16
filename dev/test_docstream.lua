@@ -87,4 +87,13 @@ check(DS.isHeading({ word_first = 1, word_last = 1, text = 'VI' },
     { { xs = '/b/p[1]/text().0', xe = '/b/p[1]/text().2' }, { xs = '/b/p[2]/text().0' } }), 'VI alone is a heading')
 check(not DS.isHeading({ word_first = 1, word_last = 1, text = 'VI' },
     { { xs = '/b/p[1]/text().0', xe = '/b/p[1]/text().2' }, { xs = '/b/p[1]/text().3' } }), 'VI inside a paragraph is not')
+-- Blocks are paragraphs for the parser: a heading and the paragraphs around it come out as separate sentences.
+do
+    local texts = { ['/b/p[1]/text().0'] = 'Детей у них не было', ['/b/h2/text().0'] = 'V',
+        ['/b/p[2]/text().0'] = 'Против ожидания, вечер был тих.' }
+    local d = { getTextFromXPointers = function(_, a) return texts[a] end }
+    local w = { { xs = '/b/p[1]/text().0', xe = 'e1' }, { xs = '/b/h2/text().0', xe = 'e2' }, { xs = '/b/p[2]/text().0', xe = 'e3' } }
+    local got = parser:parse(DS.textOf(d, w)).sentences
+    check(#got == 3 and got[2].text == 'V', 'heading and paragraphs stay apart after parsing')
+end
 print('docstream: ' .. passed .. ' checks passed')

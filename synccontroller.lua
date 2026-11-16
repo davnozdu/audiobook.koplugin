@@ -300,6 +300,11 @@ function SyncController:_fill()
             end
         end
     end
+    if added > 0 and not self._xp_logged and self._q[1] and self._q[1].s then
+        self._xp_logged = true
+        local s0 = self._q[1].s
+        dlog("read xp sample", tostring(s0.xp0), tostring(s0.xp1), tostring(s0.from))
+    end
     if added > 0 then
         dlog("read fill +" .. added, "queued", #self._q, string.format("%.0fs %.1fms", secs, (os.clock() - t0) * 1000))
     end
