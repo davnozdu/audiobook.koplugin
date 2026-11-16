@@ -309,12 +309,17 @@ function AndroidMediaSession:startPolling(plugin)
             if DL and DL.log then pcall(DL.log, "interrupt", cmd == self.CMD_INTERRUPT_PAUSE and "pause" or "resume") end
             local p = self._plugin
             if cmd == self.CMD_INTERRUPT_PAUSE then
+                -- Headphones at the moment of the call: only then does reading go on by itself after it.
+                self._hp_at_interrupt = self:headphonesOn() or self._headphones == true
                 pcall(function() p:onMediaPause() end)
-            else
+            elseif self._hp_at_interrupt or self:headphonesOn() then
                 pcall(function() p:onMediaPlay() end)
                 if p._afterInterruptionResume then
                     pcall(function() p:_afterInterruptionResume() end)
                 end
+            else
+                -- Through the speaker the book does not start talking again by itself after a call.
+                if DL and DL.log then pcall(DL.log, "interrupt resume skipped: no headphones") end
             end
         elseif cmd and cmd ~= self.CMD_NONE and self._plugin then
             -- Extra Lua debounce: AVRCP may still deliver a second command on
@@ -352,8 +357,9 @@ function AndroidMediaSession:startPolling(plugin)
         -- through the speaker.  Checked once a second.
         local p = self._plugin
         local playing = p and isPlaying(p)
+        local bg = p and p._app_in_background
         self._route_ticks = (self._route_ticks or 0) + 1
-        if p and self._route_ticks >= 5 then
+        if p and self._route_ticks >= (bg and 2 or 5) then
             self._route_ticks = 0
             local on = self:headphonesOn()
             if playing and on == false and self._headphones == true then
@@ -365,7 +371,9 @@ function AndroidMediaSession:startPolling(plugin)
         end
         -- Paused or stopped: buttons are still heard, but once a second instead of five times.
         -- Пауза: 0.3 с вместо 1 с — кнопка с гарнитуры («продолжить») должна срабатывать сразу.
-        UIManager:scheduleIn(0.2, tick)
+        -- In the background (screen off) 0.5 s: a headset press still acts at once, and the app stays far below the
+        -- CPU share for which Android kills background apps.
+        UIManager:scheduleIn(bg and 0.5 or 0.2, tick)
     end
     UIManager:scheduleIn(0.2, tick)
 end

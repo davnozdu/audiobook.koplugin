@@ -235,9 +235,11 @@ function MyTTS.ahead(plugin, tries)
         -- At most once a minute while reading goes on (a new start clears _last_ahead): the extraction and its parse
         -- cost more than a page turn.
         if MyTTS._last_ahead and MyTTS._ahead_t and os.time() - MyTTS._ahead_t < 60 then return end
-        local now_text = sc and sc.current_sentence and sc.current_sentence.text
-        if now_text and MyTTS._sent_index and MyTTS._sent_index[now_text]
-                and MyTTS._sent_index[now_text] < (MyTTS._sent_count or 0) / 2 then
+        -- Fewer than half of the sentences sent were read since: MyTTS still has plenty (counted by sentences started,
+        -- the parsed text of the two sides need not match letter for letter).
+        local read_idx = sc and sc.reading_sentence_idx
+        if MyTTS._last_ahead and read_idx and MyTTS._sent_at_idx
+                and read_idx - MyTTS._sent_at_idx < (MyTTS._sent_count or 0) / 2 then
             return
         end
         if not (sc and sc.isPlaying and sc:isPlaying()) then
@@ -280,6 +282,7 @@ function MyTTS.ahead(plugin, tries)
         if sent then
             MyTTS._last_ahead = text
             MyTTS._sent_index, MyTTS._sent_count = {}, #sentences
+            MyTTS._sent_at_idx = sc.reading_sentence_idx
             for i, t in ipairs(sentences) do
                 if MyTTS._sent_index[t] == nil then MyTTS._sent_index[t] = i end
             end

@@ -41,6 +41,9 @@ local SyncController = {
     QUEUE_MAX_ITEMS = 48,
     QUEUE_MAX_CHARS = 10000,
     POLL_S = 0.2,
+    -- Screen off / another app in front: the page is not drawn, so the engine is asked once a second. Android kills a
+    -- background app that keeps over 2 % of a CPU for 5 minutes («excessive cpu»); five wake-ups a second did that.
+    POLL_BG_S = 1.0,
     MAX_RECOVERIES = 3,
     PENDING_MAX_S = 6,
 }
@@ -133,6 +136,7 @@ function SyncController:_beginAt(where)
     self._started_in_run = false
     self._ended = false
     self._pending_since = nil
+    self._changed_at = nil -- a pause is not «no progress»: the watchdog starts with the new run
     self._t_run = now_s()
     self.stream = self:_openStream(where)
     if not self.stream then
@@ -324,7 +328,7 @@ function SyncController:_ensurePoll()
         end
         local ok, err = pcall(self._tick, self)
         if not ok then logger.warn("SyncController: tick failed:", err) end
-        UIManager:scheduleIn(self.POLL_S, tick)
+        UIManager:scheduleIn(self.plugin and self.plugin._app_in_background and self.POLL_BG_S or self.POLL_S, tick)
     end
     UIManager:scheduleIn(self.POLL_S, tick)
 end
