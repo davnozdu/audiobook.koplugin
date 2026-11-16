@@ -11,6 +11,7 @@ local ffi = require("ffi")
 local logger = require("logger")
 local UIManager = require("ui/uimanager")
 local time = require("ui/time")
+local Wake = require("audiobook_wakeup")
 
 local AndroidMediaSession = {}
 
@@ -24,6 +25,8 @@ AndroidMediaSession.CMD_PREV = 6
 -- Phone call / audio focus interruption (see MediaSessionHelper.java).
 AndroidMediaSession.CMD_INTERRUPT_PAUSE = 7
 AndroidMediaSession.CMD_INTERRUPT_RESUME = 8
+-- Headphones unplugged / Bluetooth gone (newer helper): pause instead of going on through the speaker.
+AndroidMediaSession.CMD_NOISY = 9
 
 local function checkException(env)
     if env[0].ExceptionCheck(env) ~= 0 then
@@ -182,6 +185,8 @@ function AndroidMediaSession:init(plugin_dir)
         self._method.getPendingCommand = getMethod(env, helper_class,
             "getPendingCommand", "()I")
         self._method.shutdown = getMethod(env, helper_class, "shutdown", "()V")
+        -- Optional (newer helper): wake channel instead of polling.
+        self._method.setWakeFd = getMethod(env, helper_class, "setWakeFd", "(I)V")
 
         if not init or not self._method.start or not self._method.getPendingCommand then
             logger.err("AndroidMediaSession: required methods missing")
@@ -206,7 +211,18 @@ function AndroidMediaSession:init(plugin_dir)
 
     if not load_ok then return false end
     self._initialized = true
-    logger.warn("AndroidMediaSession: ready")
+    if self._method.setWakeFd and Wake.init() then
+        local fd = Wake.fd()
+        pcall(function()
+            android.jni:context(android.app.activity.vm, function(jni)
+                local args = ffi.new("jvalue[1]"); args[0].i = fd
+                jni.env[0].CallVoidMethodA(jni.env, self._helper_ref, self._method.setWakeFd, args)
+                checkException(jni.env)
+            end)
+        end)
+        self._wake = true
+    end
+    logger.warn("AndroidMediaSession: ready", self._wake and "(wake channel)" or "(polling)")
     return true
 end
 
@@ -298,10 +314,58 @@ function AndroidMediaSession:startPolling(plugin)
     self._plugin = plugin
     self._poll_gen = (self._poll_gen or 0) + 1
     local gen = self._poll_gen
+    -- Commands: on every wake from Java (instantly) and on the fallback tick below.
+    local function process()
+        if self._poll_gen ~= gen then return end
+        for _ = 1, 3 do
+            local cmd = self:pollCommand()
+            if not cmd or cmd == self.CMD_NONE then return end
+            self:_handle(cmd)
+        end
+    end
+    if self._wake then Wake.on("mediasession", process) end
     local function tick()
         if self._poll_gen ~= gen then return end
-        local cmd = self:pollCommand()
-        if (cmd == self.CMD_INTERRUPT_PAUSE or cmd == self.CMD_INTERRUPT_RESUME)
+        process()
+        -- Headphones gone while playing (Bluetooth off, cable out): pause, as media apps do, instead of going on
+        -- through the speaker. With the wake channel Java reports it at once; here it is only a fallback check.
+        local p = self._plugin
+        local playing = p and isPlaying(p)
+        local bg = p and p._app_in_background
+        self._route_ticks = (self._route_ticks or 0) + 1
+        -- The route matters only while something plays (pause on unplug); idle, it is not asked at all.
+        if p and playing and self._route_ticks >= ((bg or self._wake) and 1 or 5) then
+            self._route_ticks = 0
+            local on = self:headphonesOn()
+            if playing and on == false and self._headphones == true then
+                logger.warn("AndroidMediaSession: headphones disconnected, pausing")
+                pcall(function() p:onMediaPause() end)
+                playing = false
+            end
+            if on ~= nil then self._headphones = on end
+        end
+        local sc, ms = p and p.sync_controller, p and p.media_sync
+        local paused = (sc and sc.isPaused and sc:isPaused()) or (ms and ms.state == "paused")
+        local delay
+        if self._wake then
+            -- Events wake KOReader by themselves: this tick is only a safety net.
+            delay = playing and 5 or paused and 15 or 30
+        else
+            delay = playing and (bg and 1 or 0.2) or paused and 0.5 or (bg and 2 or 1)
+        end
+        UIManager:scheduleIn(delay, tick)
+    end
+    UIManager:scheduleIn(0.2, tick)
+end
+
+function AndroidMediaSession:_handle(cmd)
+    do
+        if cmd == self.CMD_NOISY and self._plugin then
+            logger.warn("AndroidMediaSession: headphones disconnected (noisy), pausing")
+            local p = self._plugin
+            self._headphones = false
+            if isPlaying(p) then pcall(function() p:onMediaPause() end) end
+        elseif (cmd == self.CMD_INTERRUPT_PAUSE or cmd == self.CMD_INTERRUPT_RESUME)
                 and self._plugin then
             -- Not a button press: explicit pause/resume, no debounce/toggle.
             logger.warn("AndroidMediaSession: interruption", cmd)
@@ -353,39 +417,12 @@ function AndroidMediaSession:startPolling(plugin)
                 end
             end
         end
-        -- Headphones gone while playing (Bluetooth off, cable out): pause, as media apps do, instead of going on
-        -- through the speaker.  Checked once a second.
-        local p = self._plugin
-        local playing = p and isPlaying(p)
-        local bg = p and p._app_in_background
-        self._route_ticks = (self._route_ticks or 0) + 1
-        -- The route matters only while something plays (pause on unplug); idle, it is not asked at all.
-        if p and playing and self._route_ticks >= (bg and 1 or 5) then
-            self._route_ticks = 0
-            local on = self:headphonesOn()
-            if playing and on == false and self._headphones == true then
-                logger.warn("AndroidMediaSession: headphones disconnected, pausing")
-                pcall(function() p:onMediaPause() end)
-                playing = false
-            end
-            if on ~= nil then self._headphones = on end
-        end
-        -- Paused or stopped: buttons are still heard, but once a second instead of five times.
-        -- Пауза: 0.3 с вместо 1 с — кнопка с гарнитуры («продолжить») должна срабатывать сразу.
-        -- In the background (screen off) 0.5 s: a headset press still acts at once, and the app stays far below the
-        -- CPU share for which Android kills background apps.
-        -- Nothing playing and nothing paused: a press starts reading within a second (two with the screen off); the
-        -- book open in KOReader for hours is not woken five times a second for it.
-        local sc, ms = p and p.sync_controller, p and p.media_sync
-        local paused = (sc and sc.isPaused and sc:isPaused()) or (ms and ms.state == "paused")
-        local delay = playing and (bg and 1 or 0.2) or paused and 0.5 or (bg and 2 or 1)
-        UIManager:scheduleIn(delay, tick)
     end
-    UIManager:scheduleIn(0.2, tick)
 end
 
 function AndroidMediaSession:stopPolling()
     self._poll_gen = (self._poll_gen or 0) + 1
+    Wake.off("mediasession")
     self._plugin = nil
 end
 

@@ -32,6 +32,8 @@ public class MediaSessionHelper {
     public static final int CMD_INTERRUPT_PAUSE = 7;
     /** Interruption is over and we paused for it: resume. */
     public static final int CMD_INTERRUPT_RESUME = 8;
+    /** Headphones unplugged / Bluetooth gone (ACTION_AUDIO_BECOMING_NOISY): pause, never go on through the speaker. */
+    public static final int CMD_NOISY = 9;
 
     // How often to poll AudioManager.getMode() as a fallback call detector
     // (some VoIP / OEM dialers do not take audio focus).
@@ -63,6 +65,30 @@ public class MediaSessionHelper {
     private volatile String title = "Audiobook";
     private volatile String artist = "";
 
+    // Wake channel: one byte into the plugin's pipe on every queued command, so KOReader's main loop wakes up at
+    // once instead of polling getPendingCommand() every second (battery, screen off).
+    private volatile java.io.FileOutputStream wakeOut;
+    private volatile android.os.ParcelFileDescriptor wakeFd;
+    private android.content.BroadcastReceiver noisyReceiver;
+    private Object modeListener; // AudioManager.OnModeChangedListener on API 31+
+
+    /** [fd]: the write end of the plugin's pipe (duplicated here; the plugin keeps its own). -1 turns it off. */
+    public void setWakeFd(int fd) {
+        try { if (wakeFd != null) wakeFd.close(); } catch (Exception ignored) {}
+        wakeOut = null; wakeFd = null;
+        if (fd < 0) return;
+        try {
+            android.os.ParcelFileDescriptor p = android.os.ParcelFileDescriptor.fromFd(fd);
+            wakeFd = p;
+            wakeOut = new java.io.FileOutputStream(p.getFileDescriptor());
+        } catch (Exception e) { wakeOut = null; wakeFd = null; }
+    }
+
+    private void wake() {
+        java.io.FileOutputStream o = wakeOut;
+        if (o != null) try { o.write(1); } catch (Exception ignored) {}
+    }
+
     public MediaSessionHelper(Context context) {
         this.context = context.getApplicationContext();
         workerThread = new HandlerThread("abk-mediasession");
@@ -90,6 +116,7 @@ public class MediaSessionHelper {
                 setStateInternal(PlaybackState.STATE_PAUSED, positionMs);
                 active = true;
                 scheduleModePoll();
+                registerNoisy();
             }
         });
     }
@@ -101,6 +128,8 @@ public class MediaSessionHelper {
                 active = false;
                 pausedByInterrupt = false;
                 worker.removeCallbacks(modePoll);
+                unregisterModeListener();
+                unregisterNoisy();
                 setStateInternal(PlaybackState.STATE_STOPPED, positionMs);
                 abandonFocus();
                 releaseSessionLocked();
@@ -179,12 +208,48 @@ public class MediaSessionHelper {
             pendingCommand = cmd;
             suppressCommandUntilMs = now + 700;
         }
+        wake();
     }
 
     private void enqueueInterrupt(int cmd) {
         synchronized (lock) {
             pendingInterrupt = cmd;
         }
+        wake();
+    }
+
+    private void registerNoisy() {
+        if (noisyReceiver != null) return;
+        noisyReceiver = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context c, Intent i) {
+                if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(i.getAction())) enqueueInterrupt(CMD_NOISY);
+            }
+        };
+        android.content.IntentFilter f = new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(noisyReceiver, f, null, worker, 4 /* RECEIVER_NOT_EXPORTED */);
+            else context.registerReceiver(noisyReceiver, f, null, worker);
+        } catch (Exception e) { noisyReceiver = null; }
+    }
+
+    private void unregisterNoisy() {
+        if (noisyReceiver == null) return;
+        try { context.unregisterReceiver(noisyReceiver); } catch (Exception ignored) {}
+        noisyReceiver = null;
+    }
+
+    private void onMode(int mode) {
+        if (!active) return;
+        boolean call = isCallMode(mode);
+        if (call && !inCall) { inCall = true; interruptBegin(); }
+        else if (!call && inCall) { inCall = false; interruptEnd(); }
+    }
+
+    private void unregisterModeListener() {
+        if (modeListener == null || audioManager == null || Build.VERSION.SDK_INT < 31) return;
+        try { audioManager.removeOnModeChangedListener((AudioManager.OnModeChangedListener) modeListener); } catch (Exception ignored) {}
+        modeListener = null;
     }
 
     /** Something (call, other player) interrupted us: pause if playing. */
@@ -235,6 +300,21 @@ public class MediaSessionHelper {
 
     private void scheduleModePoll() {
         worker.removeCallbacks(modePoll);
+        // Android 12+: the system tells us when the audio mode changes (call, VoIP) — no polling once a second.
+        if (Build.VERSION.SDK_INT >= 31 && audioManager != null) {
+            if (modeListener == null) try {
+                AudioManager.OnModeChangedListener l = new AudioManager.OnModeChangedListener() {
+                    @Override public void onModeChanged(final int mode) { worker.post(new Runnable() { @Override public void run() { onMode(mode); } }); }
+                };
+                audioManager.addOnModeChangedListener(new java.util.concurrent.Executor() {
+                    @Override public void execute(Runnable r) { worker.post(r); }
+                }, l);
+                modeListener = l;
+                try { onMode(audioManager.getMode()); } catch (Exception ignored) {}
+                return;
+            } catch (Exception e) { modeListener = null; }
+            else return;
+        }
         worker.postDelayed(modePoll, MODE_POLL_MS);
     }
 

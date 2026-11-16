@@ -282,6 +282,11 @@ function TTSEngine:queueEventsAndroid()
     return self._android_tts:queueEvents()
 end
 
+--- The Android helper wakes KOReader on every queue event (no fast polling needed).
+function TTSEngine:wakeEvents()
+    return self._android_tts and self._android_tts.wake_events == true or false
+end
+
 --- Silence the engine and drop its queue (pause, stop, jump).
 function TTSEngine:queueStopAndroid()
     if self._android_tts and self._queue_active then

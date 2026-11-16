@@ -308,6 +308,8 @@ function AndroidTts:init()
         -- Newer helper only: silence in the queue (pause after a chapter heading).
         self._method.queueSilence = getMethod(env, helper_class,
             "queueSilence", "(Ljava/lang/String;J)I")
+        -- Newer helper: engine events wake KOReader (audiobook_wakeup) instead of being polled.
+        self._method.setWakeFd = getMethod(env, helper_class, "setWakeFd", "(I)V")
 
         if not self._method.getInitStatus
             or not self._method.playFile
@@ -333,6 +335,19 @@ function AndroidTts:init()
     end
 
     self._initialized = true
+    local Wake = require("audiobook_wakeup")
+    if self._method.setWakeFd and Wake.init() then
+        local fd = Wake.fd()
+        local android = self._android
+        pcall(function()
+            android.jni:context(android.app.activity.vm, function(jni)
+                local args = ffi.new("jvalue[1]"); args[0].i = fd
+                jni.env[0].CallVoidMethodA(jni.env, self._helper_ref, self._method.setWakeFd, args)
+                checkException(jni.env)
+            end)
+        end)
+        self.wake_events = true
+    end
     return true
 end
 

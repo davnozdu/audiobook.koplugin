@@ -114,6 +114,27 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
             qEvents.add(qSeq + "\t" + kind + "\t" + id + "\t" + (extra == null ? "" : extra));
             while (qEvents.size() > Q_EVENTS_MAX) qEvents.poll();
         }
+        wake();
+    }
+
+    // Wake channel (see MediaSessionHelper.setWakeFd): KOReader wakes up on each engine event instead of polling.
+    private volatile java.io.FileOutputStream wakeOut;
+    private volatile android.os.ParcelFileDescriptor wakeFd;
+
+    public void setWakeFd(int fd) {
+        try { if (wakeFd != null) wakeFd.close(); } catch (Exception ignored) {}
+        wakeOut = null; wakeFd = null;
+        if (fd < 0) return;
+        try {
+            android.os.ParcelFileDescriptor p = android.os.ParcelFileDescriptor.fromFd(fd);
+            wakeFd = p;
+            wakeOut = new java.io.FileOutputStream(p.getFileDescriptor());
+        } catch (Exception e) { wakeOut = null; wakeFd = null; }
+    }
+
+    private void wake() {
+        java.io.FileOutputStream o = wakeOut;
+        if (o != null) try { o.write(1); } catch (Exception ignored) {}
     }
 
     /** Utterance id of the last dispatched synthesis. Stale onDone/onError

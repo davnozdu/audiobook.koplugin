@@ -44,6 +44,8 @@ local SyncController = {
     -- Screen off / another app in front: the page is not drawn, so the engine is asked once a second. Android kills a
     -- background app that keeps over 2 % of a CPU for 5 minutes («excessive cpu»); five wake-ups a second did that.
     POLL_BG_S = 2.0,
+    -- With the wake channel the engine reports itself; this is only the stall watchdog.
+    POLL_WAKE_S = 5.0,
     MAX_RECOVERIES = 3,
     PENDING_MAX_S = 6,
 }
@@ -321,14 +323,30 @@ end
 function SyncController:_ensurePoll()
     if self._polling then return end
     self._polling = true
+    -- Wake channel: the engine's start/done/error events wake KOReader at once (highlight and page turn on time);
+    -- the periodic tick is then only the watchdog («no progress»), every few seconds.
+    local Wake = require("audiobook_wakeup")
+    local e = self.tts_engine
+    local events = Wake.ok and e and e.wakeEvents and e:wakeEvents()
+    if events then
+        Wake.on("synccontroller", function()
+            if self.state == self.STATE.PLAYING then
+                local ok, err = pcall(self._tick, self)
+                if not ok then logger.warn("SyncController: tick failed:", err) end
+            end
+        end)
+    end
     local function tick()
         if self.state ~= self.STATE.PLAYING then
             self._polling = false
+            Wake.off("synccontroller")
             return
         end
         local ok, err = pcall(self._tick, self)
         if not ok then logger.warn("SyncController: tick failed:", err) end
-        UIManager:scheduleIn(self.plugin and self.plugin._app_in_background and self.POLL_BG_S or self.POLL_S, tick)
+        local delay = events and self.POLL_WAKE_S
+            or (self.plugin and self.plugin._app_in_background and self.POLL_BG_S or self.POLL_S)
+        UIManager:scheduleIn(delay, tick)
     end
     UIManager:scheduleIn(self.POLL_S, tick)
 end
