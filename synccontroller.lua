@@ -43,7 +43,7 @@ local SyncController = {
     POLL_S = 0.2,
     -- Screen off / another app in front: the page is not drawn, so the engine is asked once a second. Android kills a
     -- background app that keeps over 2 % of a CPU for 5 minutes («excessive cpu»); five wake-ups a second did that.
-    POLL_BG_S = 1.0,
+    POLL_BG_S = 2.0,
     MAX_RECOVERIES = 3,
     PENDING_MAX_S = 6,
 }
