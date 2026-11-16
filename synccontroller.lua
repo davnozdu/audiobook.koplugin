@@ -229,7 +229,7 @@ end
 function SyncController:_queuedSeconds()
     local wps = (self._wps or 2.6) * math.max(0.25, (self.tts_engine and self.tts_engine.rate) or 1)
     local secs = 0
-    for _, it in ipairs(self._q) do secs = secs + math.max(0.4, it.words / wps) end
+    for _, it in ipairs(self._q) do secs = secs + (it.secs or math.max(0.4, it.words / wps)) end
     return secs
 end
 
@@ -286,6 +286,19 @@ function SyncController:_fill()
         chars = chars + it.chars
         secs = secs + math.max(0.4, it.words / wps)
         added = added + 1
+        -- After a chapter heading a pause, so the heading is heard apart from the text («VI» — pause — «Полковника…»).
+        local pause = s.heading and tonumber(self.plugin and self.plugin:getSetting("heading_pause", 1.5)) or 0
+        if pause > 0 then
+            self._seq = self._seq + 1
+            local pid = "q:" .. self._run .. ":" .. self._seq .. ":p"
+            if e.queueSilenceAndroid and e:queueSilenceAndroid(pid, math.floor(pause * 1000)) then
+                local p = { id = pid, pause = true, chars = 0, words = 0, secs = pause, t_q = now_s() }
+                self._q[#self._q + 1] = p
+                self._q_by_id[pid] = p
+                secs = secs + pause
+                dlog("read heading pause", pause)
+            end
+        end
     end
     if added > 0 then
         dlog("read fill +" .. added, "queued", #self._q, string.format("%.0fs %.1fms", secs, (os.clock() - t0) * 1000))
@@ -352,6 +365,13 @@ end
 function SyncController:_onStart(it)
     if it.started then return end
     it.started = now_s()
+    if it.pause then
+        while self._q[1] and self._q[1] ~= it do
+            local old = table.remove(self._q, 1)
+            self._q_by_id[old.id] = nil
+        end
+        return
+    end
     if not self._started_in_run then
         self._started_in_run = true
         dlog("read first-sound", string.format("%.0fms", (it.started - (self._t_run or it.started)) * 1000))
@@ -385,7 +405,7 @@ end
 
 function SyncController:_onDone(it)
     local t = now_s()
-    if it.started then
+    if it.started and not it.pause then
         local elapsed = t - it.started
         if elapsed > 0.5 then
             local wps = math.max(1, math.min(6, it.words / elapsed / math.max(0.25, self.tts_engine.rate or 1)))
@@ -481,6 +501,7 @@ end
 
 function SyncController:_gotoPage(page, xp)
     local doc, ui = self:_doc()
+    dlog("read turn", self:_currentPage(), "->", page)
     if self:_pageMode() or ui.paging then
         ui:handleEvent(Event:new("GotoPage", page))
     elseif xp then
@@ -555,7 +576,7 @@ SyncController.realignToReadingPage = SyncController.refocusToReading
 function SyncController:_remapAfterRotation()
     self._shown_page = nil
     local head = self._q[1]
-    if head and head.started then self:_follow(head) end
+    if head and head.started and head.s then self:_follow(head) end
 end
 
 -- ── Jumps ─────────────────────────────────────────────────────────────
@@ -566,9 +587,9 @@ end
 
 function SyncController:nextSentence()
     if not self:_active() then return end
-    local head = self._q[1]
-    local nxt = self._q[2]
-    if nxt then return self:_restartAt(nxt.s) end
+    for i = 2, #self._q do
+        if self._q[i].s then return self:_restartAt(self._q[i].s) end
+    end
     local s = self.stream and self.stream:next()
     if s then self:_restartAt(s) end
 end

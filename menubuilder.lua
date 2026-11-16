@@ -83,6 +83,25 @@ function MenuBuilder.buildVoiceSettingsMenu(plugin)
         sub_item_table = MenuBuilder.buildPitchMenu(plugin),
     })
 
+    table.insert(menu, {
+        text_func = function()
+            local v = plugin:getSetting("heading_pause", 1.5)
+            return v > 0 and T(_("Pause after a chapter heading: %1 s"), v) or _("Pause after a chapter heading: off")
+        end,
+        sub_item_table = (function()
+            local items = {}
+            for _i, v in ipairs({0, 1, 1.5, 2, 3}) do
+                table.insert(items, {
+                    text = v > 0 and T(_("%1 s"), v) or _("Off"),
+                    checked_func = function() return plugin:getSetting("heading_pause", 1.5) == v end,
+                    callback = function() plugin:setSetting("heading_pause", v) end,
+                })
+            end
+            return items
+        end)(),
+        help_text = _("Silence after a chapter heading («Глава вторая», «VI»), so the heading is heard apart from the text. Works with any TTS engine."),
+    })
+
     -- Size of the bottom bar (MyTTS fork): bigger buttons on a phone. Takes effect when reading starts next.
     table.insert(menu, {
         text_func = function()

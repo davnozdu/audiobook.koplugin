@@ -305,6 +305,9 @@ function AndroidTts:init()
         -- Optional (helper ≥ 0.6.7): ordered queue events; older helpers only have queueState.
         self._method.queueEvents = getMethod(env, helper_class,
             "queueEvents", "()Ljava/lang/String;")
+        -- Newer helper only: silence in the queue (pause after a chapter heading).
+        self._method.queueSilence = getMethod(env, helper_class,
+            "queueSilence", "(Ljava/lang/String;J)I")
 
         if not self._method.getInitStatus
             or not self._method.playFile
@@ -469,6 +472,23 @@ function AndroidTts:queueSpeak(id, text, flush)
             logger.err("AndroidTts: queueSpeak threw exception")
             return -1
         end
+        return result
+    end)
+end
+
+--- [ms] of silence after what is queued, as utterance [id]. 0 when dispatched, -1 otherwise (older helper too).
+function AndroidTts:queueSilence(id, ms)
+    if not self:hasQueue() or not self._method.queueSilence then return -1 end
+    local android = self._android
+    return android.jni:context(android.app.activity.vm, function(jni)
+        local env = jni.env
+        local j_id = env[0].NewStringUTF(env, id)
+        local args = ffi.new("jvalue[2]")
+        args[0].l = j_id
+        args[1].j = ms
+        local result = env[0].CallIntMethodA(env, self._helper_ref, self._method.queueSilence, args)
+        env[0].DeleteLocalRef(env, j_id)
+        if checkException(env) then return -1 end
         return result
     end)
 end

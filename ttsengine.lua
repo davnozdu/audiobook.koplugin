@@ -269,6 +269,13 @@ function TTSEngine:queueSpeakAndroid(id, text, flush)
     return false, atts:getInitStatus() == -1 and "pending" or "unavailable"
 end
 
+--- [ms] of silence after what is queued (a pause after a chapter heading). False with an older helper.
+function TTSEngine:queueSilenceAndroid(id, ms)
+    local atts = self._android_tts
+    if not atts or not atts.queueSilence then return false end
+    return atts:queueSilence(id, ms) == 0
+end
+
 --- Ordered queue events since the last call (see AndroidTts:queueEvents), or nil.
 function TTSEngine:queueEventsAndroid()
     if not self._android_tts then return nil end

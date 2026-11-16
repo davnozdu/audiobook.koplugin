@@ -207,12 +207,84 @@ local function backFrom(doc, xp, n)
     return back
 end
 
+-- Inline elements: a word inside one belongs to the paragraph around it.
+local INLINE = { a = true, b = true, i = true, em = true, strong = true, span = true, sup = true, sub = true,
+    small = true, u = true, s = true, font = true, code = true, q = true, cite = true, abbr = true, big = true,
+    del = true, ins = true, mark = true, tt = true, emphasis = true, strikethrough = true, style = true }
+
+--- The block (paragraph, heading) holding the word at [xp], from the CREngine XPointer path
+--- («/body/DocFragment[3]/body/div/p[5]/em/text().12» → «/body/DocFragment[3]/body/div/p[5]»); nil when unknown.
+local function blockOf(xp)
+    local path = type(xp) == "string" and xp:match("^(/.*)/text%(%)")
+    if not path then return nil end
+    while true do
+        local head, last = path:match("^(.*)/([%w_]+)%[?%d*%]?$")
+        if not (head and last and INLINE[last:lower()]) then break end
+        path = head
+    end
+    return path
+end
+DocStream.blockOf = blockOf
+
+-- A short line of its own that names a chapter: «Глава вторая», «Часть 2», «VI», «12.», «Пролог», «Chapter 3».
+local HEADING_WORDS = { ["глава"] = true, ["часть"] = true, ["книга"] = true, ["том"] = true, ["раздел"] = true,
+    ["пролог"] = true, ["эпилог"] = true, ["chapter"] = true, ["part"] = true, ["book"] = true,
+    ["prologue"] = true, ["epilogue"] = true }
+
+local function headingText(t)
+    t = t:gsub("^%s+", ""):gsub("[%s%.:]+$", "")
+    if t == "" or #t > 60 then return false end
+    if t:match("^[IVXLCDM]+$") or t:match("^%d+$") then return true end
+    local first = t:match("^(%S+)")
+    if not first then return false end
+    -- Lowercase ASCII and Cyrillic («ГЛАВА», «Глава»).
+    local low = first:lower():gsub("\208([\144-\175])", function(c)
+        local b = c:byte()
+        if b < 160 then return "\208" .. string.char(b + 32) end
+        return "\209" .. string.char(b - 32)
+    end):gsub("\208\129", "\209\145")
+    return HEADING_WORDS[low] == true
+end
+DocStream.headingText = headingText
+
+--- True when sentence [s] is a chapter heading: the book marks it so (h1–h6, an FB2 title), or it is a short line of its
+--- own naming a chapter. A pause follows a heading.
+function DocStream.isHeading(s, words)
+    local w0, w1 = words[s.word_first], words[s.word_last]
+    local block = w0 and blockOf(w0.xs)
+    if not block then return false end
+    if block:match("/[hH][1-6]%[?%d*%]?$") or block:find("/title/", 1, true) or block:match("/title%[?%d*%]?$") then
+        return true
+    end
+    -- Its own block: the next word (when known) is in another one.
+    local nxt = words[s.word_last + 1]
+    if nxt and blockOf(nxt.xs) == block then return false end
+    if blockOf(w1.xs) ~= block then return false end
+    return headingText(s.text)
+end
+
+--- Text of [words]: one getTextFromXPointers per block, blocks joined by a line break. A range across blocks comes
+--- back from CREngine without the break, which glued a heading to the first sentence after it («VI Полковника…»).
+local function textOf(doc, words)
+    local parts, from = {}, 1
+    local cur = blockOf(words[1].xs)
+    for i = 2, #words + 1 do
+        local b = words[i] and blockOf(words[i].xs)
+        if i > #words or (cur and b and b ~= cur) then
+            parts[#parts + 1] = doc:getTextFromXPointers(words[from].xs, words[i - 1].xe) or ""
+            from, cur = i, b
+        end
+    end
+    return table.concat(parts, "\n")
+end
+DocStream.textOf = textOf
+
 --- Parse the words [words] (from walk) into aligned sentences. Each sentence gets [from]: the word position where its
 --- text begins in the stream (a leading dash or quote of a reply included), and [last]: the index of its last word.
 --- nil when the text and the words do not align.
 local function sentencesOf(self, words)
     local doc = self.doc
-    local text = doc:getTextFromXPointers(words[1].xs, words[#words].xe) or ""
+    local text = textOf(doc, words)
     local parsed = self.parse(text)
     local list = parsed and parsed.sentences
     if not (list and #list > 0) then return nil end
@@ -223,6 +295,7 @@ local function sentencesOf(self, words)
             s.from = words[prev_last + 1] and words[prev_last + 1].xs or s.xp0
             s.last = s.word_last
             prev_last = s.word_last
+            s.heading = DocStream.isHeading(s, words)
         end
     end
     return list
@@ -303,7 +376,7 @@ function DocStream:_fill()
         for i = 1, take do
             local s = list[i]
             if s.last then
-                self.buf[#self.buf + 1] = { text = s.text, xp0 = s.xp0, xp1 = s.xp1, from = s.from }
+                self.buf[#self.buf + 1] = { text = s.text, xp0 = s.xp0, xp1 = s.xp1, from = s.from, heading = s.heading }
                 after = s.last
             end
         end

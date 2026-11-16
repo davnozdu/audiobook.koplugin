@@ -319,6 +319,26 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
         return 0;
     }
 
+    /**
+     * Queue mode: [ms] of silence after what is queued (a pause after a chapter heading), as one more utterance with
+     * its own start/done events. Any engine: the silence is played by the TextToSpeech framework. 0 when dispatched.
+     */
+    public int queueSilence(final String id, final long ms) {
+        if (initStatus != TextToSpeech.SUCCESS || engineUnavailable) return -1;
+        worker.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    int r = tts.playSilentUtterance(ms, TextToSpeech.QUEUE_ADD, id);
+                    if (r != TextToSpeech.SUCCESS) qEvent("E", id, "silence=" + r);
+                } catch (Exception e) {
+                    qEvent("E", id, "exception=" + e.getClass().getSimpleName());
+                }
+            }
+        });
+        return 0;
+    }
+
     /** Queue mode: silence the engine and drop everything queued (pause, stop, jump). */
     public void queueStop() {
         worker.post(new Runnable() {

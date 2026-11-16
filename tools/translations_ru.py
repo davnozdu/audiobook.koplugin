@@ -733,4 +733,8 @@ TRANSLATIONS_RU = {
     "The TTS engine does not respond. Reading stopped.": "Движок TTS не отвечает. Чтение остановлено.",
     "Android TTS is not available.": "Синтез речи Android недоступен.",
     "The system's preferred text-to-speech engine (Android settings → Text-to-speech).": "Движок синтеза речи, выбранный в системе (Настройки Android → Синтез речи).",
+    "Pause after a chapter heading: %1 s": "Пауза после заголовка главы: %1 с",
+    "Pause after a chapter heading: off": "Пауза после заголовка главы: выкл.",
+    "%1 s": "%1 с",
+    "Silence after a chapter heading («Глава вторая», «VI»), so the heading is heard apart from the text. Works with any TTS engine.": "Тишина после заголовка главы («Глава вторая», «VI»), чтобы заголовок был слышен отдельно от текста. Работает с любым движком синтеза речи.",
 }

@@ -75,4 +75,16 @@ for seed = 1, 6 do
         end
     end
 end
+-- Chapter headings: marked by the book (h1–h6, FB2 title) or a short line of its own.
+for _, t in ipairs({ 'VI', 'VI.', '12', 'Глава вторая', 'ГЛАВА I', 'Часть 2.', 'Пролог', 'Chapter 3' }) do
+    check(DS.headingText(t), 'heading text ' .. t)
+end
+for _, t in ipairs({ 'Он пришёл.', 'Вот так', 'Главный герой ушёл' }) do check(not DS.headingText(t), 'not a heading ' .. t) end
+check(DS.blockOf('/body/DocFragment[3]/body/div/p[5]/em/text().12') == '/body/DocFragment[3]/body/div/p[5]', 'inline is the paragraph')
+check(DS.isHeading({ word_first = 1, word_last = 1, text = 'Начало' },
+    { { xs = '/b/h2/text().0', xe = '/b/h2/text().2' }, { xs = '/b/p[1]/text().0' } }), 'h2 is a heading')
+check(DS.isHeading({ word_first = 1, word_last = 1, text = 'VI' },
+    { { xs = '/b/p[1]/text().0', xe = '/b/p[1]/text().2' }, { xs = '/b/p[2]/text().0' } }), 'VI alone is a heading')
+check(not DS.isHeading({ word_first = 1, word_last = 1, text = 'VI' },
+    { { xs = '/b/p[1]/text().0', xe = '/b/p[1]/text().2' }, { xs = '/b/p[1]/text().3' } }), 'VI inside a paragraph is not')
 print('docstream: ' .. passed .. ' checks passed')

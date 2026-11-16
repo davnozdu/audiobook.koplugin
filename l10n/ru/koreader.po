@@ -3708,3 +3708,15 @@ msgstr "Движок синтеза речи, выбранный в систем
 
 msgid "Read-aloud for Android with synchronized sentence highlighting through the system TTS engine (MyTTS or any other). Also plays pre-recorded audiobooks (mp3, m4b, m4a) and EPUB 3 Media Overlays (Storyteller format), and syncs with Audiobookshelf.\n\nUsage:\n1. Long-press a word or select text, then tap \"Read aloud from here\"\n2. Or use Tools menu → Audiobook Read-Along"
 msgstr "Чтение вслух на Android с подсветкой предложений через системный движок синтеза речи (MyTTS или любой другой). Также воспроизводит готовые аудиокниги (mp3, m4b, m4a) и EPUB 3 Media Overlays (формат Storyteller), синхронизируется с Audiobookshelf.\n\nКак пользоваться:\n1. Долгое нажатие на слово или выделение текста → «Читать вслух отсюда»\n2. Или меню Инструменты → Аудиокнига: чтение вслух"
+
+msgid "Pause after a chapter heading: %1 s"
+msgstr "Пауза после заголовка главы: %1 с"
+
+msgid "Pause after a chapter heading: off"
+msgstr "Пауза после заголовка главы: выкл."
+
+msgid "%1 s"
+msgstr "%1 с"
+
+msgid "Silence after a chapter heading («Глава вторая», «VI»), so the heading is heard apart from the text. Works with any TTS engine."
+msgstr "Тишина после заголовка главы («Глава вторая», «VI»), чтобы заголовок был слышен отдельно от текста. Работает с любым движком синтеза речи."
