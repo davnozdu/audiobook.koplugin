@@ -461,12 +461,15 @@ function PageStream:next()
     end
 end
 
---- Start at sentence [index] of [page].
+--- Start at sentence [index] of [page] ([index] is the raw index in parsed.sentences of [page]).
 function PageStream:seek(page, index)
     self.page, self.list, self.i = page, nil, 0
-    self.skip = (index or 1) - 1
-    local s
-    for _ = 1, self.skip do s = self:next(); if not s then break end end
+    if self.page > self.count then return end
+    local text = self.page_text(self.page) or ""
+    local parsed = self.parser:parse(text)
+    self.list = parsed.sentences or {}
+    self.list.page, self.list.parsed = self.page, parsed
+    self.i = math.max(0, math.min(#self.list, (index or 1) - 1))
 end
 
 return DocStream

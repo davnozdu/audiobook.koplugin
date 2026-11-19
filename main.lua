@@ -1093,11 +1093,6 @@ function Audiobook:startReadAlong(text, start_pos, anchor_xp)
     end
     self:_noteListened()
     self:_volumeKeysToSystem(true)
-    -- MyTTS: the text ahead goes to its LLM as soon as reading has started.
-    if MyTTSBridge then
-        MyTTSBridge._sent_index, MyTTSBridge._last_ahead = nil, nil
-        pcall(MyTTSBridge.prime, self)
-    end
     pcall(function() BtMediaControl.sendPlaybackStatus("playing") end)
     -- The built-in audiobook's chrome must not stay on screen with read-aloud.
     if self.media_sync then
@@ -3310,6 +3305,7 @@ function Audiobook:announceChapterLeft()
     logger.warn("Audiobook: announce", text)
     -- After the pause has reached the engine (it stops the book's own requests), the answer.
     UIManager:scheduleIn(0.3, function()
+        if not (self.ui and self.ui.document) then return end
         if not atts:engineSpeak(text) then
             UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
             if was_playing then self:resumeReadAlong() end
@@ -3317,6 +3313,7 @@ function Audiobook:announceChapterLeft()
         end
         local waited = 0
         local function check()
+            if not (self.ui and self.ui.document) then return end
             waited = waited + 0.4
             if waited < 1.2 or (atts:engineSpeaking() and waited < 20) then
                 UIManager:scheduleIn(0.4, check)
@@ -4062,6 +4059,7 @@ end
 
 function Audiobook:onCloseDocument()
     logger.warn("Audiobook: onCloseDocument event received")
+    if self._auto_return_fn then UIManager:unschedule(self._auto_return_fn); self._auto_return_fn = nil end
     self:_volumeKeysToSystem(false)
     -- Re-assert the overlay inset into the sidecar before ReaderConfig writes
     -- copt_* (SaveSettings fires before CloseDocument, so this only covers
@@ -4078,6 +4076,7 @@ end
 -- without CloseDocument firing first, force-stop everything.
 function Audiobook:onCloseWidget()
     logger.warn("Audiobook: onCloseWidget event received")
+    if self._auto_return_fn then UIManager:unschedule(self._auto_return_fn); self._auto_return_fn = nil end
     self:stopReadAlong({ drop_chrome = true })
     self._audiobook_chrome_margins_applied = false
     -- KOReader closes: let the TTS engine go (a new book binds again).

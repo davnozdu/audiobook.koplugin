@@ -303,12 +303,20 @@ end
 --- Pause: the queue stops, MyTTS fades its background sounds at once.
 function TTSEngine:pause()
     self:queueStopAndroid()
-    local ok, MyTTS = pcall(require, "mytts")
-    if ok and MyTTS and MyTTS.paused then pcall(MyTTS.paused) end
+    local MyTTS = (self.plugin and self.plugin._mytts) or package.loaded["mytts"]
+    if not MyTTS then
+        local ok, m = pcall(require, "mytts")
+        if ok then MyTTS = m end
+    end
+    if MyTTS and MyTTS.paused then pcall(MyTTS.paused) end
 end
 
 function TTSEngine:resume() end
-function TTSEngine:stop() self:queueStopAndroid() end
+function TTSEngine:stop()
+    self:queueStopAndroid()
+    local MyTTS = (self.plugin and self.plugin._mytts) or package.loaded["mytts"]
+    if MyTTS and MyTTS.paused then pcall(MyTTS.paused) end
+end
 --- Stop at the end of a session; the engine connection stays for the next start.
 function TTSEngine:forceKillAll() self:queueStopAndroid() end
 function TTSEngine:cleanup() end

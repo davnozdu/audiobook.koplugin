@@ -185,6 +185,7 @@ public class MediaSessionHelper {
     }
 
     public void shutdown() {
+        setWakeFd(-1);
         stop();
         worker.post(new Runnable() {
             @Override

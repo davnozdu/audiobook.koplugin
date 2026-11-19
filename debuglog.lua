@@ -22,7 +22,12 @@ local function ensureDir(path)
     -- Best-effort mkdir for the parent of path.
     local dir = path:match("^(.*)/[^/]+$")
     if not dir or dir == "" then return end
-    os.execute('mkdir -p "' .. dir:gsub('"', '\\"') .. '" 2>/dev/null')
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok and lfs and lfs.mkdir then
+        pcall(lfs.mkdir, dir)
+    else
+        os.execute('mkdir -p "' .. dir:gsub('"', '\\"') .. '" 2>/dev/null')
+    end
 end
 
 --- Initialize log path (call once from plugin init).

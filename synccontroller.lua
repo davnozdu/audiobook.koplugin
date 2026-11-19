@@ -133,6 +133,7 @@ function SyncController:_beginAt(where)
     if e then e:queueStopAndroid() end
     self._run = self._run + 1
     self._q, self._q_by_id = {}, {}
+    self._held = nil
     self._started_in_run = false
     self._ended = false
     self._pending_since = nil
@@ -203,10 +204,12 @@ function SyncController:stop(opts)
     if self.state ~= self.STATE.STOPPED then dlog("read stop from", self.state) end
     self.state = self.STATE.STOPPED
     if self._watchdog then UIManager:unschedule(self._watchdog); self._watchdog = nil end
+    pcall(function() require("audiobook_wakeup").off("synccontroller") end)
     self._run = self._run + 1
     if self.tts_engine then pcall(function() self.tts_engine:stop() end) end
     if self.highlight_manager then pcall(function() self.highlight_manager:clearHighlights() end) end
     self._q, self._q_by_id = {}, {}
+    self._held = nil
     self.stream = nil
     self.current_sentence = nil
     self._user_paused = false
@@ -385,12 +388,25 @@ function SyncController:_tick()
             elseif ev.kind == "D" then
                 self:_onDone(it)
             elseif ev.kind == "E" then
-                dlog("read engine-error", ev.extra)
-                if not self._started_in_run then
-                    return self:_recover("engine refuses the queue (" .. tostring(ev.extra) .. ")", true)
+                local extra = tostring(ev.extra or "")
+                dlog("read engine-error", extra)
+                if not self._started_in_run or extra:find("^speak=") or extra:find("^exception=") then
+                    return self:_recover("engine refuses the queue (" .. extra .. ")", true)
                 end
-                -- One sentence the engine could not say (a language it has no voice for): go on.
-                self:_onDone(it)
+                -- One sentence the engine could not say (a language it has no voice for): drop only that item so an
+                -- error on a future queued item never discards the currently sounding sentence or intermediate items.
+                if self._q[1] == it then
+                    self:_onDone(it)
+                else
+                    self._q_by_id[it.id] = nil
+                    for idx = #self._q, 1, -1 do
+                        if self._q[idx] == it then
+                            table.remove(self._q, idx)
+                            break
+                        end
+                    end
+                    self:_fill()
+                end
             elseif ev.kind == "R" then
                 self:_onRange(it, ev.extra)
             end
@@ -1045,10 +1061,11 @@ function SyncController:hidePlaybackBar()
     end
 
     if keep_xp and ui and ui.rolling then
+        local doc = ui.document
         logger.warn("SyncController: hidePlaybackBar page", page,
             "doc_xp=", tostring(keep_xp), "rolling_xp=", tostring(rolling_xp))
         UIManager:scheduleIn(0.4, function()
-            if not (ui and ui.rolling and ui.document) then return end
+            if not (ui and ui.rolling and ui.document and ui.document == doc) then return end
             local now
             pcall(function() now = ui.document:getXPointer() end)
             logger.warn("SyncController: post-stop page", page, "doc_xp=", tostring(now))

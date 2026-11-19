@@ -339,14 +339,14 @@ function AndroidTts:init()
     if self._method.setWakeFd and Wake.init() then
         local fd = Wake.fd()
         local android = self._android
-        pcall(function()
-            android.jni:context(android.app.activity.vm, function(jni)
+        local ok, set_ok = pcall(function()
+            return android.jni:context(android.app.activity.vm, function(jni)
                 local args = ffi.new("jvalue[1]"); args[0].i = fd
                 jni.env[0].CallVoidMethodA(jni.env, self._helper_ref, self._method.setWakeFd, args)
-                checkException(jni.env)
+                return not checkException(jni.env)
             end)
         end)
-        self.wake_events = true
+        self.wake_events = ok and set_ok == true
     end
     return true
 end
@@ -425,8 +425,13 @@ function AndroidTts:waitForInit(timeout_ms)
             logger.err("AndroidTts: Engine init failed, status:", status)
             return false
         end
-        -- Still pending, brief sleep
-        os.execute("usleep 50000")  -- 50ms
+        -- Still pending, brief sleep via libc usleep (no shell fork per poll)
+        local slept = pcall(function()
+            ffi.cdef[[int usleep(unsigned int usec);]]
+        end)
+        if not pcall(function() ffi.C.usleep(50000) end) then
+            os.execute("sleep 0.05 2>/dev/null || usleep 50000 2>/dev/null")
+        end
     end
     logger.err("AndroidTts: Engine init timed out after", timeout_ms, "ms")
     return false

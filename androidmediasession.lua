@@ -50,8 +50,11 @@ end
 local function fileExists(path)
     local f = io.open(path, "r")
     if f then f:close() return true end
-    local rc = os.execute('test -f "' .. path:gsub('"', '\\"') .. '" 2>/dev/null')
-    return rc == 0 or rc == true
+    local ok, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok and lfs and lfs.attributes then
+        return lfs.attributes(path, "mode") == "file"
+    end
+    return false
 end
 
 function AndroidMediaSession:new(o)
@@ -111,8 +114,14 @@ function AndroidMediaSession:init(plugin_dir)
     if not cache_dir or cache_dir == "" then
         cache_dir = plugin_dir .. "/cache"
     end
-    os.execute('mkdir -p "' .. cache_dir .. '/audiobook" 2>/dev/null')
     local opt_dir = cache_dir .. "/audiobook"
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok_lfs and lfs and lfs.mkdir then
+        pcall(lfs.mkdir, cache_dir)
+        pcall(lfs.mkdir, opt_dir)
+    else
+        os.execute('mkdir -p "' .. opt_dir:gsub('"', '\\"') .. '" 2>/dev/null')
+    end
 
     local load_ok = false
     android.jni:context(android.app.activity.vm, function(jni)
@@ -213,14 +222,14 @@ function AndroidMediaSession:init(plugin_dir)
     self._initialized = true
     if self._method.setWakeFd and Wake.init() then
         local fd = Wake.fd()
-        pcall(function()
-            android.jni:context(android.app.activity.vm, function(jni)
+        local ok, set_ok = pcall(function()
+            return android.jni:context(android.app.activity.vm, function(jni)
                 local args = ffi.new("jvalue[1]"); args[0].i = fd
                 jni.env[0].CallVoidMethodA(jni.env, self._helper_ref, self._method.setWakeFd, args)
-                checkException(jni.env)
+                return not checkException(jni.env)
             end)
         end)
-        self._wake = true
+        self._wake = ok and set_ok == true
     end
     logger.warn("AndroidMediaSession: ready", self._wake and "(wake channel)" or "(polling)")
     return true

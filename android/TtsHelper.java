@@ -332,6 +332,7 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
                         qEvent("E", id, "speak=" + r);
                     }
                 } catch (Exception e) {
+                    engineUnavailable = true;
                     qError = id;
                     qEvent("E", id, "exception=" + e.getClass().getSimpleName());
                 }
@@ -603,6 +604,7 @@ public class TtsHelper implements TextToSpeech.OnInitListener {
 
     /** Release the TTS engine (posted; the caller never blocks). */
     public void shutdown() {
+        setWakeFd(-1);
         stopPipeline();
         worker.post(new Runnable() {
             @Override
