@@ -372,6 +372,7 @@ function AndroidMediaSession:_handle(cmd)
             logger.warn("AndroidMediaSession: headphones disconnected (noisy), pausing")
             local p = self._plugin
             self._headphones = false
+            self._noisy_paused = true
             if isPlaying(p) then pcall(function() p:onMediaPause() end) end
         elseif (cmd == self.CMD_INTERRUPT_PAUSE or cmd == self.CMD_INTERRUPT_RESUME)
                 and self._plugin then
@@ -381,17 +382,18 @@ function AndroidMediaSession:_handle(cmd)
             if DL and DL.log then pcall(DL.log, "interrupt", cmd == self.CMD_INTERRUPT_PAUSE and "pause" or "resume") end
             local p = self._plugin
             if cmd == self.CMD_INTERRUPT_PAUSE then
-                -- Headphones at the moment of the call: only then does reading go on by itself after it.
+                self._noisy_paused = false
                 self._hp_at_interrupt = self:headphonesOn() or self._headphones == true
                 pcall(function() p:onMediaPause() end)
-            elseif self._hp_at_interrupt or self:headphonesOn() then
+            elseif not self._noisy_paused then
+                -- Resume after transient interruptions (e.g. Gemini reading a notification) even when
+                -- deprecated isBluetoothA2dpOn()/isWiredHeadsetOn() return false on Android 16 / BLE / USB-C.
                 pcall(function() p:onMediaPlay() end)
                 if p._afterInterruptionResume then
                     pcall(function() p:_afterInterruptionResume() end)
                 end
             else
-                -- Through the speaker the book does not start talking again by itself after a call.
-                if DL and DL.log then pcall(DL.log, "interrupt resume skipped: no headphones") end
+                if DL and DL.log then pcall(DL.log, "interrupt resume skipped: noisy disconnect") end
             end
         elseif cmd and cmd ~= self.CMD_NONE and self._plugin then
             -- Extra Lua debounce: AVRCP may still deliver a second command on
